@@ -49,8 +49,35 @@ float foamOf(HfSpan t) {
     return t.flux == HF_NONE ? 0.0 : foam[HF_FOAM_READ + hfFoamIndex(t)];
 }
 
+// Water below this is never drawn; between this and HF_RENDER_DRY it is drawn only while it moves.
+const float FLOW_DRY = 0.008;
+
+// Whether span t has water worth drawing. Still films under HF_RENDER_DRY stay hidden (they shimmered on flat ground), but a
+// thin layer that is moving (running down steps or a slope) is drawn: hiding it punched holes cell by cell into shallow
+// streams, which then looked like scattered pieces instead of a flow.
 bool wet(uint t) {
-    return depth[t] > HF_RENDER_DRY;
+    float d = depth[t];
+    if (d > HF_RENDER_DRY) {
+        return true;
+    }
+    if (d <= FLOW_DRY) {
+        return false;
+    }
+    uint ps = hfPageSpans();
+    int owner = pageOwner[t / ps];
+    if (owner < 0) {
+        return false;
+    }
+    int fp = tileInfo[uint(owner >> 2) * 4u + 3u][owner & 3];
+    if (fp < 0) {
+        return false;
+    }
+    uint f = (uint(fp) * ps + t % ps) * HF_LINKS;
+    float outflow = 0.0;
+    for (uint k = 0u; k < HF_LINKS; k++) {
+        outflow += flux[f + k];
+    }
+    return outflow > 0.002;
 }
 
 float surfaceOf(uint t) {

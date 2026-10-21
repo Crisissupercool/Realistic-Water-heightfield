@@ -432,3 +432,8 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
 * **Cascades:** adjacent sheets over the same edge share their corner vertices (average landing height and throw), so a
   stepped slope shows one curtain per step instead of a row of arches; sheet whiteness scales with the outflow (trickles stay
   clearer); falling-water foam is weighted by drop height (full at 3 blocks/s x blocks), so 1-block steps barely foam.
+* **Hiding the cell grid:** heightfield quads pass all four corner normals and aerations (flat) plus the position in the quad
+  to `mesh_front.frag`, which blends them bilinearly; per-triangle interpolation left a diagonal crease in every half-block
+  cell (four diamonds per block in shading and foam). Thin water between 0.008 and `hfRenderDepth` is drawn while it moves
+  (outflow > 0.002 blocks^3/s on a simulated tile), so shallow streams down steps no longer drop out cell by cell; still films
+  stay hidden. Still per cell: shoreline outlines follow the 0.5-block grid (smooth contours would be the next step).
