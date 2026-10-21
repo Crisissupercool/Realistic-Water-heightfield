@@ -154,6 +154,11 @@ public final class WaterWorld {
 		return RealisticWaterFluid.isRealistic(state);
 	}
 
+	/** A fluid the heightfield treats as solid: anything but realistic water (see HfWorld.voxels). */
+	static boolean foreignFluid(BlockState state) {
+		return !state.getFluidState().isEmpty() && state.getBlock() != ModContent.REALISTIC_WATER_BLOCK;
+	}
+
 	static int waterAmount(BlockState state) {
 		FluidState fluid = state.getFluidState();
 		return RealisticWaterFluid.isRealistic(fluid) ? fluid.getAmount() : 0;
@@ -405,10 +410,13 @@ public final class WaterWorld {
 			}
 		}
 
-		if (oldState.getBlock() != newState.getBlock() || !oldState.getCollisionShape(level, pos).equals(newState.getCollisionShape(level, pos))) {
-			if (this.heightfield != null) {
-				this.heightfield.grid.markDirtyBlock(pos.getX(), pos.getY(), pos.getZ());
-			}
+		boolean shapeChanged = !oldState.getCollisionShape(level, pos).equals(newState.getCollisionShape(level, pos));
+		// Only real terrain changes rebuild heightfield tiles. Air <-> realistic water (our own block writes, buckets) is not one: it
+		// used to rebuild every moving tile about once a second, zeroing its momentum, and made floods slosh wildly.
+		if (this.heightfield != null && (shapeChanged || foreignFluid(oldState) != foreignFluid(newState))) {
+			this.heightfield.grid.markDirtyBlock(pos.getX(), pos.getY(), pos.getZ());
+		}
+		if (oldState.getBlock() != newState.getBlock() || shapeChanged) {
 			for (Material m : Material.values()) {
 				SolidCache cache = this.solids(m);
 				if (cache.update(level, pos)) {
