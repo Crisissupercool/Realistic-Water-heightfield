@@ -381,3 +381,31 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   outflows through its faces); a few frames later the client tick pulls the player's horizontal velocity toward the water's,
   `hfCurrentDrag` (0.15) per tick when fully submerged, fading in with the current's speed (none in still water) and the submerged
   fraction. Flying and spectators are left alone. Other entities and boats come later (needs a sample per entity, batched).
+
+## 16. Stirring, foam and falling sheets 2 (as built)
+
+* **Bodies stir the water (player only for now):** `HfWorld.stir` puts the player's box and velocity (blocks/s, tick to tick) into
+  the heightfield Globals' entity slots (`G.ent`, count in `G.caps.z`, the same 3 x vec4 layout the particle domains use), with
+  `hfStirStrength` and a radial speed while the body crosses the surface (4x the displacement rate: the push is short and the ring
+  spreads thin). `hfStir` (hf_common.glsl) gives each column the velocity the bodies push it at, weighted by distance (body radius
+  plus 0.35 blocks), only where the body overlaps the water column and fading for a body over 1.5 blocks below the surface. The flux
+  pass drags the outflow through each link facing that velocity toward speed x wetted face at 8/s, `q += (1 - e^(-8 dt)) * max(target - q, 0)`:
+  water piles up ahead (bow wave), drains in behind (wake) and spreads as waves; volume stays exact because only fluxes change.
+  A moving player in water keeps the tile under them awake. CPU numbers (`StirExp`-style runs, strength 1): wading at 2.5 b/s
+  through 1.2 deep water makes a ~0.2 bow wave and a 0.02 wave 2.5 blocks to the side; a surface swimmer in deep water ~0.03;
+  jumping in a ~0.015 ring at 3 blocks. A hard "at least the body's speed" push was tried first and shoved a block-high wall of
+  water ahead at 4 b/s.
+* **Foam:** one float per simulated span (0..1), stored on the flux pages twice (binding 15): the depth pass reads one half and
+  writes the other, swapping each step, because it reads its neighbors' foam. It is carried with the water (upwind, the same
+  fluxes as the depth), fades with `hfFoamLife` (2.5 s), and is renewed where water drops in from a span whose floor is above our
+  surface (full at 0.8 blocks/s of inflow), where it runs faster than 2.5..6 b/s, and where a body stirs it (0.8..3 b/s). Pages
+  are zeroed when a tile gets flux pages, and tiles that are not simulated have none, so sleeping water is clear.
+* **Aeration in the mesh:** heightfield vertices now pack a 12 + 12 bit octahedral normal and 6 bits of aeration (OPEN set; the
+  particle meshes keep `packNormal`). Tops average the foam of the joined spans at each corner (times `hfFoam`); sheets go from
+  the lip's foam (at least 0.1) to 0.3 + 0.25 per block of drop at the bottom. `mesh_front.frag` adds aeration x 0.2 to the
+  material id (inside composite's 0.25 tolerance); `composite.frag` turns it into lace foam on tops and, on near-vertical faces,
+  streaks scrolling down the sheet with a bumped normal. Sheets also skip the thin-film rule that forced their normal up (which
+  was what made them look like panes of glass).
+* **Sheet shape:** three segments along the arc the water takes leaving the edge at its overflow speed (outflow / (cell x depth)),
+  `y = top - drop s^2`, thrown out up to 0.45 blocks, with per-vertex normals along the arc. At the brink the corner height stays at
+  70% of the water depth instead of dropping to the floor, so the surface no longer bulges up from the edge.

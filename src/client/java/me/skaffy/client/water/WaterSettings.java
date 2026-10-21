@@ -170,6 +170,12 @@ public final class WaterSettings {
 	public static float hfCurrentDrag = 0.15F;
 	/** Outflow over an edge (blocks^3/s) above which a falling sheet is drawn. */
 	public static float hfCurtainMinFlow = 0.005F;
+	/** How hard the player pushes heightfield water when moving through it (bow wave, wake, rings when jumping in); 0 turns it off. */
+	public static float hfStirStrength = 1.0F;
+	/** How white foam and falling water show on heightfield water (0 off, 1 normal). */
+	public static float hfFoam = 1.0F;
+	/** Seconds foam takes to fade to about a third once nothing churns the water any more. */
+	public static float hfFoamLife = 2.5F;
 	public static int hfMaxStepsPerFrame = 8;
 	/** When the surface everywhere rises or falls slower than this (blocks/s) for {@link #hfSleepSeconds}, the heightfield stops simulating until woken. */
 	public static float hfSleepRate = 0.002F;

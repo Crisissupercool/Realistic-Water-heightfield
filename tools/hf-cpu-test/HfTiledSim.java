@@ -20,6 +20,14 @@ final class HfTiledSim {
 	final float[] depth;
 	final int[] links;
 	final float[] flux;
+	/** Mirror of the foam buffer: two halves of one float per flux-page span, swapped every step. */
+	final float[] foam;
+	final int foamHalf;
+	int foamRead;
+	float foamLife = 2.5F;
+	/** Bodies stirring the water, 12 floats each in the Globals entity layout (see HfWorld.stir and hfStir). */
+	float[] stir = new float[0];
+	float stirRate = 8.0F;
 	float sleepRate = 0.002F;
 	float sleepSeconds = 1.0F;
 	float filmDepth = 0.1F;
@@ -35,6 +43,50 @@ final class HfTiledSim {
 		this.depth = new float[g.maxPages * this.ps];
 		this.links = new int[g.maxPages * this.ps];
 		this.flux = new float[g.maxFluxPages * this.ps * 8];
+		this.foamHalf = g.maxFluxPages * this.ps;
+		this.foam = new float[2 * this.foamHalf];
+	}
+
+	/** Mirror of hfStir: {vx, vz, height filled} for a column. */
+	float[] stirAt(int tile, int col, float floorY, float surfaceY) {
+		float[] r = new float[3];
+		int tn = this.g.tn;
+		float px = (this.g.tileX[tile] * tn + col % tn + 0.5F) / this.g.cpb;
+		float pz = (this.g.tileZ[tile] * tn + col / tn + 0.5F) / this.g.cpb;
+		for (int e = 0; e + 12 <= this.stir.length; e += 12) {
+			float[] b = this.stir;
+			float dx = px - 0.5F * (b[e] + b[e + 4]);
+			float dz = pz - 0.5F * (b[e + 2] + b[e + 6]);
+			float dist = (float) Math.sqrt(dx * dx + dz * dz);
+			float radius = 0.5F * Math.max(b[e + 4] - b[e], b[e + 6] - b[e + 2]);
+			float w = 1.0F - smoothstep(radius, radius + 0.35F, dist);
+			float sub = Math.min(b[e + 5], surfaceY) - Math.max(b[e + 1], floorY);
+			if (w <= 0.0F || sub <= 0.0F) {
+				continue;
+			}
+			w *= Math.clamp(1.0F - (surfaceY - b[e + 5]) / 1.5F, 0.0F, 1.0F);
+			float vx = b[e + 8];
+			float vz = b[e + 10];
+			if (dist > 0.05F) {
+				vx += dx / dist * b[e + 3];
+				vz += dz / dist * b[e + 3];
+			}
+			r[0] += vx * w * b[e + 7];
+			r[1] += vz * w * b[e + 7];
+			r[2] = Math.max(r[2], sub);
+		}
+		return r;
+	}
+
+	static float smoothstep(float a, float b, float x) {
+		float t = Math.clamp((x - a) / (b - a), 0.0F, 1.0F);
+		return t * t * (3.0F - 2.0F * t);
+	}
+
+	/** Foam of (tile, layer, col) as the last step wrote it, 0 when the tile is not simulated. */
+	float foamAt(int tile, int layer, int col) {
+		int fp = this.g.fluxPage[tile * 4 + layer];
+		return fp < 0 ? 0.0F : this.foam[this.foamRead * this.foamHalf + fp * this.ps + col];
 	}
 
 	private void writePages(int tile, HfTileGrid.Tile t) {
@@ -173,6 +225,8 @@ final class HfTiledSim {
 				float ca = this.g.ceilOf(ga);
 				float headA = fa + hA;
 				boolean film = hA <= HfCpuTest.MIN_FLOW;
+				float[] st = this.stirAt(tile, col, fa, Math.min(headA, ca));
+				float drag = 1.0F - (float) Math.exp(-this.stirRate * dt);
 				float[] out = new float[8];
 				float total = 0.0F;
 				for (int k = 0; k < 8; k++) {
@@ -200,6 +254,11 @@ final class HfTiledSim {
 					float wetB = Math.clamp(headB, lo, hi) - lo;
 					float area = cell * Math.max(wetA, wetB);
 					float q = this.flux[base + k] * keep + dt * 9.81F * area * (headA - headB) / cell;
+					if (st[2] > 0.0F) {
+						int d = k >> 1;
+						float target = (st[0] * HfTileGrid.DX[d] + st[1] * HfTileGrid.DZ[d]) * cell * Math.min(st[2], wetA);
+						q += drag * Math.max(target - q, 0.0F);
+					}
 					out[k] = Math.max(q, 0.0F);
 					total += out[k];
 				}
@@ -214,6 +273,10 @@ final class HfTiledSim {
 
 	void depthPass(float dt) {
 		float cell = this.g.cell;
+		int read = this.foamRead * this.foamHalf;
+		int write = (1 - this.foamRead) * this.foamHalf;
+		this.foamRead ^= 1;
+		float foamKeep = (float) Math.exp(-dt / Math.max(this.foamLife, 0.05F));
 		for (int tile : this.g.activeList) {
 			this.g.volume[tile] = 0.0;
 			this.g.maxDepth[tile] = 0.0F;
@@ -233,6 +296,11 @@ final class HfTiledSim {
 				float in = 0.0F;
 				float out = 0.0F;
 				float peak = 0.0F;
+				float old = this.depth[s];
+				float floorA = this.g.floorOf(this.geo[s]);
+				float foamA = this.foam[read + base / 8];
+				float foamIn = 0.0F;
+				float falling = 0.0F;
 				for (int k = 0; k < 8; k++) {
 					int nib = HfTileGrid.link(this.links[s], k);
 					if (nib == HfTileGrid.LINK_NONE) {
@@ -243,14 +311,31 @@ final class HfTiledSim {
 						continue;
 					}
 					float o = this.flux[base + k];
-					float fi = this.flux[this.fluxBase(nb[0], nb[1], nb[2]) + rev(k, nib)];
+					int nbBase = this.fluxBase(nb[0], nb[1], nb[2]);
+					float fi = this.flux[nbBase + rev(k, nib)];
 					out += o;
 					in += fi;
 					peak = Math.max(peak, Math.max(o, fi));
+					if (fi > 0.0F) {
+						foamIn += fi * this.foam[read + nbBase / 8];
+						if (this.g.floorOf(this.geo[this.span(nb[0], nb[1], nb[2])]) > floorA + old) {
+							falling += fi;
+						}
+					}
 				}
-				float old = this.depth[s];
-				float nh = Math.max(old + dt * (in - out) / (cell * cell), 0.0F);
+				float area = cell * cell;
+				float nh = Math.max(old + dt * (in - out) / area, 0.0F);
 				this.depth[s] = nh;
+				float speed = nh > 0.05F ? Math.min(peak / (cell * nh), 30.0F) : 0.0F;
+				float mass = foamA * old + dt * (foamIn - out * foamA) / area;
+				float f = nh > 1.0e-4F ? Math.clamp(mass / nh, 0.0F, 1.0F) * foamKeep : 0.0F;
+				f = Math.max(f, smoothstep(0.0F, 0.8F, falling / area));
+				f = Math.max(f, 0.8F * smoothstep(2.5F, 6.0F, speed));
+				float[] st = this.stirAt(tile, col, floorA, floorA + nh);
+				if (st[2] > 0.0F) {
+					f = Math.max(f, 0.6F * smoothstep(0.8F, 3.0F, (float) Math.hypot(st[0], st[1])));
+				}
+				this.foam[write + base / 8] = nh > 0.0F ? f : 0.0F;
 				this.g.volume[tile] += (double) nh * cell * cell;
 				this.g.maxDepth[tile] = Math.max(this.g.maxDepth[tile], nh);
 				if (nh > 0.05F) {
@@ -365,6 +450,8 @@ final class HfTiledSim {
 		HfTileGrid.Activation act = this.g.updateActive(frameDt, this.sleepRate, this.sleepSeconds, this.filmDepth, this.filmRate);
 		for (int p : act.newFluxPages) {
 			Arrays.fill(this.flux, p * this.ps * 8, (p + 1) * this.ps * 8, 0.0F);
+			Arrays.fill(this.foam, p * this.ps, (p + 1) * this.ps, 0.0F);
+			Arrays.fill(this.foam, this.foamHalf + p * this.ps, this.foamHalf + (p + 1) * this.ps, 0.0F);
 		}
 		this.pages = act.pages;
 		if (this.pages.length == 0) {

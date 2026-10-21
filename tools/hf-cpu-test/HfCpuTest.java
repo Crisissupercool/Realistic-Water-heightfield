@@ -18,6 +18,12 @@ public final class HfCpuTest {
 		return (bx, by, bz) -> solid.at(bx, by, bz) ? (1L << (C * C * C)) - 1L : 0L;
 	}
 
+	/** Water surface at block coordinates (x, z) of a single-layer tile at the origin. */
+	static float surfaceAt(HfTiledSim sim, int tile, float x, float z) {
+		int col = (int) (z * C) * sim.g.tn + (int) (x * C);
+		return sim.g.floorOf(sim.geo[sim.g.span(tile, 0, col)]) + sim.depthAt(tile, 0, col);
+	}
+
 	static void check(boolean ok, String what) {
 		System.out.println((ok ? "  ok   " : "  FAIL ") + what);
 		if (!ok) {
@@ -663,6 +669,87 @@ public final class HfCpuTest {
 			double before = tiled.volume();
 			tiled.inject(tile, (4 * C) * grid.tn + 4 * C, 66.5F, 1.0F);
 			check(Math.abs(tiled.volume() - before - 0.25) < 1.0e-4, "inject adds depth x cell area: +" + (tiled.volume() - before));
+		}
+
+		System.out.println("Stirring: a body wading through a pool pushes a bow wave and leaves a wake, volume exact");
+		{
+			Solid solid = (x, y, z) -> y < 64 || (x == 0 || x == 15 || z == 0 || z == 15) && y < 67;
+			HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 4, 16, 16);
+			HfTiledSim tiled = new HfTiledSim(grid, voxels(solid));
+			tiled.maxNewTiles = 0;
+			int tn = grid.tn;
+			IntPredicate pool = col -> col % tn >= C && col % tn < 15 * C && col / tn >= C && col / tn < 15 * C;
+			int tile = tiled.addTile(0, 0, (l, col) -> l == 0 && pool.test(col) ? 1.2 : 0.0);
+			double v0 = tiled.volume();
+			float rest = 65.2F;
+			float bow = 0.0F;
+			float trough = 0.0F;
+			float side = 0.0F;
+			float foamPeak = 0.0F;
+			for (int f = 0; f < 240; f++) {
+				float t = f / 60.0F;
+				boolean moving = t < 3.6F;
+				float x = 3.0F + 2.5F * Math.min(t, 3.6F);
+				tiled.stir = new float[]{x - 0.3F, 64.0F, 7.7F, 0.0F, x + 0.3F, 65.8F, 8.3F, 1.0F, moving ? 2.5F : 0.0F, 0.0F, 0.0F, 0.0F};
+				grid.quiet[tile] = 0.0F;
+				tiled.frame();
+				if (moving && x > 4.0F && x < 11.0F) {
+					bow = Math.max(bow, surfaceAt(tiled, tile, x + 0.75F, 8.0F) - rest);
+					trough = Math.min(trough, surfaceAt(tiled, tile, x - 0.75F, 8.0F) - rest);
+					foamPeak = Math.max(foamPeak, tiled.foamAt(tile, 0, (int) (8.0F * C) * tn + (int) (x * C)));
+				}
+				side = Math.max(side, Math.abs(surfaceAt(tiled, tile, 7.0F, 10.5F) - rest));
+			}
+			check(bow > 0.1F && bow < 0.4F, String.format("wading at 2.5 b/s through 1.2 deep water: bow wave ahead +%.3f", bow));
+			check(trough < -0.02F, String.format("trough behind it: %.3f", trough));
+			check(side > 0.005F, String.format("the wake spreads sideways: %.3f at 2.5 blocks", side));
+			check(foamPeak > 0.2F, String.format("foam stirred up around the body: %.2f", foamPeak));
+			check(Math.abs(tiled.volume() - v0) / v0 < 1.0e-5, String.format("volume %.4f -> %.4f", v0, tiled.volume()));
+
+			HfTileGrid g2 = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 4, 16, 16);
+			HfTiledSim still = new HfTiledSim(g2, voxels(solid));
+			still.maxNewTiles = 0;
+			int t2 = still.addTile(0, 0, (l, col) -> l == 0 && pool.test(col) ? 1.2 : 0.0);
+			float wave = 0.0F;
+			for (int f = 0; f < 180; f++) {
+				// Jumping in: crossing the surface for a quarter second pushes water out around the body.
+				float plunge = f < 15 ? 6.0F : 0.0F;
+				still.stir = new float[]{7.7F, 64.2F, 7.7F, plunge, 8.3F, 66.0F, 8.3F, 1.0F, 0.0F, -8.0F, 0.0F, 0.0F};
+				g2.quiet[t2] = 0.0F;
+				still.frame();
+				wave = Math.max(wave, Math.abs(surfaceAt(still, t2, 11.0F, 8.0F) - rest));
+			}
+			check(wave > 0.004F, String.format("jumping in sends a ring out: %.3f at 3 blocks", wave));
+			check(Math.abs(still.volume() - v0) / v0 < 1.0e-5, "volume kept");
+		}
+
+		System.out.println("Foam: water pouring off a 2-block ledge turns white where it lands, then fades");
+		{
+			Solid solid = (x, y, z) -> y < 64 || x < 6 && y < 66 || (x == 0 || x == 15 || z == 0 || z == 15) && y < 69;
+			HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 4, 16, 16);
+			HfTiledSim tiled = new HfTiledSim(grid, voxels(solid));
+			tiled.maxNewTiles = 0;
+			int tn = grid.tn;
+			int tile = tiled.addTile(0, 0, (l, col) -> l == 0 && col % tn >= C && col % tn < 6 * C && col / tn >= C && col / tn < 15 * C ? 1.0 : 0.0);
+			double v0 = tiled.volume();
+			float landing = 0.0F;
+			float upstream = 0.0F;
+			for (int f = 0; f < 90; f++) {
+				tiled.frame();
+				landing = Math.max(landing, tiled.foamAt(tile, 0, (8 * C) * tn + 6 * C));
+				upstream = Math.max(upstream, tiled.foamAt(tile, 0, (8 * C) * tn + 2 * C));
+			}
+			check(landing > 0.5F, String.format("foam where the water lands: %.2f", landing));
+			check(upstream < 0.05F, String.format("calm water on the ledge stays clear: %.3f", upstream));
+			float later = 0.0F;
+			for (int f = 0; f < 1800; f++) {
+				tiled.frame();
+			}
+			for (int col = 0; col < tn * tn; col++) {
+				later = Math.max(later, tiled.foamAt(tile, 0, col));
+			}
+			check(later < 0.05F, String.format("30 s later the foam has faded: %.3f", later));
+			check(Math.abs(tiled.volume() - v0) / v0 < 1.0e-5, "volume kept");
 		}
 
 		System.out.println(failures == 0 ? "ALL PASSED" : failures + " FAILED");

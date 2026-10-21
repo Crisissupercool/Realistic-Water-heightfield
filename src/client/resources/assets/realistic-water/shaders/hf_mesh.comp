@@ -23,10 +23,31 @@ layout(std430, binding = 11) buffer MeshCounters { uint meshCounters[]; };
 #define HF_QUAD_CAP uint(hp.p2.x)
 // WaterSettings.hfDebugMesh: 0 normal, 1 tops only (no side walls), 2 side walls only.
 #define HF_DEBUG int(hp.p1.w)
+// WaterSettings.hfFoam (how white foam shows) and the half of the foam buffer the last solver step wrote.
+#define HF_FOAM_GAIN hp.p1.x
+#define HF_FOAM_READ uint(hp.p2.y)
 
 const uint OPEN = 0x80000000u;
 const float WALL_INSET = 0.01;
 const float CURTAIN_OUT = 0.06;
+// Falling sheets are drawn as a few segments along the arc water takes when it leaves an edge.
+const int CURTAIN_SEGMENTS = 3;
+const float CURTAIN_MAX_THROW = 0.45;
+const float GRAVITY = 9.81;
+
+// Heightfield vertices (OPEN set): 12 + 12 bit octahedral normal, 6 bit aeration (foam, falling water), wall flag, OPEN.
+// mesh.vert decodes this; the fluid meshes keep packNormal's format (OPEN clear).
+uint hfPack(vec3 n, bool wall, float aer) {
+    n /= abs(n.x) + abs(n.y) + abs(n.z);
+    vec2 e = n.z >= 0.0 ? n.xy : (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+    uvec2 q = uvec2(clamp(e * 0.5 + 0.5, 0.0, 1.0) * 4095.0 + 0.5);
+    uint a = uint(clamp(aer * HF_FOAM_GAIN, 0.0, 1.0) * 63.0 + 0.5);
+    return q.x | (q.y << 12) | (a << 24) | (wall ? 0x40000000u : 0u) | OPEN;
+}
+
+float foamOf(HfSpan t) {
+    return t.flux == HF_NONE ? 0.0 : foam[HF_FOAM_READ + hfFoamIndex(t)];
+}
 
 bool wet(uint t) {
     return depth[t] > HF_RENDER_DRY;
@@ -74,8 +95,14 @@ float sampleHeight(uint s, bool ok, uint t, float fl, float top) {
         // Water at a different level (a roof, a ledge, the top of a waterfall) is a separate surface: keep our own height.
         return joined(s, t) ? surfaceOf(t) : top;
     }
+    float nf = hfGeo(t).x;
+    // Over a drop the water keeps most of its depth up to the brink (it pours off there); without this the surface would
+    // bulge up from the edge and the falling sheet would start below it.
+    if (nf < fl - 0.05) {
+        return mix(fl, top, 0.7);
+    }
     // A dry neighbor pulls toward its floor (shorelines), but never below our floor or above our surface.
-    return clamp(hfGeo(t).x, fl, top);
+    return clamp(nf, fl, top);
 }
 
 // Height and smooth normal at one corner, from the (up to) four spans sharing it. Adjacent quads compute the same
@@ -96,28 +123,43 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce) {
     float hx = sampleHeight(a.span, okX, nx.span, fl, top);
     float hz = sampleHeight(a.span, okZ, nz.span, fl, top);
     float hd = okD ? sampleHeight(a.span, true, nd.span, fl, top) : 0.5 * (hx + hz);
+    // Foam averaged over the spans of this surface that share the corner, so it fades smoothly across quads.
+    float aer = foamOf(a);
+    float shares = 1.0;
+    if (okX && joined(a.span, nx.span)) {
+        aer += foamOf(nx);
+        shares += 1.0;
+    }
+    if (okZ && joined(a.span, nz.span)) {
+        aer += foamOf(nz);
+        shares += 1.0;
+    }
+    if (okD && joined(a.span, nd.span)) {
+        aer += foamOf(nd);
+        shares += 1.0;
+    }
     float c = HF_CELL;
     float dhdx = ((hx - hs) + (hd - hz)) * 0.5 / c * float(sx);
     float dhdz = ((hz - hs) + (hd - hx)) * 0.5 / c * float(sz);
     float h = clamp(0.25 * (hs + hx + hz + hd), fl, ce);
     h -= HF_SURFACE_DROP * clamp(h - fl, 0.0, 1.0);
     vec3 n = normalize(vec3(-dhdx, 1.0, -dhdz));
-    return vec4(n.x, h, n.z, 0.0);
+    return vec4(n.x, h, n.z, aer / shares);
 }
 
 vec3 cornerNormal(vec4 c) {
     return normalize(vec3(c.x, sqrt(max(1.0 - c.x * c.x - c.z * c.z, 1e-4)), c.z));
 }
 
-void emitTop(uint q, vec3 a, vec3 b, vec3 c, vec3 d, vec3 na, vec3 nb, vec3 nc, vec3 nd) {
+void emitTop(uint q, vec3 a, vec3 b, vec3 c, vec3 d, vec4 ca, vec4 cb, vec4 cc, vec4 cd) {
     if (q >= HF_QUAD_CAP) {
         return;
     }
     uint v = q * 4u;
-    verts[v] = vec4(a, uintBitsToFloat(packNormal(na, false) | OPEN));
-    verts[v + 1u] = vec4(b, uintBitsToFloat(packNormal(nb, false) | OPEN));
-    verts[v + 2u] = vec4(c, uintBitsToFloat(packNormal(nc, false) | OPEN));
-    verts[v + 3u] = vec4(d, uintBitsToFloat(packNormal(nd, false) | OPEN));
+    verts[v] = vec4(a, uintBitsToFloat(hfPack(cornerNormal(ca), false, ca.w)));
+    verts[v + 1u] = vec4(b, uintBitsToFloat(hfPack(cornerNormal(cb), false, cb.w)));
+    verts[v + 2u] = vec4(c, uintBitsToFloat(hfPack(cornerNormal(cc), false, cc.w)));
+    verts[v + 3u] = vec4(d, uintBitsToFloat(hfPack(cornerNormal(cd), false, cd.w)));
     quads[q] = uvec4(v, v + 1u, v + 2u, v + 3u);
 }
 
@@ -125,13 +167,39 @@ void emit(uint q, vec3 a, vec3 b, vec3 c, vec3 d, vec3 normal, bool wall) {
     if (q >= HF_QUAD_CAP) {
         return;
     }
-    float packed = uintBitsToFloat(packNormal(normal, wall) | OPEN);
+    float packed = uintBitsToFloat(hfPack(normal, wall, 0.0));
     uint v = q * 4u;
     verts[v] = vec4(a, packed);
     verts[v + 1u] = vec4(b, packed);
     verts[v + 2u] = vec4(c, packed);
     verts[v + 3u] = vec4(d, packed);
     quads[q] = uvec4(v, v + 1u, v + 2u, v + 3u);
+}
+
+// A falling sheet from the brink e0..e1 (xz at the edge, y = water height there) down to height land, thrown outward.
+// Each segment is one quad; vertices follow y = top - (top - land) s^2, distance out = CURTAIN_OUT + throw s, with the arc's normal.
+void emitCurtain(uint q, vec2 outward, vec3 e0, vec3 e1, float land, float throwOut, float aerTop) {
+    vec3 dir = vec3(outward.x, 0.0, outward.y);
+    float drop = max(max(e0.y, e1.y) - land, 0.0);
+    float aerBottom = clamp(0.3 + 0.25 * drop, 0.3, 0.95);
+    for (int i = 0; i < CURTAIN_SEGMENTS; i++) {
+        if (q >= HF_QUAD_CAP) {
+            return;
+        }
+        uint v = q * 4u;
+        for (int j = 0; j < 4; j++) {
+            // Vertex order bottom e0, bottom e1, top e1, top e0, so the face points out like the side walls.
+            float s = float(i + (j < 2 ? 1 : 0)) / float(CURTAIN_SEGMENTS);
+            vec3 e = j == 0 || j == 3 ? e0 : e1;
+            float h = max(e.y - land, 0.0);
+            vec3 p = vec3(e.x, e.y - h * s * s, e.z) + dir * (CURTAIN_OUT + throwOut * s);
+            vec3 n = normalize(dir * max(2.0 * h * s, 0.25) + vec3(0.0, throwOut, 0.0));
+            float aer = max(mix(aerTop, aerBottom, s), 0.1);
+            verts[v + uint(j)] = vec4(p, uintBitsToFloat(hfPack(n, true, aer)));
+        }
+        quads[q] = uvec4(v, v + 1u, v + 2u, v + 3u);
+        q++;
+    }
 }
 
 void main() {
@@ -166,11 +234,13 @@ void main() {
     uint curtainMask = 0u;
     float inset[4];
     float curtainBottom[4];
+    float curtainThrow[4];
     for (int d = 0; d < 4; d++) {
         HfSpan t;
         bool ok = pick(a, d, t);
         inset[d] = ok ? 0.0 : WALL_INSET;
         curtainBottom[d] = 0.0;
+        curtainThrow[d] = 0.0;
         if (!ok || !joined(s, t.span)) {
             wallMask |= 1u << d;
         }
@@ -181,6 +251,9 @@ void main() {
             if (land < fl - 0.05 && q > HF_CURTAIN_MIN) {
                 curtainMask |= 1u << d;
                 curtainBottom[d] = land - oy;
+                // Leaving the edge at the overflow speed, the water flies out until it has fallen to where it lands.
+                float speed = min(q / (HF_CELL * max(top - fl, 0.03)), 4.0);
+                curtainThrow[d] = min(speed * sqrt(2.0 * (top - land) / GRAVITY), CURTAIN_MAX_THROW);
             }
         }
     }
@@ -188,7 +261,7 @@ void main() {
         wallMask = 0u;
     }
     bool drawTop = HF_DEBUG != 2;
-    uint count = (drawTop ? 1u : 0u) + uint(bitCount(wallMask)) + uint(bitCount(curtainMask));
+    uint count = (drawTop ? 1u : 0u) + uint(bitCount(wallMask)) + uint(bitCount(curtainMask) * CURTAIN_SEGMENTS);
     if (count == 0u) {
         return;
     }
@@ -204,8 +277,7 @@ void main() {
     float z1 = z0 + c;
     float b = fl - oy;
 
-    if (drawTop) emitTop(q++, vec3(x0, h00, z0), vec3(x1, h10, z0), vec3(x1, h11, z1), vec3(x0, h01, z1),
-        cornerNormal(c00), cornerNormal(c10), cornerNormal(c11), cornerNormal(c01));
+    if (drawTop) emitTop(q++, vec3(x0, h00, z0), vec3(x1, h10, z0), vec3(x1, h11, z1), vec3(x0, h01, z1), c00, c10, c11, c01);
     if ((wallMask & 1u) != 0u) {
         float x = x1 - inset[0];
         emit(q++, vec3(x, b, z0), vec3(x, b, z1), vec3(x, h11, z1), vec3(x, h10, z0), vec3(1.0, 0.0, 0.0), true);
@@ -222,24 +294,21 @@ void main() {
         float z = z0 + inset[3];
         emit(q++, vec3(x0, b, z), vec3(x1, b, z), vec3(x1, h10, z), vec3(x0, h00, z), vec3(0.0, 0.0, -1.0), true);
     }
+    float aerTop = foamOf(a);
+    uint seg = uint(CURTAIN_SEGMENTS);
     if ((curtainMask & 1u) != 0u) {
-        float x = x1 + CURTAIN_OUT;
-        float y = curtainBottom[0];
-        emit(q++, vec3(x, y, z0), vec3(x, y, z1), vec3(x, h11, z1), vec3(x, h10, z0), vec3(1.0, 0.0, 0.0), true);
+        emitCurtain(q, vec2(1.0, 0.0), vec3(x1, h10, z0), vec3(x1, h11, z1), curtainBottom[0], curtainThrow[0], aerTop);
+        q += seg;
     }
     if ((curtainMask & 2u) != 0u) {
-        float x = x0 - CURTAIN_OUT;
-        float y = curtainBottom[1];
-        emit(q++, vec3(x, y, z1), vec3(x, y, z0), vec3(x, h00, z0), vec3(x, h01, z1), vec3(-1.0, 0.0, 0.0), true);
+        emitCurtain(q, vec2(-1.0, 0.0), vec3(x0, h01, z1), vec3(x0, h00, z0), curtainBottom[1], curtainThrow[1], aerTop);
+        q += seg;
     }
     if ((curtainMask & 4u) != 0u) {
-        float z = z1 + CURTAIN_OUT;
-        float y = curtainBottom[2];
-        emit(q++, vec3(x1, y, z), vec3(x0, y, z), vec3(x0, h01, z), vec3(x1, h11, z), vec3(0.0, 0.0, 1.0), true);
+        emitCurtain(q, vec2(0.0, 1.0), vec3(x1, h11, z1), vec3(x0, h01, z1), curtainBottom[2], curtainThrow[2], aerTop);
+        q += seg;
     }
     if ((curtainMask & 8u) != 0u) {
-        float z = z0 - CURTAIN_OUT;
-        float y = curtainBottom[3];
-        emit(q++, vec3(x0, y, z), vec3(x1, y, z), vec3(x1, h10, z), vec3(x0, h00, z), vec3(0.0, 0.0, -1.0), true);
+        emitCurtain(q, vec2(0.0, -1.0), vec3(x0, h00, z0), vec3(x1, h10, z0), curtainBottom[3], curtainThrow[3], aerTop);
     }
 }

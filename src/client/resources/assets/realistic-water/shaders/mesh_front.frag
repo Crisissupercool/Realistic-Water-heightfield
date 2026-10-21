@@ -4,6 +4,7 @@ layout(std430, binding = 3) readonly buffer ViewState { vec4 viewState; };
 layout(location = 0) in vec3 vView;
 layout(location = 1) in vec3 vNormal;
 layout(location = 2) in float vWall;
+layout(location = 4) in float vAer;
 layout(location = 0) out vec4 outG;
 layout(location = 1) out float outMat;
 
@@ -16,5 +17,6 @@ void main() {
         discard;
     }
     outG = vec4(normalize(vNormal), dist);
-    outMat = G.matA.x;
+    // Aeration rides in the material id below the 0.25 tolerance composite.frag allows (0 for the fluid meshes).
+    outMat = G.matA.x + clamp(vAer, 0.0, 1.0) * 0.2;
 }

@@ -144,3 +144,47 @@ bool hfNeighbor(HfSpan a, uint k, uint nib, bool requireActive, out HfSpan b) {
     b = hfMake(uint(tile), layer, uint(c.y * HF_TN + c.x), uint(page));
     return true;
 }
+
+// Foam (aeration, 0..1) per simulated span, kept on the flux pages: two halves that swap every solver step, because the
+// depth pass reads its neighbors' foam while writing its own. Spans of tiles that are not simulated have no foam.
+layout(std430, binding = 15) buffer Foam { float foam[]; };
+
+uint hfFoamIndex(HfSpan a) {
+    return a.flux / HF_LINKS;
+}
+
+// Bodies moving through the water (G.caps.z entries of G.ent, written by HfWorld.stir): x, z relative to the domain origin
+// and y absolute, in blocks; ent[0].w is the radial push speed of a body crossing the surface, ent[1].w the strength.
+// Returns the velocity (blocks/s) they push this column's water at, and in z how much of the column's height they fill.
+const float HF_STIR_REACH = 0.35;
+
+vec3 hfStir(HfSpan a, float floorY, float surfaceY) {
+    vec3 r = vec3(0.0);
+    int n = min(G.caps.z, MAX_ENTITIES);
+    if (n <= 0) {
+        return r;
+    }
+    ivec2 t = tileInfo[a.tile * 4u + 1u].xy;
+    vec2 p = (vec2(t * HF_TN + hfColumn(a.col)) + 0.5) / float(HF_CPB);
+    for (int e = 0; e < n; e++) {
+        vec4 lo = G.ent[e * 3];
+        vec4 hi = G.ent[e * 3 + 1];
+        vec2 d = p - 0.5 * (lo.xz + hi.xz);
+        float dist = length(d);
+        float radius = 0.5 * max(hi.x - lo.x, hi.z - lo.z);
+        float w = 1.0 - smoothstep(radius, radius + HF_STIR_REACH, dist);
+        float sub = min(hi.y, surfaceY) - max(lo.y, floorY);
+        if (w <= 0.0 || sub <= 0.0) {
+            continue;
+        }
+        // A body well below the surface hardly moves it.
+        w *= clamp(1.0 - (surfaceY - hi.y) / 1.5, 0.0, 1.0);
+        vec2 v = G.ent[e * 3 + 2].xz;
+        if (dist > 0.05) {
+            v += d / dist * lo.w;
+        }
+        r.xy += v * (w * hi.w);
+        r.z = max(r.z, sub);
+    }
+    return r;
+}

@@ -1,5 +1,7 @@
 #version 450
-// Pass 1 of the virtual-pipe step: outflow from each span through each of its links.
+// Pass 1 of the virtual-pipe step: outflow from each span through each of its links. Bodies moving through the water
+// (hfStir) drag it along: the flow through a link facing their motion is pulled toward their speed times the wetted face, so
+// water piles up in front of them (bow wave) and drains in behind (wake) while the volume stays exact.
 #include "hf_common.glsl"
 layout(local_size_x = 256) in;
 layout(std430, binding = 2) readonly buffer Depth { float depth[]; };
@@ -12,6 +14,9 @@ layout(std430, binding = 3) buffer Flux { float flux[]; };
 // Water thinner than this does not spread sideways: it stays as a film, so floods stop spreading over open ground.
 // It still drains over an edge into a neighbor whose water surface lies below its floor (holes, steps, slopes).
 #define HF_MIN_FLOW hp.p1.z
+// How fast (1/s) a body drags the water around it up to its own speed. A drag, not a hard push: the water can still flow back,
+// so a fast body makes a wave rather than shoving a wall of water ahead of it.
+const float HF_STIR_RATE = 8.0;
 
 void main() {
     HfSpan a;
@@ -29,6 +34,8 @@ void main() {
     }
     float headA = ga.x + hA;
     bool film = hA <= HF_MIN_FLOW;
+    vec3 stir = hfStir(a, ga.x, min(headA, ga.y));
+    float drag = 1.0 - exp(-HF_STIR_RATE * HF_DT);
     float outflow[8];
     float total = 0.0;
     for (uint k = 0u; k < HF_LINKS; k++) {
@@ -53,6 +60,11 @@ void main() {
         float wetB = clamp(headB, lo, hi) - lo;
         float area = HF_CELL * max(wetA, wetB);
         float q = flux[base + k] * HF_KEEP + HF_DT * HF_G * area * (headA - headB) / HF_CELL;
+        if (stir.z > 0.0) {
+            uint d = k >> 1;
+            float target = dot(stir.xy, vec2(HF_DX[d], HF_DZ[d])) * HF_CELL * min(stir.z, wetA);
+            q += drag * max(target - q, 0.0);
+        }
         outflow[k] = max(q, 0.0);
         total += outflow[k];
     }

@@ -132,15 +132,67 @@ vec3 shadeAboveLava(vec2 uv, vec3 n, float fd, float ambient) {
     return core + rim + sunSpecular(n, V, footprint) * vec3(1.0, 0.65, 0.25);
 }
 
-vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient) {
+float foamLace(vec2 p, float coverage, float footprint) {
+    float size = max(G.shadeB.w, 1e-3);
+    vec2 q = p / size;
+    ivec2 cell = ivec2(floor(q));
+    float f1 = 9.0;
+    float f2 = 9.0;
+    for (int k = 0; k < 9; k++) {
+        ivec2 c = cell + ivec2(k % 3 - 1, k / 3 - 1);
+        uint s = hash(uint(c.x) * 73856093u ^ uint(c.y) * 19349663u);
+        vec2 feature = vec2(c) + 0.1 + 0.8 * vec2(rand(s), rand(s));
+        float d = length(q - feature);
+        if (d < f1) {
+            f2 = f1;
+            f1 = d;
+        } else if (d < f2) {
+            f2 = d;
+        }
+    }
+    float wall = 1.0 - smoothstep(0.0, 0.06 + 0.6 * coverage, f2 - f1);
+    float detail = smoothstep(0.7, 2.5, size / max(footprint, 1e-5));
+    return mix(0.55, wall, detail);
+}
+
+float noiseHash(vec2 c) {
+    return float(hash(uint(int(c.x)) * 73856093u ^ uint(int(c.y)) * 19349663u)) * (1.0 / 4294967295.0);
+}
+
+float valueNoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(noiseHash(i), noiseHash(i + vec2(1.0, 0.0)), f.x), mix(noiseHash(i + vec2(0.0, 1.0)), noiseHash(i + 1.0), f.x), f.y);
+}
+
+// Aerated water (heightfield only, aer from the material id): falling sheets get streaks running down them and a bumpy normal
+// instead of the flat glass look; foam on the surface gets the same lace as the whitewater foam.
+vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, float aer) {
     vec3 P = viewPosAt(uv, fd);
     vec3 V = normalize(-P);
     n = dot(n, V) < 0.0 ? -n : n;
     float footprint = pixelFootprint(fd);
+    vec3 nWorld = normalize(mat3(G.invView) * n);
+    vec3 world = G.misc.yzw + (G.invView * vec4(P, 0.0)).xyz;
+    bool sheet = aer > 0.0 && abs(nWorld.y) < 0.7;
+    float streaks = 0.5;
+    if (sheet) {
+        vec2 along = normalize(vec2(-nWorld.z, nWorld.x) + vec2(1.0e-4, 0.0));
+        float u = dot(world.xz, along);
+        float t = G.simB.z;
+        float detail = smoothstep(1.0, 3.0, 0.14 / max(footprint, 1.0e-5));
+        float s1 = valueNoise(vec2(u * 7.0, (world.y + t * 3.5) * 0.7));
+        float s2 = valueNoise(vec2(u * 15.0 + 3.1, (world.y + t * 4.5) * 1.3));
+        streaks = mix(0.5, s1 * 0.65 + s2 * 0.35, detail);
+        vec3 side = mat3(G.view) * vec3(along.x, 0.0, along.y);
+        n = normalize(n + side * ((s1 - 0.5) * 0.8 * detail));
+    }
     float thickness = max(texture(thicknessTex, uv).r, 0.0);
     vec3 upV = normalize(mat3(G.view) * vec3(0.0, 1.0, 0.0));
     float vertical = thickness * abs(dot(V, upV));
-    float film = 1.0 - smoothstep(0.02, max(G.shadeB.z, 0.03), vertical);
+    // Thin films lie flat; a falling sheet is thin too but must keep its own normal.
+    float film = sheet ? 0.0 : 1.0 - smoothstep(0.02, max(G.shadeB.z, 0.03), vertical);
     n = normalize(mix(n, upV, film * 0.9));
     vec3 wrinkled = rippleNormal(n, P, footprint);
     n = normalize(mix(n, wrinkled, smoothstep(0.0, 0.15, dot(wrinkled, V))));
@@ -167,31 +219,14 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient) 
     vec3 ssr = traceReflection(P + n * 0.05, Rv, hit);
     vec3 reflection = mix(skyColor(Rw), ssr, hit);
     float F = 0.02 + 0.98 * pow(1.0 - clamp(dot(n, V), 0.0, 1.0), 5.0);
-    return mix(water, reflection, F) + sunSpecular(n, V, footprint);
+    vec3 color = mix(water, reflection, F) + sunSpecular(n, V, footprint);
+    if (aer > 0.0) {
+        float cover = sheet ? aer * (0.35 + 0.9 * smoothstep(0.3, 0.75, streaks)) : aer * 1.2 * foamLace(world.xz, aer, footprint);
+        color = mix(color, vec3(0.9, 0.94, 0.96) * mix(0.25, 1.0, ambient), clamp(cover, 0.0, 0.95));
+    }
+    return color;
 }
 
-float foamLace(vec2 p, float coverage, float footprint) {
-    float size = max(G.shadeB.w, 1e-3);
-    vec2 q = p / size;
-    ivec2 cell = ivec2(floor(q));
-    float f1 = 9.0;
-    float f2 = 9.0;
-    for (int k = 0; k < 9; k++) {
-        ivec2 c = cell + ivec2(k % 3 - 1, k / 3 - 1);
-        uint s = hash(uint(c.x) * 73856093u ^ uint(c.y) * 19349663u);
-        vec2 feature = vec2(c) + 0.1 + 0.8 * vec2(rand(s), rand(s));
-        float d = length(q - feature);
-        if (d < f1) {
-            f2 = f1;
-            f1 = d;
-        } else if (d < f2) {
-            f2 = d;
-        }
-    }
-    float wall = 1.0 - smoothstep(0.0, 0.06 + 0.6 * coverage, f2 - f1);
-    float detail = smoothstep(0.7, 2.5, size / max(footprint, 1e-5));
-    return mix(0.55, wall, detail);
-}
 
 vec3 shadeSurfaceFromBelow(vec2 uv, vec3 n, float fd, vec3 deep) {
     vec3 P = viewPosAt(uv, fd);
@@ -258,7 +293,8 @@ void main() {
         float fog = G.scatter.w * G.misc.x;
         color = color * exp(-G.absorb.rgb * visible * G.misc.x) + deep * (1.0 - exp(-fog * visible));
     } else if (hasFluid) {
-        color = lavaPass ? shadeAboveLava(uv, g.xyz, fd, ambient) : shadeAboveWater(uv, g.xyz, fd, sceneDist, ambient);
+        float aer = matTagged ? clamp(matId / 0.2, 0.0, 1.0) : 0.0;
+        color = lavaPass ? shadeAboveLava(uv, g.xyz, fd, ambient) : shadeAboveWater(uv, g.xyz, fd, sceneDist, ambient, aer);
         vec4 clip = G.proj * vec4(viewPosAt(uv, fd), 1.0);
         outDepth = clip.z / clip.w;
     }

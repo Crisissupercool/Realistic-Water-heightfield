@@ -1,6 +1,7 @@
 #version 450
 // Pass 2 of the virtual-pipe step: apply in- and outflow to each span's depth, and reduce per-group stats
 // (volume, max depth, max speed, max surface rate, border-growth bits) for mass checks, the CFL step, sleeping and tile growth.
+// Also carries the foam along with the water and adds new foam where water falls in, runs fast or is stirred by a body.
 #include "hf_common.glsl"
 layout(local_size_x = 256) in;
 layout(std430, binding = 2) buffer Depth { float depth[]; };
@@ -13,6 +14,15 @@ layout(std430, binding = 8) writeonly buffer Stats { vec4 stats[]; };
 #define HF_MAX_SPEED hp.p1.x
 // Same as HF_MIN_FLOW in hf_flux.comp: only water that can still flow out asks for a new tile.
 #define HF_GROW_DEPTH hp.p1.z
+// Foam left after one step (exp(-dt / life)), and which half of the foam buffer this step reads and writes.
+#define HF_FOAM_KEEP hp.p1.w
+#define HF_FOAM_READ uint(hp.p2.x)
+#define HF_FOAM_WRITE uint(hp.p2.y)
+// Rate (blocks of depth per second) of water falling into a span that makes it fully white; flow speeds (blocks/s) over which
+// fast water turns white; body speeds over which a body stirs up foam.
+const float FOAM_FALL_RATE = 0.8;
+const vec2 FOAM_FAST = vec2(2.5, 6.0);
+const vec2 FOAM_STIR = vec2(0.8, 3.0);
 
 shared vec4 reduction[256];
 shared uint borderBits;
@@ -50,6 +60,11 @@ void main() {
         float inflow = 0.0;
         float outflow = 0.0;
         float peak = 0.0;
+        float old = depth[a.span];
+        float floorA = hfGeo(a.span).x;
+        float foamA = foam[HF_FOAM_READ + hfFoamIndex(a)];
+        float foamIn = 0.0;
+        float falling = 0.0;
         for (uint k = 0u; k < HF_LINKS; k++) {
             uint nib = hfLink(a, k);
             HfSpan b;
@@ -61,12 +76,30 @@ void main() {
             outflow += o;
             inflow += i;
             peak = max(peak, max(o, i));
+            if (i > 0.0) {
+                foamIn += i * foam[HF_FOAM_READ + hfFoamIndex(b)];
+                // Water arriving from a span whose floor lies above our surface drops in: a waterfall or a step.
+                if (hfGeo(b.span).x > floorA + old) {
+                    falling += i;
+                }
+            }
         }
-        float old = depth[a.span];
-        float h = max(old + HF_DT * (inflow - outflow) / (HF_CELL * HF_CELL), 0.0);
+        float area = HF_CELL * HF_CELL;
+        float h = max(old + HF_DT * (inflow - outflow) / area, 0.0);
         depth[a.span] = h;
         // Thin films give meaningless speeds (flux / tiny depth), so they are left out of the CFL estimate.
         float speed = h > 0.05 ? min(peak / (HF_CELL * h), HF_MAX_SPEED) : 0.0;
+
+        // Foam moves with the water (upwind, like the depth itself), fades, and is renewed where the water is churned.
+        float mass = foamA * old + HF_DT * (foamIn - outflow * foamA) / area;
+        float f = h > 1.0e-4 ? clamp(mass / h, 0.0, 1.0) * HF_FOAM_KEEP : 0.0;
+        f = max(f, smoothstep(0.0, FOAM_FALL_RATE, falling / area));
+        f = max(f, 0.8 * smoothstep(FOAM_FAST.x, FOAM_FAST.y, speed));
+        vec3 stir = hfStir(a, floorA, floorA + h);
+        if (stir.z > 0.0) {
+            f = max(f, 0.6 * smoothstep(FOAM_STIR.x, FOAM_STIR.y, length(stir.xy)));
+        }
+        foam[HF_FOAM_WRITE + hfFoamIndex(a)] = h > 0.0 ? f : 0.0;
         mine = vec4(h * HF_CELL * HF_CELL, h, speed, abs(h - old) / HF_DT);
         uint bits = growthBits(a, h);
         if (bits != 0u) {

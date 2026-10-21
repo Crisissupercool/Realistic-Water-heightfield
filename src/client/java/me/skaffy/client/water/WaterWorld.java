@@ -947,6 +947,8 @@ public final class WaterWorld {
 				this.hfWorld.addTileFromBlocks(level, hf, t[0], t[1], null);
 			}
 		}
+		// Before planning, so a player moving through sleeping water wakes it this frame.
+		float[] stir = running ? this.hfWorld.stir(mc, hf) : new float[0];
 		if (running) {
 			act = grid.updateActive(frameDt, WaterSettings.hfSleepRate, WaterSettings.hfSleepSeconds, WaterSettings.hfFilmDepth,
 				WaterSettings.hfFilmSleepRate);
@@ -961,7 +963,7 @@ public final class WaterWorld {
 		}
 		int o = Vk.ringSlot() * UBO_SLOT;
 		hf.lastDt = dt;
-		this.writeHfGlobals(mc, hf, this.hfUbo.mapped(), o, width, height);
+		this.writeHfGlobals(mc, hf, this.hfUbo.mapped(), o, width, height, stir);
 		this.hfUbo.flush(o, UBO_SIZE);
 		Desc ubo = Desc.ubo(this.hfUbo, o, UBO_SIZE);
 		hf.record(cb, ubo, act, steps, dt);
@@ -1178,10 +1180,15 @@ public final class WaterWorld {
 	}
 
 	/** UBO for the heightfield: the shared shading fields plus the few simulation fields its shaders and the composite pass read. */
-	private void writeHfGlobals(Minecraft mc, HfDomain hf, ByteBuffer b, int o, int width, int height) {
+	private void writeHfGlobals(Minecraft mc, HfDomain hf, ByteBuffer b, int o, int width, int height, float[] stir) {
 		this.writeShading(b, o, mc, hf.originX, hf.originY, hf.originZ, 1.0F, hf.cellsPerBlock, Material.WATER, width, height);
 		putInts(b, o, hf.grid.tn, 1, hf.grid.tn, hf.grid.pageSpans);
-		putInts(b, o + 32, 0, 0, 0, this.frameCounter);
+		// Bodies stirring the water go where the particle domains keep their entities (hfStir in hf_common.glsl).
+		int bodies = Math.min(stir.length / 12, MAX_ENTITIES);
+		for (int i = 0; i < bodies * 12; i++) {
+			b.putFloat(o + 576 + i * 4, stir[i]);
+		}
+		putInts(b, o + 32, 0, 0, bodies, this.frameCounter);
 		putInts(b, o + 48, 0, 0, 0, 0);
 		putFloats(b, o + 64, 0.0F, -WaterSettings.gravity, 0.0F, hf.lastDt);
 		putFloats(b, o + 96, WaterSettings.hfMaxSpeed, hf.cell, this.simTime, 0.0F);

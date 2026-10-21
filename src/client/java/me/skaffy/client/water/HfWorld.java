@@ -611,6 +611,51 @@ final class HfWorld {
 		player.setDeltaMovement(v.x + (tx - v.x) * k, v.y, v.z + (tz - v.z) * k);
 	}
 
+	// ---- stirring (the water reacts to bodies moving through it) ----
+
+	private static final float[] NO_STIR = new float[0];
+
+	/**
+	 * Call each frame before the solver plans its tiles: the bodies that push the water this frame (only the player for now) as
+	 * Globals entity entries of 12 floats (see hfStir in hf_common.glsl), and keeps the tile under a player moving in water awake.
+	 */
+	float[] stir(net.minecraft.client.Minecraft mc, HfDomain hf) {
+		var player = mc.player;
+		if (player == null || player.isSpectator() || WaterSettings.hfStirStrength <= 0.0F) {
+			return NO_STIR;
+		}
+		double vx = (player.getX() - player.xo) * 20.0;
+		double vy = (player.getY() - player.yo) * 20.0;
+		double vz = (player.getZ() - player.zo) * 20.0;
+		var box = player.getBoundingBox();
+		float plunge = 0.0F;
+		float[] sm = this.playerSample;
+		if (sm != null && sm[4] > 0.5F && System.nanoTime() - this.playerSampleNanos < 250_000_000L) {
+			double surface = sm[2];
+			double sub = Math.min(box.maxY, surface) - box.minY;
+			if (sub > 0.0 && sm[3] > 0.05F) {
+				if (box.maxY > surface) {
+					// Crossing the surface: the volume going under (or coming out) pushes water out (or draws it in) around the body.
+					// The solver only gets a short, dragged push and the ring spreads thin, so the push is made 4x the displacement.
+					double width = box.maxX - box.minX;
+					double perimeter = 2.0 * Math.PI * (width * 0.5 + 0.2);
+					plunge = (float) Math.clamp(-4.0 * vy * width * width / (perimeter * Math.max(sub, 0.3)), -8.0, 8.0);
+				}
+				if (Math.hypot(vx, vz) > 0.2 || Math.abs(plunge) > 0.1) {
+					int[] at = hf.grid.locate(player.getX(), player.getZ());
+					if (at != null) {
+						hf.grid.quiet[at[0]] = 0.0F;
+					}
+				}
+			}
+		}
+		return new float[]{
+			(float) (box.minX - hf.originX), (float) box.minY, (float) (box.minZ - hf.originZ), plunge,
+			(float) (box.maxX - hf.originX), (float) box.maxY, (float) (box.maxZ - hf.originZ), WaterSettings.hfStirStrength,
+			(float) vx, (float) vy, (float) vz, 0.0F
+		};
+	}
+
 	/** Call each frame before planning: writes arrived depth readbacks into blocks. */
 	void receive(ClientLevel level, HfDomain hf) {
 		float[] sm = hf.takeSample();

@@ -18,7 +18,7 @@ import org.lwjgl.vulkan.VkCommandBuffer;
  *
  * <p>All heightfield shaders share one binding layout: 0 Globals UBO, 1 geo, 2 depth, 3 flux, 4 links, 5 page list, 6 tile info,
  * 7 tile active flags, 8 stats, 9 verts, 10 quads, 11 mesh counters, 12 view state (probe only), 13 page owners, 14 aux
- * (inject or reservoir entries).
+ * (inject or reservoir entries), 15 foam (two halves per flux page span, swapped every solver step).
  */
 final class HfDomain implements AutoCloseable {
 	/** Two vec4 per (span page, group of 256 spans): (volume, max depth, max speed, max rate), (border bits, 0, 0, 0). */
@@ -32,7 +32,7 @@ final class HfDomain implements AutoCloseable {
 		if (programs == null) {
 			int U = Desc.UBO;
 			int S = Desc.SSBO;
-			int[] layout = {U, S, S, S, S, S, S, S, S, S, S, S, S, S, S};
+			int[] layout = {U, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S};
 			programs = new ComputeProgram[]{
 				new ComputeProgram("hf_flux.comp", layout),
 				new ComputeProgram("hf_depth.comp", layout),
@@ -79,6 +79,10 @@ final class HfDomain implements AutoCloseable {
 	private final VkBuf geo;
 	private final VkBuf depth;
 	private final VkBuf flux;
+	/** Foam per flux-page span, twice: one half is read and the other written each step (see hf_depth.comp). */
+	private final VkBuf foam;
+	private final long foamHalf;
+	private int foamRead;
 	private final VkBuf links;
 	private final VkBuf tileInfo;
 	private final VkBuf pageOwner;
@@ -101,6 +105,7 @@ final class HfDomain implements AutoCloseable {
 	private boolean meshDirty = true;
 	private float meshRenderDepth = Float.NaN;
 	private int meshDebug;
+	private float meshFoam = Float.NaN;
 
 	// /water hf column: a few spans copied back to the CPU for inspection.
 	private static final int DEBUG_SPANS = 20;
@@ -152,6 +157,8 @@ final class HfDomain implements AutoCloseable {
 		this.depth = VkBuf.device(spans * 4L, 0);
 		this.links = VkBuf.device(spans * 4L, 0);
 		this.flux = VkBuf.device((long) grid.maxFluxPages * this.ps * FLUX_BYTES, 0);
+		this.foamHalf = (long) grid.maxFluxPages * this.ps;
+		this.foam = VkBuf.device(this.foamHalf * 8L, 0);
 		this.tileInfo = VkBuf.device((long) grid.maxTiles * 64L, 0);
 		this.pageOwner = VkBuf.device((long) grid.maxPages * 4L, 0);
 		long statsBytes = (long) grid.maxPages * this.groupsPerPage * STATS_BYTES;
@@ -180,7 +187,8 @@ final class HfDomain implements AutoCloseable {
 
 	/** Size of the GPU allocation, for /water hf stats. */
 	long bytes() {
-		return (long) this.grid.maxPages * this.ps * SPAN_BYTES + (long) this.grid.maxFluxPages * this.ps * FLUX_BYTES + this.quadCapacity * 80L;
+		return (long) this.grid.maxPages * this.ps * SPAN_BYTES + (long) this.grid.maxFluxPages * this.ps * (FLUX_BYTES + 8L)
+			+ this.quadCapacity * 80L;
 	}
 
 	private VkBuf stage(HfTileGrid.Tile t, float[] initialDepth) {
@@ -272,7 +280,7 @@ final class HfDomain implements AutoCloseable {
 	private void bind(ComputeProgram p, VkCommandBuffer cb, Desc ubo, int ring, VkBuf view, VkBuf aux) {
 		p.bind(cb, ubo, Desc.ssbo(this.geo), Desc.ssbo(this.depth), Desc.ssbo(this.flux), Desc.ssbo(this.links), Desc.ssbo(this.listRing[ring]),
 			Desc.ssbo(this.tileInfo), Desc.ssbo(this.activeRing[ring]), Desc.ssbo(this.stats), Desc.ssbo(this.verts), Desc.ssbo(this.quads),
-			Desc.ssbo(this.meshCounters), Desc.ssbo(view), Desc.ssbo(this.pageOwner), Desc.ssbo(aux));
+			Desc.ssbo(this.meshCounters), Desc.ssbo(view), Desc.ssbo(this.pageOwner), Desc.ssbo(aux), Desc.ssbo(this.foam));
 	}
 
 	/**
@@ -453,6 +461,9 @@ final class HfDomain implements AutoCloseable {
 		this.added.clear();
 		for (int fp : newFluxPages) {
 			this.flux.fill(cb, (long) fp * this.ps * FLUX_BYTES, (long) this.ps * FLUX_BYTES, 0);
+			// A page's foam halves may still hold another tile's foam from before.
+			this.foam.fill(cb, (long) fp * this.ps * 4L, (long) this.ps * 4L, 0);
+			this.foam.fill(cb, (this.foamHalf + (long) fp * this.ps) * 4L, (long) this.ps * 4L, 0);
 		}
 		if (this.tilesDirty) {
 			this.tilesDirty = false;
@@ -610,6 +621,7 @@ final class HfDomain implements AutoCloseable {
 		int ring = Vk.ringSlot();
 		if (!this.statsCleared) {
 			this.stats.fill(cb, 0);
+			this.foam.fill(cb, 0);
 			this.statsCleared = true;
 		}
 		if (act.newFluxPages.length > 0) {
@@ -633,10 +645,14 @@ final class HfDomain implements AutoCloseable {
 		int n = list.length;
 		if (steps > 0 && n > 0) {
 			float keep = (float) Math.pow(WaterSettings.hfDamping, dt * 60.0F) / (1.0F + WaterSettings.hfFriction * dt);
-			int[] pc = this.push(n, dt, WaterSettings.gravity, this.cell, keep, WaterSettings.hfMaxSpeed, WaterSettings.hfRenderDepth,
-				WaterSettings.hfMinFlowDepth, 0.0F, 0, 0, 0, 0);
+			float foamKeep = (float) Math.exp(-dt / Math.max(WaterSettings.hfFoamLife, 0.05F));
 			int groups = n * this.groupsPerPage;
 			for (int s = 0; s < steps; s++) {
+				int read = (int) (this.foamRead * this.foamHalf);
+				int write = (int) ((1 - this.foamRead) * this.foamHalf);
+				this.foamRead ^= 1;
+				int[] pc = this.push(n, dt, WaterSettings.gravity, this.cell, keep, WaterSettings.hfMaxSpeed, WaterSettings.hfRenderDepth,
+					WaterSettings.hfMinFlowDepth, foamKeep, read, write, 0, 0);
 				this.bind(p[0], cb, ubo, ring, this.stats);
 				p[0].push(cb, pc);
 				p[0].dispatch(cb, groups, 1, 1);
@@ -685,21 +701,23 @@ final class HfDomain implements AutoCloseable {
 
 	/** Rebuilds the surface mesh only when the water moved, tiles changed or the render threshold changed. */
 	void buildMesh(VkCommandBuffer cb, Desc ubo) {
-		if (!this.meshDirty && this.meshRenderDepth == WaterSettings.hfRenderDepth && this.meshDebug == WaterSettings.hfDebugMesh) {
+		if (!this.meshDirty && this.meshRenderDepth == WaterSettings.hfRenderDepth && this.meshDebug == WaterSettings.hfDebugMesh
+			&& this.meshFoam == WaterSettings.hfFoam) {
 			return;
 		}
 		this.meshDirty = false;
 		this.meshRenderDepth = WaterSettings.hfRenderDepth;
 		this.meshDebug = WaterSettings.hfDebugMesh;
+		this.meshFoam = WaterSettings.hfFoam;
 		ComputeProgram[] p = programs();
 		int ring = Vk.ringSlot();
 		this.meshCounters.fill(cb, 0);
 		Vk.barrier(cb);
 		int pages = this.grid.maxPages;
 		this.bind(p[2], cb, ubo, ring, this.stats);
-		p[2].push(cb, this.push(pages, WaterSettings.hfSurfaceDrop, WaterSettings.hfCurtainMinFlow, this.cell, this.originY, 0.0F,
-			WaterSettings.hfRenderDepth, 0.0F, WaterSettings.hfDebugMesh,
-			this.quadCapacity, 0, 0, 0));
+		p[2].push(cb, this.push(pages, WaterSettings.hfSurfaceDrop, WaterSettings.hfCurtainMinFlow, this.cell, this.originY,
+			WaterSettings.hfFoam, WaterSettings.hfRenderDepth, 0.0F, WaterSettings.hfDebugMesh,
+			this.quadCapacity, (int) (this.foamRead * this.foamHalf), 0, 0));
 		p[2].dispatch(cb, pages * this.groupsPerPage, 1, 1);
 		Vk.barrier(cb);
 		p[4].bind(cb, ubo, Desc.ssbo(this.meshCounters));
@@ -757,7 +775,7 @@ final class HfDomain implements AutoCloseable {
 		this.added.clear();
 		this.rebuilt.clear();
 		List<AutoCloseable> all = new ArrayList<>(List.of(
-			this.geo, this.depth, this.flux, this.links, this.tileInfo, this.pageOwner, this.stats, this.verts, this.quads, this.meshCounters));
+			this.geo, this.depth, this.flux, this.foam, this.links, this.tileInfo, this.pageOwner, this.stats, this.verts, this.quads, this.meshCounters));
 		all.add(this.reservoirBuf);
 		all.add(this.sampleBuf);
 		for (int i = 0; i < Vk.FRAME_RING; i++) {
