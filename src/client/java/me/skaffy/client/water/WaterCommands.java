@@ -73,6 +73,10 @@ public final class WaterCommands {
 					c.getSource().sendFeedback(Component.literal(WaterWorld.get().heightfieldStats()));
 					return 1;
 				}))
+				.then(literal("column").executes(c -> {
+					c.getSource().sendFeedback(Component.literal(WaterWorld.get().heightfieldColumn(Minecraft.getInstance())));
+					return 1;
+				}))
 				.then(literal("clear").executes(c -> {
 					WaterWorld.get().clearHeightfield();
 					c.getSource().sendFeedback(Component.literal("Removed the heightfield water"));

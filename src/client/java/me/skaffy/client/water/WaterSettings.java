@@ -145,6 +145,8 @@ public final class WaterSettings {
 	public static int hfMaxFluxPages = 384;
 	/** Quads in the shared heightfield surface mesh (80 B each). */
 	public static int hfMaxQuads = 400_000;
+	/** Debug: 0 normal, 1 draw only water tops (no side walls), 2 draw only side walls. */
+	public static int hfDebugMesh = 0;
 	public static int hfMaxNewTilesPerFrame = 2;
 	public static float hfCfl = 0.3F;
 	public static float hfDamping = 0.995F;

@@ -16,6 +16,8 @@ layout(std430, binding = 11) buffer MeshCounters { uint meshCounters[]; };
 #define HF_ORIGIN_Y hp.p0.w
 #define HF_RENDER_DRY hp.p1.y
 #define HF_QUAD_CAP uint(hp.p2.x)
+// WaterSettings.hfDebugMesh: 0 normal, 1 tops only (no side walls), 2 side walls only.
+#define HF_DEBUG int(hp.p1.w)
 
 const uint OPEN = 0x80000000u;
 const float WALL_INSET = 0.01;
@@ -163,7 +165,14 @@ void main() {
             wallMask |= 1u << d;
         }
     }
-    uint count = 1u + uint(bitCount(wallMask));
+    if (HF_DEBUG == 1) {
+        wallMask = 0u;
+    }
+    bool drawTop = HF_DEBUG != 2;
+    uint count = (drawTop ? 1u : 0u) + uint(bitCount(wallMask));
+    if (count == 0u) {
+        return;
+    }
     uint q = atomicAdd(meshCounters[1], count);
     if (q >= HF_QUAD_CAP) {
         return;
@@ -176,7 +185,7 @@ void main() {
     float z1 = z0 + c;
     float b = fl - oy;
 
-    emitTop(q++, vec3(x0, h00, z0), vec3(x1, h10, z0), vec3(x1, h11, z1), vec3(x0, h01, z1),
+    if (drawTop) emitTop(q++, vec3(x0, h00, z0), vec3(x1, h10, z0), vec3(x1, h11, z1), vec3(x0, h01, z1),
         cornerNormal(c00), cornerNormal(c10), cornerNormal(c11), cornerNormal(c01));
     if ((wallMask & 1u) != 0u) {
         float x = x1 - inset[0];

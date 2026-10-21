@@ -48,6 +48,8 @@ import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
@@ -854,6 +856,10 @@ public final class WaterWorld {
 	private WaterRenderer.Body recordHeightfield(Minecraft mc, VkCommandBuffer cb, HfDomain hf, float frameDt, Vec3 cam, int width, int height) {
 		HfTileGrid grid = hf.grid;
 		hf.readStats();
+		String column = hf.takeDebugText();
+		if (column != null && mc.player != null) {
+			mc.player.sendSystemMessage(Component.literal(column));
+		}
 		boolean running = !this.paused && !mc.isPaused();
 		HfTileGrid.Activation act = new HfTileGrid.Activation(new int[0], new int[0]);
 		int steps = 0;
@@ -993,6 +999,22 @@ public final class WaterWorld {
 
 	public String heightfieldStats() {
 		return this.heightfield != null ? this.heightfield.statsLine() : "No heightfield water (use /water flood)";
+	}
+
+	/** /water hf column: the heightfield spans where the crosshair points (just in front of the block face it hits). */
+	public String heightfieldColumn(Minecraft mc) {
+		if (this.heightfield == null) {
+			return "No heightfield water (use /water flood)";
+		}
+		if (!(mc.hitResult instanceof BlockHitResult hit) || hit.getType() == HitResult.Type.MISS) {
+			return "Look at a block next to the water";
+		}
+		Vec3 p = hit.getLocation();
+		double x = p.x + hit.getDirection().getStepX() * 0.25;
+		double z = p.z + hit.getDirection().getStepZ() * 0.25;
+		return this.heightfield.requestColumn(x, z)
+			? String.format("Reading the heightfield column at %.2f, %.2f...", x, z)
+			: "No heightfield tile there";
 	}
 
 	public void clearHeightfield() {

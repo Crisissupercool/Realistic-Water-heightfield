@@ -96,6 +96,16 @@ final class HfDomain implements AutoCloseable {
 	int lastRebuilt;
 	private boolean meshDirty = true;
 	private float meshRenderDepth = Float.NaN;
+	private int meshDebug;
+
+	// /water hf column: a few spans copied back to the CPU for inspection.
+	private static final int DEBUG_SPANS = 20;
+	private final VkBuf[] debugReadback = new VkBuf[Vk.FRAME_RING];
+	private final String[][] debugLabels = new String[Vk.FRAME_RING][];
+	private final int[][] debugSpans = new int[Vk.FRAME_RING][];
+	private int[] debugRequest;
+	private String[] debugRequestLabels;
+	private String debugText;
 
 	HfDomain(HfTileGrid grid, int maxQuads) {
 		this.grid = grid;
@@ -125,6 +135,9 @@ final class HfDomain implements AutoCloseable {
 		this.verts = VkBuf.device(this.quadCapacity * 4L * 16L, 0);
 		this.quads = VkBuf.device(this.quadCapacity * 16L, 0);
 		this.meshCounters = VkBuf.device(64, VkBuf.INDIRECT);
+		for (int i = 0; i < Vk.FRAME_RING; i++) {
+			this.debugReadback[i] = VkBuf.readback(DEBUG_SPANS * 12L);
+		}
 		this.tilesDirty = true;
 		programs();
 	}
@@ -319,6 +332,83 @@ final class HfDomain implements AutoCloseable {
 		}
 	}
 
+	/**
+	 * Asks for the spans of the column at world (x, z) and its four neighbors; {@link #takeDebugText} returns them a few frames later.
+	 * Returns false when no tile covers that point.
+	 */
+	boolean requestColumn(double x, double z) {
+		HfTileGrid g = this.grid;
+		double[][] at = {{0, 0}, {g.cell, 0}, {-g.cell, 0}, {0, g.cell}, {0, -g.cell}};
+		String[] names = {"here", "+x", "-x", "+z", "-z"};
+		int[] spans = new int[DEBUG_SPANS];
+		String[] labels = new String[DEBUG_SPANS];
+		java.util.Arrays.fill(spans, -1);
+		boolean any = false;
+		for (int i = 0; i < at.length; i++) {
+			double px = x + at[i][0];
+			double pz = z + at[i][1];
+			int tx = g.tileOfBlockX((int) Math.floor(px));
+			int tz = g.tileOfBlockZ((int) Math.floor(pz));
+			int tile = g.slotAt(tx, tz);
+			if (tile == HfTileGrid.NONE) {
+				continue;
+			}
+			int lx = Math.clamp((int) Math.floor((px - g.originX - tx * (double) HfTileGrid.TILE_BLOCKS) * g.cpb), 0, g.tn - 1);
+			int lz = Math.clamp((int) Math.floor((pz - g.originZ - tz * (double) HfTileGrid.TILE_BLOCKS) * g.cpb), 0, g.tn - 1);
+			for (int l = 0; l < HfTileGrid.MAX_LAYERS; l++) {
+				int sp = g.span(tile, l, lz * g.tn + lx);
+				if (sp != HfTileGrid.NONE) {
+					spans[i * 4 + l] = sp;
+					labels[i * 4 + l] = String.format("%s (%.1f, %.1f) tile %d %s L%d", names[i],
+						g.originX + tx * 16.0 + lx / (double) g.cpb, g.originZ + tz * 16.0 + lz / (double) g.cpb, tile,
+						g.active[tile] ? "sim" : "sleep", l);
+					any = true;
+				}
+			}
+		}
+		if (any) {
+			this.debugRequest = spans;
+			this.debugRequestLabels = labels;
+		}
+		return any;
+	}
+
+	/** The text for the last {@link #requestColumn}, once it has come back from the GPU; null until then. */
+	String takeDebugText() {
+		int ring = Vk.ringSlot();
+		if (this.debugSpans[ring] != null) {
+			VkBuf rb = this.debugReadback[ring];
+			rb.invalidate(0, DEBUG_SPANS * 12L);
+			ByteBuffer b = rb.mapped();
+			StringBuilder sb = new StringBuilder("Heightfield column (floor / ceil / depth / surface, links +x -x +z -z as layer:slot):");
+			for (int i = 0; i < DEBUG_SPANS; i++) {
+				if (this.debugSpans[ring][i] < 0) {
+					continue;
+				}
+				int geo = b.getInt(i * 12);
+				float d = b.getFloat(i * 12 + 4);
+				int links = b.getInt(i * 12 + 8);
+				if (!HfTileGrid.validGeo(geo)) {
+					continue;
+				}
+				float fl = this.grid.floorOf(geo);
+				float ce = this.grid.ceilOf(geo);
+				StringBuilder ls = new StringBuilder();
+				for (int k = 0; k < 8; k++) {
+					int nib = HfTileGrid.link(links, k);
+					ls.append(nib == HfTileGrid.LINK_NONE ? "-" : (nib & 3) + ":" + (nib >> 2)).append(k % 2 == 1 ? "  " : " ");
+				}
+				sb.append(String.format("%n%s: %.2f / %s / %.3f / %.3f  [%s]", this.debugLabels[ring][i], fl,
+					ce >= HfTopology.OPEN_CEIL ? "open" : String.format("%.2f", ce), d, Math.min(fl + d, ce), ls.toString().trim()));
+			}
+			this.debugSpans[ring] = null;
+			this.debugText = sb.toString();
+		}
+		String t = this.debugText;
+		this.debugText = null;
+		return t;
+	}
+
 	/** Largest stable time step for the simulated tiles (shallow-water CFL condition). */
 	float maxStableDt() {
 		float waveSpeed = (float) Math.sqrt(WaterSettings.gravity * Math.max(this.grid.activeMax(this.grid.maxDepth), 0.01F))
@@ -384,23 +474,38 @@ final class HfDomain implements AutoCloseable {
 		} else {
 			this.lastSteps = 0;
 		}
+		if (this.debugRequest != null) {
+			for (int i = 0; i < DEBUG_SPANS; i++) {
+				int sp = this.debugRequest[i];
+				if (sp >= 0) {
+					this.geo.copyTo(cb, this.debugReadback[ring], sp * 4L, i * 12L, 4);
+					this.depth.copyTo(cb, this.debugReadback[ring], sp * 4L, i * 12L + 4, 4);
+					this.links.copyTo(cb, this.debugReadback[ring], sp * 4L, i * 12L + 8, 4);
+				}
+			}
+			this.debugSpans[ring] = this.debugRequest;
+			this.debugLabels[ring] = this.debugRequestLabels;
+			this.debugRequest = null;
+			Vk.barrier(cb);
+		}
 		this.lastDt = dt;
 	}
 
 	/** Rebuilds the surface mesh only when the water moved, tiles changed or the render threshold changed. */
 	void buildMesh(VkCommandBuffer cb, Desc ubo) {
-		if (!this.meshDirty && this.meshRenderDepth == WaterSettings.hfRenderDepth) {
+		if (!this.meshDirty && this.meshRenderDepth == WaterSettings.hfRenderDepth && this.meshDebug == WaterSettings.hfDebugMesh) {
 			return;
 		}
 		this.meshDirty = false;
 		this.meshRenderDepth = WaterSettings.hfRenderDepth;
+		this.meshDebug = WaterSettings.hfDebugMesh;
 		ComputeProgram[] p = programs();
 		int ring = Vk.ringSlot();
 		this.meshCounters.fill(cb, 0);
 		Vk.barrier(cb);
 		int pages = this.grid.maxPages;
 		this.bind(p[2], cb, ubo, ring, this.stats);
-		p[2].push(cb, this.push(pages, 0.0F, 0.0F, this.cell, this.originY, 0.0F, WaterSettings.hfRenderDepth, 0.0F, 0.0F,
+		p[2].push(cb, this.push(pages, 0.0F, 0.0F, this.cell, this.originY, 0.0F, WaterSettings.hfRenderDepth, 0.0F, WaterSettings.hfDebugMesh,
 			this.quadCapacity, 0, 0, 0));
 		p[2].dispatch(cb, pages * this.groupsPerPage, 1, 1);
 		Vk.barrier(cb);
@@ -461,6 +566,7 @@ final class HfDomain implements AutoCloseable {
 		List<AutoCloseable> all = new ArrayList<>(List.of(
 			this.geo, this.depth, this.flux, this.links, this.tileInfo, this.pageOwner, this.stats, this.verts, this.quads, this.meshCounters));
 		for (int i = 0; i < Vk.FRAME_RING; i++) {
+			all.add(this.debugReadback[i]);
 			all.add(this.statsReadback[i]);
 			all.add(this.listRing[i]);
 			all.add(this.activeRing[i]);
