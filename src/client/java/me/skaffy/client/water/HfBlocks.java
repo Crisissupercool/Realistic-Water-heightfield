@@ -80,8 +80,16 @@ final class HfBlocks {
 
 	/** Block amount for a fill fraction, keeping the current amount while the water is within 3/4 of a step of it (no flicker). */
 	static int amountFor(float fill, int current) {
+		return amountFor(fill, current, true);
+	}
+
+	/**
+	 * @param hysteresis false for the final write of settled water: rounding to the nearest step then, so the saved amounts do not keep a
+	 *                   level the water only had while it was sloshing (that made water come back slightly higher after a reload)
+	 */
+	static int amountFor(float fill, int current, boolean hysteresis) {
 		float target = Math.clamp(fill, 0.0F, 1.0F) * 8.0F;
-		if (current > 0 && Math.abs(target - current) < 0.75F) {
+		if (hysteresis && current > 0 && Math.abs(target - current) < 0.75F) {
 			return current;
 		}
 		int a = Math.round(target);

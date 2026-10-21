@@ -82,6 +82,15 @@ public final class WaterWorld {
 	private static final class Echoes {
 		final Long2IntOpenHashMap expected = new Long2IntOpenHashMap();
 		final Long2IntOpenHashMap frame = new Long2IntOpenHashMap();
+		final int timeout;
+
+		Echoes() {
+			this(ECHO_TIMEOUT);
+		}
+
+		Echoes(int timeout) {
+			this.timeout = timeout;
+		}
 
 		boolean consume(long key, int amount) {
 			if (this.expected.containsKey(key) && this.expected.get(key) == amount) {
@@ -99,7 +108,7 @@ public final class WaterWorld {
 
 		void expire(int now) {
 			this.frame.long2IntEntrySet().removeIf(e -> {
-				if (now - e.getIntValue() > ECHO_TIMEOUT) {
+				if (now - e.getIntValue() > this.timeout) {
 					this.expected.remove(e.getLongKey());
 					return true;
 				}
@@ -117,6 +126,12 @@ public final class WaterWorld {
 	private final Map<BlockPos, Material> sources = new LinkedHashMap<>();
 	private final ArrayDeque<ChunkPos> chunkScanQueue = new ArrayDeque<>();
 	private final Echoes waterEchoes = new Echoes();
+	/**
+	 * Echoes of the heightfield's block writes, timed in milliseconds: a big write can take the server longer than the 200 frames
+	 * the particle echoes allow, and an expired echo would be taken for placed water and added to the heightfield a second time.
+	 */
+	private final Echoes hfEchoes = new Echoes(5000);
+	private final long startNanos = System.nanoTime();
 	private final Echoes sandEchoes = new Echoes();
 	private final Echoes lavaEchoes = new Echoes();
 	private final List<Object[]> pendingFills = new ArrayList<>();
@@ -354,6 +369,7 @@ public final class WaterWorld {
 		}
 		this.regions.clear();
 		this.waterEchoes.clear();
+		this.hfEchoes.clear();
 		this.sandEchoes.clear();
 		this.lavaEchoes.clear();
 		this.pendingFills.clear();
@@ -380,7 +396,7 @@ public final class WaterWorld {
 		int waterBefore = waterAmount(oldState);
 		int waterAfter = waterAmount(newState);
 		if (waterBefore != waterAfter) {
-			if (this.waterEchoes.consume(key, waterAfter)) {
+			if (this.waterEchoes.consume(key, waterAfter) || this.hfEchoes.consume(key, waterAfter)) {
 			} else if (springToHeightfield || this.hfWorld.onWaterChanged(level, pos.immutable(), waterBefore, waterAfter)) {
 				// The heightfield took it.
 			} else if (waterAfter > waterBefore) {
@@ -461,11 +477,18 @@ public final class WaterWorld {
 
 	/** Echo bookkeeping for the heightfield's own block writes, so they are not mistaken for placed water. */
 	void expectWater(long key, int amount) {
-		this.waterEchoes.expect(key, amount, this.frameCounter);
+		this.hfEchoes.expect(key, amount, this.millis());
+	}
+
+	private int millis() {
+		return (int) ((System.nanoTime() - this.startNanos) / 1_000_000L);
 	}
 
 	/** The amount a pending write will leave at {@code key}, or -1. */
 	int expectedWater(long key) {
+		if (this.hfEchoes.expected.containsKey(key)) {
+			return this.hfEchoes.expected.get(key);
+		}
 		return this.waterEchoes.expected.containsKey(key) ? this.waterEchoes.expected.get(key) : -1;
 	}
 
@@ -547,6 +570,7 @@ public final class WaterWorld {
 			this.scanChunk(level, this.chunkScanQueue.poll());
 		}
 		this.waterEchoes.expire(this.frameCounter);
+		this.hfEchoes.expire(this.millis());
 		this.sandEchoes.expire(this.frameCounter);
 		this.lavaEchoes.expire(this.frameCounter);
 		Vec3 listener = mc.player != null ? mc.player.getEyePosition() : null;

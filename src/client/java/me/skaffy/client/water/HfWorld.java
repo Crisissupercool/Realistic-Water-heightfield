@@ -642,7 +642,7 @@ final class HfWorld {
 					if (pending >= 0) {
 						current = pending;
 					}
-					int target = HfBlocks.amountFor(fill[r], current);
+					int target = HfBlocks.amountFor(fill[r], current, !asleep);
 					if (mode == HfBlocksPayload.RELEASE) {
 						// Vanilla flowing water without a source dries up, so released water is all sources: a block at least half full
 						// becomes a source, the rest air.
