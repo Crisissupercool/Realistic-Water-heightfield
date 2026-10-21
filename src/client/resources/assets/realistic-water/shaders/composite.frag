@@ -90,7 +90,10 @@ vec3 rippleNormal(vec3 nView, vec3 viewPos, float footprint) {
     vec3 nWorld = normalize(mat3(G.invView) * nView);
     vec3 world = G.misc.yzw + (G.invView * vec4(viewPos, 0.0)).xyz;
     float scale = max(G.shadeA.y, 1e-3);
-    vec2 grad = rippleGradient(world.xz * scale, G.simB.z * G.shadeA.z, footprint * scale);
+    // At grazing angles a pixel covers far more surface along the view direction than its distance alone implies;
+    // without this the finer ripple bands alias into moire rings on large flat water.
+    float grazing = max(abs(dot(nView, normalize(-viewPos))), 0.05);
+    vec2 grad = rippleGradient(world.xz * scale, G.simB.z * G.shadeA.z, footprint * scale / grazing);
     vec3 g = vec3(grad.x, 0.0, grad.y) * G.shadeA.x;
     return normalize(mat3(G.view) * normalize(nWorld - (g - nWorld * dot(g, nWorld))));
 }
