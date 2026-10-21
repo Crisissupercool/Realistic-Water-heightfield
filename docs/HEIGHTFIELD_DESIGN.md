@@ -1,7 +1,7 @@
 # Multi-layer heightfield water: design
 
-Status (2026-10-21): milestone 1 runs in game (sections 10-11). Milestone 3, sparse tiles, is written and passes the CPU tests
-but has not been run in game yet (section 12).
+Status (2026-10-21): milestones 1 and 3 run in game (sections 10-12). Paged tile memory and block edits (section 13) are written
+and pass the CPU tests, not yet run in game.
 
 ## Goal
 
@@ -301,3 +301,31 @@ asleep (after about 4 minutes for that test) with 0.0000% drift.
 
 Not done yet: freeing tiles that dried out, building growth tiles off the main thread, per-tile mesh caching (the whole mesh is rebuilt
 when any tile moves), and coarser far-away tiles for floods larger than the pool.
+
+## 13. Paged tile memory and block edits (as built)
+
+**Memory.** Measured layout before: every tile stored 4 layers for every column and full flux for every span, 52 B per span,
+213 KB per tile whether it held a lake or nothing. Now:
+
+| Per span | Before | Now |
+|---|---|---|
+| floor / ceil | 8 B (2 floats) | 4 B (2 x 16-bit sub-block steps, exact) |
+| depth | 4 B | 4 B |
+| links | 8 B (8 bytes) | 4 B (8 x 4 bits: target layer + which of the 2 reverse slots) |
+| flux | 32 B, always | 32 B, only while the tile is simulated (separate flux pages) |
+
+A page holds one layer of one tile (32 x 32 spans). A tile only gets pages for the layers it uses: open ground 1, the 3x3-tile
+test with a two-storey room 13 pages for 9 tiles instead of 36. Result: a sleeping open-ground tile costs 12 KB (was 213 KB);
+an awake one 44 KB. Defaults: 256 tiles, 512 span pages (6 MB), 384 flux pages (12.6 MB), 400k mesh quads (32 MB). The mesh is now
+the biggest item; per-tile mesh caching and distance LOD are the next memory step.
+
+**Block edits.** `ClientLevelMixin` already reports block updates; when the collision shape changes inside a heightfield tile (or
+in the one-block halo of a neighbor), the tile is marked dirty. Chunk loads mark the tile on that chunk and its 4 neighbors.
+Every frame, all dirty tiles are rebuilt together (so both sides of a border agree), on fresh span pages. `hf_remap.comp` then moves
+each column's water from the old pages into the new spans: each old body of water goes whole into the new span it overlaps most,
+or the nearest one if a block now fills it. The volume is exact; water squeezed into less room is under pressure and flows away.
+Tiles over unloaded chunks are not rebuilt (they would read as solid).
+
+CPU tests: the paged solver is still bit-identical to the dense one; open-ground tiles use 1 page each; sleeping tiles hold no
+flux pages; breaking an 8-block gap in a dam at a tile border lets the water through with 0.00001 % drift; placing 32 blocks in a pool
+raises the floor and puts the displaced water on top with no volume change.

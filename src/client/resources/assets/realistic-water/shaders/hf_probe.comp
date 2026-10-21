@@ -1,27 +1,25 @@
 #version 450
 // Sets the shared "camera is underwater" flag when the camera is inside a wet heightfield span.
-// The CPU finds the camera's tile slot and column, so this only scans that one column's layers.
+// The CPU finds the camera's tile and column and passes that tile's span pages, so this scans one column's layers.
 #include "hf_common.glsl"
 layout(local_size_x = 1) in;
-layout(std430, binding = 1) readonly buffer Geo { vec2 geo[]; };
 layout(std430, binding = 2) readonly buffer Depth { float depth[]; };
 layout(std430, binding = 12) buffer ViewState { uint viewBits[]; };
 
 #define HF_CAMERA_Y hp.p0.x
 #define HF_RENDER_DRY hp.p1.y
-#define HF_SLOT hp.p2.x
-#define HF_LX hp.p2.y
-#define HF_LZ hp.p2.z
+#define HF_PROBE_COL HF_COUNT
+#define HF_PROBE_PAGES hp.p2
 
 void main() {
-    if (HF_SLOT < 0) {
-        return;
-    }
     float camY = HF_CAMERA_Y;
-    uint column = uint(HF_SLOT) * uint(HF_TILE_SPANS) + uint(HF_LZ * HF_TN + HF_LX) * uint(HF_LAYERS);
-    for (int l = 0; l < HF_LAYERS; l++) {
-        uint s = column + uint(l);
-        vec2 g = geo[s];
+    for (int l = 0; l < 4; l++) {
+        int page = HF_PROBE_PAGES[l];
+        if (page < 0) {
+            continue;
+        }
+        uint s = uint(page) * hfPageSpans() + uint(HF_PROBE_COL);
+        vec2 g = hfGeo(s);
         float h = depth[s];
         if (!hfValid(g) || h <= HF_RENDER_DRY) {
             continue;

@@ -3,10 +3,9 @@
 // (volume, max depth, max speed, max surface rate, border-growth bits) for mass checks, the CFL step, sleeping and tile growth.
 #include "hf_common.glsl"
 layout(local_size_x = 256) in;
-layout(std430, binding = 1) readonly buffer Geo { vec2 geo[]; };
 layout(std430, binding = 2) buffer Depth { float depth[]; };
 layout(std430, binding = 3) readonly buffer Flux { float flux[]; };
-// Two vec4 per (slot, group of 256 spans): (volume, max depth, max speed, max rate), (border bits as uint, 0, 0, 0).
+// Two vec4 per (span page, group of 256 spans): (volume, max depth, max speed, max rate), (border bits as uint, 0, 0, 0).
 layout(std430, binding = 8) writeonly buffer Stats { vec4 stats[]; };
 
 #define HF_DT hp.p0.x
@@ -18,21 +17,20 @@ layout(std430, binding = 8) writeonly buffer Stats { vec4 stats[]; };
 shared vec4 reduction[256];
 shared uint borderBits;
 
-// Bit d when span s holds water at its tile's border in direction d, has a link that way, and no tile exists there yet.
-uint growthBits(uint s, float h) {
+// Bit d when span a holds water at its tile's border in direction d, has a link that way, and no tile exists there yet.
+uint growthBits(HfSpan a, float h) {
     if (h <= HF_GROW_DEPTH) {
         return 0u;
     }
-    ivec2 c = hfColumn(s);
-    uint slot = s / uint(HF_TILE_SPANS);
+    ivec2 c = hfColumn(a.col);
     uint bits = 0u;
     for (uint d = 0u; d < 4u; d++) {
         ivec2 n = c + ivec2(HF_DX[d], HF_DZ[d]);
         bool outside = n.x < 0 || n.y < 0 || n.x >= HF_TN || n.y >= HF_TN;
-        if (!outside || tileInfo[slot * 2u][d] >= 0) {
+        if (!outside || tileInfo[a.tile * 4u][d] >= 0) {
             continue;
         }
-        if (hfLink(s, d * 2u) != HF_LINK_NONE || hfLink(s, d * 2u + 1u) != HF_LINK_NONE) {
+        if (hfLink(a, d * 2u) != HF_LINK_NONE || hfLink(a, d * 2u + 1u) != HF_LINK_NONE) {
             bits |= 1u << d;
         }
     }
@@ -45,35 +43,32 @@ void main() {
         borderBits = 0u;
     }
     barrier();
-    uint s = hfSpanOf(GID_U, true);
+    HfSpan a;
+    bool have = hfFromList(GID_U, a);
     vec4 mine = vec4(0.0);
-    if (s != HF_NONE && hfValid(geo[s])) {
-        uint base = s * HF_LINKS;
+    if (have && hfValid(hfGeo(a.span))) {
         float inflow = 0.0;
         float outflow = 0.0;
         float peak = 0.0;
         for (uint k = 0u; k < HF_LINKS; k++) {
-            uint l = hfLink(s, k);
-            if (l == HF_LINK_NONE) {
+            uint nib = hfLink(a, k);
+            HfSpan b;
+            if (nib == HF_LINK_NONE || !hfNeighbor(a, k, nib, true, b)) {
                 continue;
             }
-            uint t = hfNeighbor(s, k, l, true);
-            if (t == HF_NONE) {
-                continue;
-            }
-            float o = flux[base + k];
-            float i = flux[t * HF_LINKS + hfRev(l)];
+            float o = flux[a.flux + k];
+            float i = flux[b.flux + hfRev(k, nib)];
             outflow += o;
             inflow += i;
             peak = max(peak, max(o, i));
         }
-        float old = depth[s];
+        float old = depth[a.span];
         float h = max(old + HF_DT * (inflow - outflow) / (HF_CELL * HF_CELL), 0.0);
-        depth[s] = h;
+        depth[a.span] = h;
         // Thin films give meaningless speeds (flux / tiny depth), so they are left out of the CFL estimate.
         float speed = h > 0.05 ? min(peak / (HF_CELL * h), HF_MAX_SPEED) : 0.0;
         mine = vec4(h * HF_CELL * HF_CELL, h, speed, abs(h - old) / HF_DT);
-        uint bits = growthBits(s, h);
+        uint bits = growthBits(a, h);
         if (bits != 0u) {
             atomicOr(borderBits, bits);
         }
@@ -88,12 +83,13 @@ void main() {
         }
         barrier();
     }
-    // Every group lies inside one tile (tileSpans is a multiple of 256), so stats are kept per slot and survive while it sleeps.
+    // Every group lies inside one page (pageSpans is a multiple of 256), so stats are kept per span page.
     uint first = GROUP_ID * 256u;
-    uint idx = first / uint(HF_TILE_SPANS);
-    if (lid == 0u && idx < uint(HF_LIST_COUNT)) {
-        uint perTile = uint(HF_TILE_SPANS) / 256u;
-        uint entry = tileList[idx] * perTile + (first % uint(HF_TILE_SPANS)) / 256u;
+    uint idx = first / hfPageSpans();
+    if (lid == 0u && idx < uint(HF_COUNT)) {
+        uint e = pageList[idx];
+        uint page = uint(tileInfo[(e >> 2) * 4u + 2u][e & 3u]);
+        uint entry = page * (hfPageSpans() / 256u) + (first % hfPageSpans()) / 256u;
         stats[entry * 2u] = reduction[0];
         stats[entry * 2u + 1u] = vec4(uintBitsToFloat(borderBits), 0.0, 0.0, 0.0);
     }

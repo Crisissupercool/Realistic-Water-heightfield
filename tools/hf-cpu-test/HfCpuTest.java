@@ -362,7 +362,7 @@ public final class HfCpuTest {
 					}
 				}
 			}
-			HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 16);
+			HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 16, 64, 64);
 			HfTiledSim tiled = new HfTiledSim(grid, voxels(solid));
 			tiled.sleepRate = -1.0F;
 			tiled.filmRate = -1.0F;
@@ -372,30 +372,34 @@ public final class HfCpuTest {
 				for (int tx = 0; tx < 3; tx++) {
 					int ftx = tx;
 					int ftz = tz;
-					tiled.addTile(tx, tz, i -> {
-						int col = i / L;
-						return h0[dense.span(ftx * tn + col % tn, ftz * tn + col / tn, i % L)];
-					});
+					tiled.addTile(tx, tz, (l, col) -> h0[dense.span(ftx * tn + col % tn, ftz * tn + col / tn, l)]);
 				}
 			}
 			boolean topoSame = true;
-			for (int cz = 0; cz < dense.nz && topoSame; cz++) {
+			for (int cz = 0; cz < dense.nz; cz++) {
 				for (int cx = 0; cx < dense.nx; cx++) {
+					int tile = grid.slotAt(cx / tn, cz / tn);
+					int col = (cz % tn) * tn + cx % tn;
 					for (int l = 0; l < L; l++) {
 						int a = dense.span(cx, cz, l);
-						int b = grid.span(grid.slotAt(cx / tn, cz / tn), cx % tn, cz % tn, l);
-						if (dense.floor[a] != tiled.floor[b] || dense.ceil[a] != tiled.ceil[b]) {
+						if (l >= grid.layersUsed[tile]) {
+							topoSame &= !dense.valid(a);
+							continue;
+						}
+						int b = grid.span(tile, l, col);
+						int gb = tiled.geo[b];
+						if (dense.valid(a) != HfTileGrid.validGeo(gb) || dense.valid(a) && (dense.floor[a] != grid.floorOf(gb) || dense.ceil[a] != grid.ceilOf(gb))) {
 							topoSame = false;
 						}
 						for (int k = 0; k < 8 && dense.valid(a); k++) {
-							int la = dense.links[a * 8 + k];
-							int lb = HfTileGrid.link(tiled.links, b, k);
-							boolean edge = cx + HfTileGrid.DX[k >> 1] < 0 || cz + HfTileGrid.DZ[k >> 1] < 0
-								|| cx + HfTileGrid.DX[k >> 1] >= dense.nx || cz + HfTileGrid.DZ[k >> 1] >= dense.nz;
-							if (edge) {
+							int nx = cx + HfTileGrid.DX[k >> 1];
+							int nz = cz + HfTileGrid.DZ[k >> 1];
+							if (nx < 0 || nz < 0 || nx >= dense.nx || nz >= dense.nz) {
 								continue;
 							}
-							if ((la == -1) != (lb == HfTileGrid.LINK_NONE) || la != -1 && ((la >>> 3) % L != lb >> 3 || (la & 7) != (lb & 7))) {
+							int la = dense.links[a * 8 + k];
+							int lb = HfTileGrid.link(tiled.links[b], k);
+							if ((la == -1) != (lb == HfTileGrid.LINK_NONE) || la != -1 && ((la >>> 3) % L != (lb & 3) || (la & 1) != lb >> 2)) {
 								topoSame = false;
 							}
 						}
@@ -403,41 +407,43 @@ public final class HfCpuTest {
 				}
 			}
 			check(topoSame, "spans and links match the dense build, including across tile borders");
+			int pagesUsed = grid.usedSpanPages();
+			check(pagesUsed < 9 * L, "span pages: " + pagesUsed + " for 9 tiles (dense layout would need " + 9 * L + ")");
 			Sim sim = new Sim(dense, h0);
 			double v0 = sim.volume();
-			float maxDiff = 0.0F;
 			for (int f = 0; f < 600; f++) {
 				sim.run(1);
 				tiled.frame();
 			}
+			float maxDiff = 0.0F;
 			for (int cz = 0; cz < dense.nz; cz++) {
 				for (int cx = 0; cx < dense.nx; cx++) {
+					int tile = grid.slotAt(cx / tn, cz / tn);
+					int col = (cz % tn) * tn + cx % tn;
 					for (int l = 0; l < L; l++) {
 						int a = dense.span(cx, cz, l);
-						int b = grid.span(grid.slotAt(cx / tn, cz / tn), cx % tn, cz % tn, l);
 						if (dense.valid(a)) {
-							maxDiff = Math.max(maxDiff, Math.abs(sim.h[a] - tiled.h[b]));
+							maxDiff = Math.max(maxDiff, Math.abs(sim.h[a] - tiled.depthAt(tile, l, col)));
 						}
 					}
 				}
 			}
 			check(maxDiff < 1.0e-5F, String.format("after 10 s every depth matches the dense solver (max difference %.2e)", maxDiff));
 			check(Math.abs(tiled.volume() - v0) / v0 < 1.0e-5, String.format("volume %.3f -> %.3f", v0, tiled.volume()));
-			int inside = grid.span(grid.slotAt(0, 0), 15 * C, 15 * C, 1);
-			check(tiled.h[inside] > 0.1F, "water crossed the tile border at x=16 into the room: depth " + tiled.h[inside]);
+			float room = tiled.depthAt(grid.slotAt(0, 0), 1, 15 * C * tn + 15 * C);
+			check(room > 0.1F, "water crossed the tile border at x=16 into the room: depth " + room);
 		}
 
 		System.out.println("Tiles: water grows into new tiles (starts as 1 tile, column next to its +x border)");
 		{
 			Solid solid = (x, y, z) -> y < 64;
-			HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 64);
+			HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 64, 128, 128);
 			HfTiledSim tiled = new HfTiledSim(grid, voxels(solid));
 			int tn = grid.tn;
-			tiled.addTile(0, 0, i -> {
-				int col = i / L;
+			tiled.addTile(0, 0, (l, col) -> {
 				double x = (col % tn + 0.5) / C - 12.0;
 				double z = (col / tn + 0.5) / C - 8.0;
-				return i % L == 0 && x * x + z * z < 16.0 ? 2.0 : 0.0;
+				return l == 0 && x * x + z * z < 16.0 ? 2.0 : 0.0;
 			});
 			double v0 = tiled.volume();
 			for (int f = 0; f < 1800; f++) {
@@ -445,34 +451,34 @@ public final class HfCpuTest {
 			}
 			double drift = Math.abs(tiled.volume() - v0) / v0 * 100.0;
 			check(grid.count > 1, "tiles allocated as the water spread: " + grid.count);
-			check(grid.slotAt(1, 0) >= 0 && tiled.h[grid.span(grid.slotAt(1, 0), 4, tn / 2, 0)] > 0.0F, "water flowed into the new +x tile");
+			check(tiled.depthAt(grid.slotAt(1, 0), 0, (tn / 2) * tn + 4) > 0.0F, "water flowed into the new +x tile");
 			check(drift < 0.1, String.format("volume drift %.4f%%", drift));
+			check(grid.usedSpanPages() == grid.count, "open ground uses one span page per tile: " + grid.usedSpanPages() + " pages, " + grid.count + " tiles");
 		}
 
 		System.out.println("Tiles: settled water sleeps tile by tile, volume stays exact (open flat ground, wall at x=20)");
 		{
 			Solid solid = (x, y, z) -> y < 64 || x == 20 && y < 66;
-			HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 64);
+			HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 64, 128, 128);
 			HfTiledSim tiled = new HfTiledSim(grid, voxels(solid));
 			for (int tz = 0; tz < 3; tz++) {
 				for (int tx = 0; tx < 3; tx++) {
 					int ftx = tx;
 					int ftz = tz;
-					tiled.addTile(tx, tz, i -> {
-						int col = i / L;
+					tiled.addTile(tx, tz, (l, col) -> {
 						double x = ftx * 16 + (col % grid.tn + 0.5) / C - 10.0;
 						double z = ftz * 16 + (col / grid.tn + 0.5) / C - 24.0;
-						return i % L == 0 && x * x + z * z < 36.0 ? 3.0 : 0.0;
+						return l == 0 && x * x + z * z < 36.0 ? 3.0 : 0.0;
 					});
 				}
 			}
 			double v0 = tiled.volume();
 			int asleepAt = -1;
-			int minActive = Integer.MAX_VALUE;
+			int peakFlux = 0;
 			// On open flat ground the edge keeps creeping outward as a thin film for minutes; film tiles sleep at a relaxed rate.
 			for (int f = 0; f < 400 * 60; f++) {
 				tiled.frame();
-				minActive = Math.min(minActive, grid.activeList.length);
+				peakFlux = Math.max(peakFlux, grid.usedFluxPages());
 				if (grid.activeList.length == 0) {
 					asleepAt = f / 60;
 					break;
@@ -482,6 +488,69 @@ public final class HfCpuTest {
 			check(asleepAt >= 0, "every tile asleep after " + asleepAt + " s (" + grid.count + " tiles)");
 			check(drift < 0.1, String.format("volume drift %.4f%%", drift));
 			check(tiled.frame() == 0, "no solver steps once asleep");
+			check(grid.usedFluxPages() == 0, "asleep tiles hold no flux pages (peak was " + peakFlux + ")");
+		}
+
+		System.out.println("Block edits: breaking a dam lets the water through, placing blocks in water displaces it");
+		{
+			java.util.Set<Long> removed = new java.util.HashSet<>();
+			java.util.Set<Long> placed = new java.util.HashSet<>();
+			Solid base = (x, y, z) -> y < 64 || x == 16 && y < 68;
+			Solid solid = (x, y, z) -> {
+				long key = ((long) x << 40) ^ ((long) y << 20) ^ (z & 0xFFFFF);
+				return placed.contains(key) || !removed.contains(key) && base.at(x, y, z);
+			};
+			HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 16, 64, 64);
+			HfTiledSim tiled = new HfTiledSim(grid, voxels(solid));
+			tiled.maxNewTiles = 0;
+			int tn = grid.tn;
+			// Two tiles side by side; the dam is the x=16 column, i.e. the first block row of tile (1, 0). Water 3 deep on the -x side.
+			for (int tx = 0; tx < 2; tx++) {
+				int ftx = tx;
+				tiled.addTile(tx, 0, (l, col) -> ftx == 0 && l == 0 ? 3.0 : 0.0);
+			}
+			double v0 = tiled.volume();
+			for (int f = 0; f < 300; f++) {
+				tiled.frame();
+			}
+			float behind = tiled.depthAt(grid.slotAt(1, 0), 0, 8 * tn + 10);
+			check(behind == 0.0F, "dam holds: no water behind it before the edit");
+			for (int z = 4; z < 12; z++) {
+				for (int y = 64; y < 68; y++) {
+					long key = (16L << 40) ^ ((long) y << 20) ^ z;
+					removed.add(key);
+					grid.markDirtyBlock(16, y, z);
+				}
+			}
+			check(grid.slotAt(0, 0) >= 0, "edit at the tile border marks both tiles dirty");
+			for (int f = 0; f < 600; f++) {
+				tiled.frame();
+			}
+			behind = tiled.depthAt(grid.slotAt(1, 0), 0, 8 * tn + 10);
+			double drift = Math.abs(tiled.volume() - v0) / v0 * 100.0;
+			check(behind > 0.3F, "after breaking an 8-block gap, water flows through: depth behind the dam " + behind);
+			check(drift < 1.0e-3, String.format("volume drift %.6f%% through the rebuild", drift));
+			// Fill a 4x4 block patch of the water with stone, 2 blocks high, at the bottom of the pool.
+			double v1 = tiled.volume();
+			for (int x = 4; x < 8; x++) {
+				for (int z = 4; z < 8; z++) {
+					for (int y = 64; y < 66; y++) {
+						placed.add(((long) x << 40) ^ ((long) y << 20) ^ z);
+						grid.markDirtyBlock(x, y, z);
+					}
+				}
+			}
+			tiled.frame();
+			double v2 = tiled.volume();
+			check(Math.abs(v2 - v1) / v1 < 1.0e-6, String.format("placing 32 blocks in the water keeps the volume: %.4f -> %.4f", v1, v2));
+			int col = 5 * C * tn + 5 * C;
+			float onTop = tiled.depthAt(grid.slotAt(0, 0), 0, col);
+			check(grid.floorOf(tiled.geo[grid.span(grid.slotAt(0, 0), 0, col)]) == 66.0F, "the patch raised the floor to 66");
+			check(onTop > 0.0F, "the displaced water sits on top of the new blocks: depth " + onTop);
+			for (int f = 0; f < 600; f++) {
+				tiled.frame();
+			}
+			check(Math.abs(tiled.volume() - v1) / v1 < 1.0e-5, String.format("volume after settling %.4f (was %.4f)", tiled.volume(), v1));
 		}
 
 		System.out.println(failures == 0 ? "ALL PASSED" : failures + " FAILED");

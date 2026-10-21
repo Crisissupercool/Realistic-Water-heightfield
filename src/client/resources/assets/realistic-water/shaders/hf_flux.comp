@@ -2,7 +2,6 @@
 // Pass 1 of the virtual-pipe step: outflow from each span through each of its links.
 #include "hf_common.glsl"
 layout(local_size_x = 256) in;
-layout(std430, binding = 1) readonly buffer Geo { vec2 geo[]; };
 layout(std430, binding = 2) readonly buffer Depth { float depth[]; };
 layout(std430, binding = 3) buffer Flux { float flux[]; };
 
@@ -14,37 +13,34 @@ layout(std430, binding = 3) buffer Flux { float flux[]; };
 #define HF_MIN_FLOW hp.p1.z
 
 void main() {
-    uint s = hfSpanOf(GID_U, true);
-    if (s == HF_NONE) {
+    HfSpan a;
+    if (!hfFromList(GID_U, a)) {
         return;
     }
-    uint base = s * HF_LINKS;
-    vec2 a = geo[s];
-    float hA = depth[s];
-    if (!hfValid(a) || hA <= HF_MIN_FLOW) {
+    uint base = a.flux;
+    vec2 ga = hfGeo(a.span);
+    float hA = depth[a.span];
+    if (!hfValid(ga) || hA <= HF_MIN_FLOW) {
         for (uint k = 0u; k < HF_LINKS; k++) {
             flux[base + k] = 0.0;
         }
         return;
     }
-    float headA = a.x + hA;
+    float headA = ga.x + hA;
     float outflow[8];
     float total = 0.0;
     for (uint k = 0u; k < HF_LINKS; k++) {
         outflow[k] = 0.0;
-        uint l = hfLink(s, k);
-        if (l == HF_LINK_NONE) {
+        uint nib = hfLink(a, k);
+        HfSpan b;
+        if (nib == HF_LINK_NONE || !hfNeighbor(a, k, nib, true, b)) {
             continue;
         }
-        uint t = hfNeighbor(s, k, l, true);
-        if (t == HF_NONE) {
-            continue;
-        }
-        vec2 b = geo[t];
-        float headB = b.x + depth[t];
+        vec2 gb = hfGeo(b.span);
+        float headB = gb.x + depth[b.span];
         // Only water inside the shared opening can move.
-        float lo = max(a.x, b.x);
-        float hi = min(a.y, b.y);
+        float lo = max(ga.x, gb.x);
+        float hi = min(ga.y, gb.y);
         float wetA = clamp(headA, lo, hi) - lo;
         if (wetA <= 0.0) {
             continue;

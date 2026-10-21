@@ -1,0 +1,61 @@
+#version 450
+// After a tile's terrain changed (block placed or broken, chunk loaded), moves its water from the old span pages into the
+// rebuilt ones, column by column. Each old body of water goes whole into the new span it overlaps most (or the nearest one
+// when a block now fills it), so the volume is exact; water squeezed into a smaller span is under pressure and flows out.
+#include "hf_common.glsl"
+layout(local_size_x = 256) in;
+layout(std430, binding = 2) buffer Depth { float depth[]; };
+
+#define HF_OLD_PAGES floatBitsToInt(hp.p0)
+#define HF_NEW_PAGES floatBitsToInt(hp.p1)
+
+void main() {
+    uint col = GID_U;
+    if (col >= hfPageSpans()) {
+        return;
+    }
+    ivec4 oldPages = HF_OLD_PAGES;
+    ivec4 newPages = HF_NEW_PAGES;
+    vec2 ng[4];
+    float acc[4];
+    for (int j = 0; j < 4; j++) {
+        acc[j] = 0.0;
+        ng[j] = newPages[j] >= 0 ? hfGeo(uint(newPages[j]) * hfPageSpans() + col) : vec2(1.0e30, -1.0e30);
+    }
+    for (int i = 0; i < 4; i++) {
+        if (oldPages[i] < 0) {
+            continue;
+        }
+        uint s = uint(oldPages[i]) * hfPageSpans() + col;
+        vec2 g = hfGeo(s);
+        float d = depth[s];
+        if (!hfValid(g) || d <= 0.0) {
+            continue;
+        }
+        float lo = g.x;
+        float hi = g.x + d;
+        int best = -1;
+        float bestOverlap = 0.0;
+        float bestGap = 3.0e38;
+        for (int j = 0; j < 4; j++) {
+            if (!hfValid(ng[j])) {
+                continue;
+            }
+            float overlap = min(hi, ng[j].y) - max(lo, ng[j].x);
+            float gap = max(ng[j].x - hi, lo - ng[j].y);
+            if (overlap > bestOverlap || bestOverlap <= 0.0 && overlap <= 0.0 && gap < bestGap) {
+                best = j;
+                bestOverlap = max(overlap, 0.0);
+                bestGap = gap;
+            }
+        }
+        if (best >= 0) {
+            acc[best] += d;
+        }
+    }
+    for (int j = 0; j < 4; j++) {
+        if (newPages[j] >= 0) {
+            depth[uint(newPages[j]) * hfPageSpans() + col] = acc[j];
+        }
+    }
+}

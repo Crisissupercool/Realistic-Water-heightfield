@@ -397,6 +397,9 @@ public final class WaterWorld {
 		}
 
 		if (oldState.getBlock() != newState.getBlock() || !oldState.getCollisionShape(level, pos).equals(newState.getCollisionShape(level, pos))) {
+			if (this.heightfield != null) {
+				this.heightfield.grid.markDirtyBlock(pos.getX(), pos.getY(), pos.getZ());
+			}
 			for (Material m : Material.values()) {
 				SolidCache cache = this.solids(m);
 				if (cache.update(level, pos)) {
@@ -414,6 +417,10 @@ public final class WaterWorld {
 
 	public void onChunkLoad(ClientLevel level, LevelChunk chunk) {
 		ChunkPos pos = chunk.getPos();
+		if (this.heightfield != null) {
+			// Tiles over unloaded chunks were built as solid; rebuild them now that the terrain is known.
+			this.heightfield.grid.markDirtyChunk(pos.x(), pos.z());
+		}
 		for (SolidCache cache : new SolidCache[]{this.solids, this.sandSolids}) {
 			if (cache != null) {
 				cache.invalidateChunk(pos.x(), pos.z());
@@ -848,22 +855,32 @@ public final class WaterWorld {
 		HfTileGrid grid = hf.grid;
 		hf.readStats();
 		boolean running = !this.paused && !mc.isPaused();
-		int[] left = new int[0];
+		HfTileGrid.Activation act = new HfTileGrid.Activation(new int[0], new int[0]);
 		int steps = 0;
 		float dt = frameDt;
-		if (running) {
-			int[][] grow = grid.growthRequests(Math.max(0, WaterSettings.hfMaxNewTilesPerFrame));
-			if (grow.length > 0 && mc.level != null) {
-				ClientLevel level = mc.level;
-				SolidCache solids = new SolidCache(grid.cpb, false);
-				HfTopology.Voxels voxels = (bx, by, bz) -> solids.blockVoxels(level, bx, by, bz);
-				for (int[] t : grow) {
-					hf.addTile(t[0], t[1], grid.build(voxels, t[0], t[1]), null);
+		ClientLevel level = mc.level;
+		int[] dirty = grid.takeDirty();
+		int[][] grow = running ? grid.growthRequests(Math.max(0, WaterSettings.hfMaxNewTilesPerFrame)) : new int[0][];
+		if (level != null && (dirty.length > 0 || grow.length > 0)) {
+			SolidCache solids = new SolidCache(grid.cpb, false);
+			HfTopology.Voxels voxels = (bx, by, bz) -> solids.blockVoxels(level, bx, by, bz);
+			// All dirty tiles in one frame, so both sides of a tile border always use the same topology.
+			for (int tile : dirty) {
+				// Tiles line up with chunks; an unloaded chunk would read as solid and the remap would have nowhere to put the water.
+				int chunkX = Math.floorDiv(grid.originX, 16) + grid.tileX[tile];
+				int chunkZ = Math.floorDiv(grid.originZ, 16) + grid.tileZ[tile];
+				if (level.hasChunk(chunkX, chunkZ)) {
+					hf.rebuildTile(tile, grid.build(voxels, grid.tileX[tile], grid.tileZ[tile]));
 				}
 			}
-			left = grid.updateActive(frameDt, WaterSettings.hfSleepRate, WaterSettings.hfSleepSeconds, WaterSettings.hfFilmDepth,
+			for (int[] t : grow) {
+				hf.addTile(t[0], t[1], grid.build(voxels, t[0], t[1]), null);
+			}
+		}
+		if (running) {
+			act = grid.updateActive(frameDt, WaterSettings.hfSleepRate, WaterSettings.hfSleepSeconds, WaterSettings.hfFilmDepth,
 				WaterSettings.hfFilmSleepRate);
-			if (grid.activeList.length > 0) {
+			if (act.pages.length > 0) {
 				float stable = hf.maxStableDt();
 				steps = Mth.clamp((int) Math.ceil(frameDt / stable), 1, Math.max(1, WaterSettings.hfMaxStepsPerFrame));
 				dt = Math.min(frameDt / steps, stable);
@@ -877,7 +894,7 @@ public final class WaterWorld {
 		this.writeHfGlobals(mc, hf, this.hfUbo.mapped(), o, width, height);
 		this.hfUbo.flush(o, UBO_SIZE);
 		Desc ubo = Desc.ubo(this.hfUbo, o, UBO_SIZE);
-		hf.record(cb, ubo, left, steps, dt);
+		hf.record(cb, ubo, act, steps, dt);
 		hf.probe(cb, ubo, this.frameView, cam.x, cam.y, cam.z);
 		return new WaterRenderer.Body(null, hf, ubo);
 	}
@@ -893,8 +910,10 @@ public final class WaterWorld {
 		}
 		long start = System.nanoTime();
 		int cpb = Math.clamp(WaterSettings.hfCellsPerBlock, 1, 4);
-		int layers = Math.clamp(WaterSettings.hfLayers, 1, 8);
+		int layers = Math.clamp(WaterSettings.hfLayers, 1, HfTileGrid.MAX_LAYERS);
 		int maxTiles = Math.clamp(WaterSettings.hfMaxTiles, 16, 4096);
+		int maxPages = Math.clamp(WaterSettings.hfMaxPages, 16, 16384);
+		int maxFluxPages = Math.clamp(WaterSettings.hfMaxFluxPages, 16, maxPages);
 		int refY = Mth.floor(center.y);
 		float waterLevel = (float) (center.y + height);
 		int worldMin = level.getMinY();
@@ -904,11 +923,11 @@ public final class WaterWorld {
 		// Tiles line up with chunks: tile (0, 0) is the chunk the player stands in.
 		int originX = Math.floorDiv(Mth.floor(center.x), HfTileGrid.TILE_BLOCKS) * HfTileGrid.TILE_BLOCKS;
 		int originZ = Math.floorDiv(Mth.floor(center.z), HfTileGrid.TILE_BLOCKS) * HfTileGrid.TILE_BLOCKS;
-		HfTileGrid grid = new HfTileGrid(originX, originZ, yMin, yMax, cpb, layers, WaterSettings.hfMinOpening, maxTiles);
+		HfTileGrid grid = new HfTileGrid(originX, originZ, yMin, yMax, cpb, layers, WaterSettings.hfMinOpening, maxTiles, maxPages, maxFluxPages);
 		if (this.heightfield != null) {
 			this.heightfield.close();
 		}
-		HfDomain hf = new HfDomain(grid);
+		HfDomain hf = new HfDomain(grid, WaterSettings.hfMaxQuads);
 		this.heightfield = hf;
 		this.failed = false;
 		long setupMs = (System.nanoTime() - start) / 1_000_000L;
@@ -935,7 +954,7 @@ public final class WaterWorld {
 				long t0 = System.nanoTime();
 				HfTileGrid.Tile tile = grid.build(voxels, tx, tz);
 				topoNs += System.nanoTime() - t0;
-				float[] depth = new float[grid.tileSpans];
+				float[] depth = new float[tile.layersUsed * grid.pageSpans];
 				for (int lz = 0; lz < grid.tn; lz++) {
 					for (int lx = 0; lx < grid.tn; lx++) {
 						double dx = minX + (lx + 0.5) / cpb - center.x;
@@ -943,11 +962,17 @@ public final class WaterWorld {
 						if (dx * dx + dz * dz > r2) {
 							continue;
 						}
-						for (int l = 0; l < layers; l++) {
-							int s = (lz * grid.tn + lx) * layers + l;
+						for (int l = 0; l < tile.layersUsed; l++) {
+							int i = l * grid.pageSpans + lz * grid.tn + lx;
+							int g = tile.geo[i];
+							if (!HfTileGrid.validGeo(g)) {
+								continue;
+							}
+							float floor = grid.floorOf(g);
+							float ceil = grid.ceilOf(g);
 							// Fill spans open around the player's height or above: not deep caves, but rooms and tree-covered ground.
-							if (tile.valid(s) && tile.floor[s] < waterLevel && tile.ceil[s] > refY - 2) {
-								depth[s] = Math.min(waterLevel, tile.ceil[s]) - tile.floor[s];
+							if (floor < waterLevel && ceil > refY - 2) {
+								depth[i] = Math.min(waterLevel, ceil) - floor;
 							}
 						}
 					}
@@ -963,7 +988,7 @@ public final class WaterWorld {
 		return String.format("Flooding radius %d to Y=%.1f: %,.0f blocks of water in %d tiles of 16x16 blocks (pool %d), %d spans dropped, "
 				+ "built in %d ms (GPU setup %d ms, terrain scan %d ms)%s",
 			radius, waterLevel, hf.initialVolume, grid.count, grid.maxTiles, grid.droppedSpans, ms, setupMs, topoNs / 1_000_000L,
-			full ? ". The tile pool is full; raise hfMaxTiles for bigger floods" : "");
+			full ? ". The tile pool is full; raise hfMaxTiles / hfMaxPages for bigger floods" : "");
 	}
 
 	public String heightfieldStats() {
@@ -1150,7 +1175,7 @@ public final class WaterWorld {
 	/** UBO for the heightfield: the shared shading fields plus the few simulation fields its shaders and the composite pass read. */
 	private void writeHfGlobals(Minecraft mc, HfDomain hf, ByteBuffer b, int o, int width, int height) {
 		this.writeShading(b, o, mc, hf.originX, hf.originY, hf.originZ, 1.0F, hf.cellsPerBlock, Material.WATER, width, height);
-		putInts(b, o, hf.grid.tn, 1, hf.grid.tn, hf.grid.tileSpans);
+		putInts(b, o, hf.grid.tn, 1, hf.grid.tn, hf.grid.pageSpans);
 		putInts(b, o + 32, 0, 0, 0, this.frameCounter);
 		putInts(b, o + 48, 0, 0, 0, 0);
 		putFloats(b, o + 64, 0.0F, -WaterSettings.gravity, 0.0F, hf.lastDt);

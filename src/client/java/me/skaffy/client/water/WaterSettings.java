@@ -137,8 +137,14 @@ public final class WaterSettings {
 	public static int hfCellsPerBlock = 2;
 	public static int hfLayers = 4;
 	public static float hfMinOpening = 0.25F;
-	/** Size of the tile pool (16x16 blocks each, about 0.3 MB of GPU memory per tile at the defaults); read when a flood starts. */
+	/** Tiles of 16x16 blocks; with hfMaxPages and hfMaxFluxPages read when a flood starts. */
 	public static int hfMaxTiles = 256;
+	/** Span pages: one per used layer of a tile, 12 B per span (12 KB per page at 2 cells per block). */
+	public static int hfMaxPages = 512;
+	/** Flux pages, only held by tiles being simulated: 32 B per span (32 KB per page). */
+	public static int hfMaxFluxPages = 384;
+	/** Quads in the shared heightfield surface mesh (80 B each). */
+	public static int hfMaxQuads = 400_000;
 	public static int hfMaxNewTilesPerFrame = 2;
 	public static float hfCfl = 0.3F;
 	public static float hfDamping = 0.995F;

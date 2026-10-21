@@ -7,7 +7,6 @@
 // geometry and removes a full layer of overdraw from the additive thickness pass.
 #include "hf_common.glsl"
 layout(local_size_x = 256) in;
-layout(std430, binding = 1) readonly buffer Geo { vec2 geo[]; };
 layout(std430, binding = 2) readonly buffer Depth { float depth[]; };
 layout(std430, binding = 9) writeonly buffer Verts { vec4 verts[]; };
 layout(std430, binding = 10) writeonly buffer Quads { uvec4 quads[]; };
@@ -26,41 +25,41 @@ bool wet(uint t) {
 }
 
 float surfaceOf(uint t) {
-    return min(geo[t].x + depth[t], geo[t].y);
+    vec2 g = hfGeo(t);
+    return min(g.x + depth[t], g.y);
 }
 
 // Two wet spans form one water surface only when their water columns overlap in height. A link only says the open spaces
 // overlap: ground water next to a puddle on a roof is linked too, and averaging the two would draw slanted sheets up the wall.
 bool joined(uint a, uint t) {
-    return wet(t) && geo[t].x < surfaceOf(a) && geo[a].x < surfaceOf(t);
+    return wet(t) && hfGeo(t).x < surfaceOf(a) && hfGeo(a).x < surfaceOf(t);
 }
 
 // Neighbor span in a direction, preferring one whose water joins ours. Slot j = 0 holds the largest opening.
-uint pick(uint s, int dir) {
-    uint fallback = HF_NONE;
+bool pick(HfSpan a, int dir, out HfSpan r) {
+    bool found = false;
     for (int j = 0; j < 2; j++) {
         uint k = uint(dir * 2 + j);
-        uint l = hfLink(s, k);
-        if (l == HF_LINK_NONE) {
-            continue;
-        }
+        uint nib = hfLink(a, k);
+        HfSpan t;
         // Sleeping tiles still show their water, so neighbors resolve by existence, not by activity.
-        uint t = hfNeighbor(s, k, l, false);
-        if (t == HF_NONE) {
+        if (nib == HF_LINK_NONE || !hfNeighbor(a, k, nib, false, t)) {
             continue;
         }
-        if (joined(s, t)) {
-            return t;
+        if (joined(a.span, t.span)) {
+            r = t;
+            return true;
         }
-        if (fallback == HF_NONE) {
-            fallback = t;
+        if (!found) {
+            r = t;
+            found = true;
         }
     }
-    return fallback;
+    return found;
 }
 
-float sampleHeight(uint s, uint t, float fl, float top) {
-    if (t == HF_NONE) {
+float sampleHeight(uint s, bool ok, uint t, float fl, float top) {
+    if (!ok) {
         return top;
     }
     if (wet(t)) {
@@ -68,24 +67,27 @@ float sampleHeight(uint s, uint t, float fl, float top) {
         return joined(s, t) ? surfaceOf(t) : top;
     }
     // A dry neighbor pulls toward its floor (shorelines), but never below our floor or above our surface.
-    return clamp(geo[t].x, fl, top);
+    return clamp(hfGeo(t).x, fl, top);
 }
 
 // Height and smooth normal at one corner, from the (up to) four spans sharing it. Adjacent quads compute the same
 // values, so they meet without cracks and shade without visible facets.
-vec4 corner(uint s, int sx, int sz, float fl, float top, float ce) {
+vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce) {
     int dirX = sx > 0 ? 0 : 1;
     int dirZ = sz > 0 ? 2 : 3;
-    uint nx = pick(s, dirX);
-    uint nz = pick(s, dirZ);
-    uint nd = nx != HF_NONE ? pick(nx, dirZ) : HF_NONE;
-    if (nd == HF_NONE && nz != HF_NONE) {
-        nd = pick(nz, dirX);
+    HfSpan nx;
+    HfSpan nz;
+    HfSpan nd;
+    bool okX = pick(a, dirX, nx);
+    bool okZ = pick(a, dirZ, nz);
+    bool okD = okX && pick(nx, dirZ, nd);
+    if (!okD && okZ) {
+        okD = pick(nz, dirX, nd);
     }
     float hs = top;
-    float hx = sampleHeight(s, nx, fl, top);
-    float hz = sampleHeight(s, nz, fl, top);
-    float hd = nd != HF_NONE ? sampleHeight(s, nd, fl, top) : 0.5 * (hx + hz);
+    float hx = sampleHeight(a.span, okX, nx.span, fl, top);
+    float hz = sampleHeight(a.span, okZ, nz.span, fl, top);
+    float hd = okD ? sampleHeight(a.span, true, nd.span, fl, top) : 0.5 * (hx + hz);
     float c = HF_CELL;
     float dhdx = ((hx - hs) + (hd - hz)) * 0.5 / c * float(sx);
     float dhdz = ((hz - hs) + (hd - hx)) * 0.5 / c * float(sz);
@@ -124,16 +126,17 @@ void emit(uint q, vec3 a, vec3 b, vec3 c, vec3 d, vec3 normal, bool wall) {
 }
 
 void main() {
-    uint s = hfSpanOf(GID_U, false);
-    if (s == HF_NONE) {
+    HfSpan a;
+    if (!hfFromPage(GID_U, a)) {
         return;
     }
-    vec2 g = geo[s];
+    uint s = a.span;
+    vec2 g = hfGeo(s);
     if (!hfValid(g) || !wet(s)) {
         return;
     }
-    ivec2 tile = tileInfo[(s / uint(HF_TILE_SPANS)) * 2u + 1u].xy;
-    ivec2 local = hfColumn(s);
+    ivec2 tile = tileInfo[a.tile * 4u + 1u].xy;
+    ivec2 local = hfColumn(a.col);
     int cx = tile.x * HF_TN + local.x;
     int cz = tile.y * HF_TN + local.y;
     float fl = g.x;
@@ -141,10 +144,10 @@ void main() {
     float top = surfaceOf(s);
     float oy = HF_ORIGIN_Y;
 
-    vec4 c00 = corner(s, -1, -1, fl, top, ce);
-    vec4 c10 = corner(s, 1, -1, fl, top, ce);
-    vec4 c11 = corner(s, 1, 1, fl, top, ce);
-    vec4 c01 = corner(s, -1, 1, fl, top, ce);
+    vec4 c00 = corner(a, -1, -1, fl, top, ce);
+    vec4 c10 = corner(a, 1, -1, fl, top, ce);
+    vec4 c11 = corner(a, 1, 1, fl, top, ce);
+    vec4 c01 = corner(a, -1, 1, fl, top, ce);
     float h00 = c00.y - oy;
     float h10 = c10.y - oy;
     float h11 = c11.y - oy;
@@ -153,9 +156,10 @@ void main() {
     uint wallMask = 0u;
     float inset[4];
     for (int d = 0; d < 4; d++) {
-        uint t = pick(s, d);
-        inset[d] = t == HF_NONE ? WALL_INSET : 0.0;
-        if (t == HF_NONE || !joined(s, t)) {
+        HfSpan t;
+        bool ok = pick(a, d, t);
+        inset[d] = ok ? 0.0 : WALL_INSET;
+        if (!ok || !joined(s, t.span)) {
             wallMask |= 1u << d;
         }
     }

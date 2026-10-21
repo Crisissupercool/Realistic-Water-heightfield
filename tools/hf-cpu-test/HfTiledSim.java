@@ -3,128 +3,192 @@ package me.skaffy.client.water;
 import java.util.Arrays;
 
 /**
- * Java mirror of the tiled GPU solver: hf_flux.comp / hf_depth.comp over a tile list, with neighbor resolution through
- * {@link HfTileGrid}, and the per-frame scheduling HfDomain does (growth, sleeping, zeroing the flux of tiles that leave the
- * dispatch set). If you change the shaders or HfDomain.frame, change this the same way.
+ * Java mirror of the tiled GPU solver: hf_flux.comp / hf_depth.comp / hf_remap.comp over span and flux pages, with neighbor
+ * resolution through {@link HfTileGrid}, and the per-frame scheduling HfDomain and WaterWorld do (block edits, growth,
+ * sleeping, flux pages). If you change the shaders or that scheduling, change this the same way.
  */
 final class HfTiledSim {
+	/** Fills a new tile: initial depth for (layer, column). */
+	interface Fill {
+		double depth(int layer, int col);
+	}
+
 	final HfTileGrid g;
 	final HfTopology.Voxels vox;
-	final float[] floor;
-	final float[] ceil;
-	final float[] h;
-	final float[] flux;
+	final int ps;
+	final int[] geo;
+	final float[] depth;
 	final int[] links;
+	final float[] flux;
 	float sleepRate = 0.002F;
 	float sleepSeconds = 1.0F;
 	float filmDepth = 0.1F;
 	float filmRate = 0.02F;
 	int maxNewTiles = 2;
-	int frames;
+	int[] pages = new int[0];
 
 	HfTiledSim(HfTileGrid g, HfTopology.Voxels vox) {
 		this.g = g;
 		this.vox = vox;
-		int n = g.maxTiles * g.tileSpans;
-		this.floor = new float[n];
-		this.ceil = new float[n];
-		this.h = new float[n];
-		this.flux = new float[n * 8];
-		this.links = new int[n * 2];
-		Arrays.fill(this.floor, 1.0e30F);
-		Arrays.fill(this.ceil, -1.0e30F);
-		Arrays.fill(this.links, -1);
+		this.ps = g.pageSpans;
+		this.geo = new int[g.maxPages * this.ps];
+		this.depth = new float[g.maxPages * this.ps];
+		this.links = new int[g.maxPages * this.ps];
+		this.flux = new float[g.maxFluxPages * this.ps * 8];
 	}
 
-	/** Builds and adds a tile; {@code fill} gives the initial depth per local span (or null for dry). Returns the slot or -1. */
-	int addTile(int tx, int tz, java.util.function.IntToDoubleFunction fill) {
-		HfTileGrid.Tile t = this.g.build(this.vox, tx, tz);
-		int slot = this.g.add(tx, tz, t.dropped);
-		if (slot < 0) {
-			return slot;
+	private void writePages(int tile, HfTileGrid.Tile t) {
+		for (int l = 0; l < t.layersUsed; l++) {
+			int base = this.g.spanPage[tile * 4 + l] * this.ps;
+			System.arraycopy(t.geo, l * this.ps, this.geo, base, this.ps);
+			System.arraycopy(t.links, l * this.ps, this.links, base, this.ps);
 		}
-		int base = slot * this.g.tileSpans;
+	}
+
+	/** Builds and adds a tile; returns the tile index or -1 when the pool is full. */
+	int addTile(int tx, int tz, Fill fill) {
+		HfTileGrid.Tile t = this.g.build(this.vox, tx, tz);
+		int tile = this.g.add(tx, tz, t);
+		if (tile < 0) {
+			return tile;
+		}
+		this.writePages(tile, t);
 		double vol = 0.0;
 		float md = 0.0F;
-		for (int i = 0; i < this.g.tileSpans; i++) {
-			this.floor[base + i] = t.floor[i];
-			this.ceil[base + i] = t.ceil[i];
-			float d = fill != null && t.valid(i) ? (float) fill.applyAsDouble(i) : 0.0F;
-			this.h[base + i] = d;
-			vol += (double) d * this.g.cell * this.g.cell;
-			md = Math.max(md, d);
+		for (int l = 0; l < t.layersUsed; l++) {
+			int base = this.g.spanPage[tile * 4 + l] * this.ps;
+			for (int c = 0; c < this.ps; c++) {
+				float d = fill != null && HfTileGrid.validGeo(t.geo[l * this.ps + c]) ? (float) fill.depth(l, c) : 0.0F;
+				this.depth[base + c] = d;
+				vol += (double) d * this.g.cell * this.g.cell;
+				md = Math.max(md, d);
+			}
 		}
-		System.arraycopy(t.links, 0, this.links, base * 2, this.g.tileSpans * 2);
-		Arrays.fill(this.flux, base * 8, (base + this.g.tileSpans) * 8, 0.0F);
-		this.g.volume[slot] = vol;
-		this.g.maxDepth[slot] = md;
-		return slot;
+		this.g.volume[tile] = vol;
+		this.g.maxDepth[tile] = md;
+		return tile;
 	}
 
-	private boolean valid(int s) {
-		return this.ceil[s] > this.floor[s];
+	/** Mirror of hf_remap.comp for one tile. */
+	private void remap(int[] oldPages, int[] newPages) {
+		for (int col = 0; col < this.ps; col++) {
+			float[] acc = new float[4];
+			for (int i = 0; i < 4; i++) {
+				if (oldPages[i] < 0) {
+					continue;
+				}
+				int s = oldPages[i] * this.ps + col;
+				int gg = this.geo[s];
+				float d = this.depth[s];
+				if (!HfTileGrid.validGeo(gg) || d <= 0.0F) {
+					continue;
+				}
+				float lo = this.g.floorOf(gg);
+				float hi = lo + d;
+				int best = -1;
+				float bestOverlap = 0.0F;
+				float bestGap = 3.0e38F;
+				for (int j = 0; j < 4; j++) {
+					if (newPages[j] < 0) {
+						continue;
+					}
+					int ng = this.geo[newPages[j] * this.ps + col];
+					if (!HfTileGrid.validGeo(ng)) {
+						continue;
+					}
+					float nf = this.g.floorOf(ng);
+					float nc = this.g.ceilOf(ng);
+					float overlap = Math.min(hi, nc) - Math.max(lo, nf);
+					float gap = Math.max(nf - hi, lo - nc);
+					if (overlap > bestOverlap || bestOverlap <= 0.0F && overlap <= 0.0F && gap < bestGap) {
+						best = j;
+						bestOverlap = Math.max(overlap, 0.0F);
+						bestGap = gap;
+					}
+				}
+				if (best >= 0) {
+					acc[best] += d;
+				}
+			}
+			for (int j = 0; j < 4; j++) {
+				if (newPages[j] >= 0) {
+					this.depth[newPages[j] * this.ps + col] = acc[j];
+				}
+			}
+		}
 	}
 
-	private int link(int s, int k) {
-		return HfTileGrid.link(this.links, s, k);
+	private int span(int tile, int layer, int col) {
+		return this.g.spanPage[tile * 4 + layer] * this.ps + col;
 	}
 
-	private int columnX(int s) {
-		return (s % this.g.tileSpans) / this.g.layers % this.g.tn;
+	private int fluxBase(int tile, int layer, int col) {
+		return (this.g.fluxPage[tile * 4 + layer] * this.ps + col) * 8;
 	}
 
-	private int columnZ(int s) {
-		return (s % this.g.tileSpans) / this.g.layers / this.g.tn;
-	}
-
-	int neighbor(int s, int k, int l, boolean requireActive) {
-		int ts = this.g.tileSpans;
+	/** Neighbor through link nibble nib in slot k, as {tile, layer, col}, or null (mirror of hfNeighbor). */
+	private int[] neighbor(int tile, int col, int k, int nib, boolean requireActive) {
 		int tn = this.g.tn;
-		int slot = s / ts;
 		int d = k >> 1;
-		int cx = this.columnX(s) + HfTileGrid.DX[d];
-		int cz = this.columnZ(s) + HfTileGrid.DZ[d];
-		int ns = slot;
+		int cx = col % tn + HfTileGrid.DX[d];
+		int cz = col / tn + HfTileGrid.DZ[d];
+		int t = tile;
 		if (cx < 0 || cz < 0 || cx >= tn || cz >= tn) {
-			ns = this.g.nbr[slot * 4 + d];
-			if (ns < 0) {
-				return -1;
+			t = this.g.nbr[tile * 4 + d];
+			if (t < 0) {
+				return null;
 			}
 			cx = (cx + tn) % tn;
 			cz = (cz + tn) % tn;
 		}
-		if (requireActive && !this.g.active[ns]) {
-			return -1;
+		if (requireActive && !this.g.active[t]) {
+			return null;
 		}
-		return ns * ts + (cz * tn + cx) * this.g.layers + (l >> 3);
+		int layer = nib & 3;
+		if (this.g.spanPage[t * 4 + layer] < 0) {
+			return null;
+		}
+		return new int[]{t, layer, cz * tn + cx};
+	}
+
+	private static int rev(int k, int nib) {
+		return ((k >> 1) ^ 1) * 2 + (nib >> 2);
 	}
 
 	void fluxPass(float dt, float keep) {
 		float cell = this.g.cell;
-		for (int slot : this.g.activeList) {
-			for (int i = 0; i < this.g.tileSpans; i++) {
-				int s = slot * this.g.tileSpans + i;
-				int base = s * 8;
-				float hA = this.h[s];
-				if (!this.valid(s) || hA <= HfCpuTest.MIN_FLOW) {
+		for (int e : this.pages) {
+			int tile = e >> 2;
+			int layer = e & 3;
+			for (int col = 0; col < this.ps; col++) {
+				int s = this.span(tile, layer, col);
+				int base = this.fluxBase(tile, layer, col);
+				int ga = this.geo[s];
+				float hA = this.depth[s];
+				if (!HfTileGrid.validGeo(ga) || hA <= HfCpuTest.MIN_FLOW) {
 					Arrays.fill(this.flux, base, base + 8, 0.0F);
 					continue;
 				}
-				float headA = this.floor[s] + hA;
+				float fa = this.g.floorOf(ga);
+				float ca = this.g.ceilOf(ga);
+				float headA = fa + hA;
 				float[] out = new float[8];
 				float total = 0.0F;
 				for (int k = 0; k < 8; k++) {
-					int l = this.link(s, k);
-					if (l == HfTileGrid.LINK_NONE) {
+					int nib = HfTileGrid.link(this.links[s], k);
+					if (nib == HfTileGrid.LINK_NONE) {
 						continue;
 					}
-					int b = this.neighbor(s, k, l, true);
-					if (b < 0) {
+					int[] nb = this.neighbor(tile, col, k, nib, true);
+					if (nb == null) {
 						continue;
 					}
-					float headB = this.floor[b] + this.h[b];
-					float lo = Math.max(this.floor[s], this.floor[b]);
-					float hi = Math.min(this.ceil[s], this.ceil[b]);
+					int b = this.span(nb[0], nb[1], nb[2]);
+					int gb = this.geo[b];
+					float fb = this.g.floorOf(gb);
+					float headB = fb + this.depth[b];
+					float lo = Math.max(fa, fb);
+					float hi = Math.min(ca, this.g.ceilOf(gb));
 					float wetA = Math.clamp(headA, lo, hi) - lo;
 					if (wetA <= 0.0F) {
 						continue;
@@ -146,98 +210,118 @@ final class HfTiledSim {
 
 	void depthPass(float dt) {
 		float cell = this.g.cell;
-		for (int slot : this.g.activeList) {
-			double vol = 0.0;
-			float md = 0.0F;
-			float ms = 0.0F;
-			float mr = 0.0F;
-			int bits = 0;
-			for (int i = 0; i < this.g.tileSpans; i++) {
-				int s = slot * this.g.tileSpans + i;
-				if (!this.valid(s)) {
+		for (int tile : this.g.activeList) {
+			this.g.volume[tile] = 0.0;
+			this.g.maxDepth[tile] = 0.0F;
+			this.g.maxSpeed[tile] = 0.0F;
+			this.g.maxRate[tile] = 0.0F;
+			this.g.border[tile] = 0;
+		}
+		for (int e : this.pages) {
+			int tile = e >> 2;
+			int layer = e & 3;
+			for (int col = 0; col < this.ps; col++) {
+				int s = this.span(tile, layer, col);
+				if (!HfTileGrid.validGeo(this.geo[s])) {
 					continue;
 				}
-				int base = s * 8;
+				int base = this.fluxBase(tile, layer, col);
 				float in = 0.0F;
 				float out = 0.0F;
 				float peak = 0.0F;
 				for (int k = 0; k < 8; k++) {
-					int l = this.link(s, k);
-					if (l == HfTileGrid.LINK_NONE) {
+					int nib = HfTileGrid.link(this.links[s], k);
+					if (nib == HfTileGrid.LINK_NONE) {
 						continue;
 					}
-					int t = this.neighbor(s, k, l, true);
-					if (t < 0) {
+					int[] nb = this.neighbor(tile, col, k, nib, true);
+					if (nb == null) {
 						continue;
 					}
 					float o = this.flux[base + k];
-					float fi = this.flux[t * 8 + (l & 7)];
+					float fi = this.flux[this.fluxBase(nb[0], nb[1], nb[2]) + rev(k, nib)];
 					out += o;
 					in += fi;
 					peak = Math.max(peak, Math.max(o, fi));
 				}
-				float old = this.h[s];
+				float old = this.depth[s];
 				float nh = Math.max(old + dt * (in - out) / (cell * cell), 0.0F);
-				this.h[s] = nh;
-				vol += (double) nh * cell * cell;
-				md = Math.max(md, nh);
+				this.depth[s] = nh;
+				this.g.volume[tile] += (double) nh * cell * cell;
+				this.g.maxDepth[tile] = Math.max(this.g.maxDepth[tile], nh);
 				if (nh > 0.05F) {
-					ms = Math.max(ms, Math.min(nh > 0 ? peak / (cell * nh) : 0.0F, 30.0F));
+					this.g.maxSpeed[tile] = Math.max(this.g.maxSpeed[tile], Math.min(peak / (cell * nh), 30.0F));
 				}
-				mr = Math.max(mr, Math.abs(nh - old) / dt);
-				bits |= this.growthBits(s, nh);
+				this.g.maxRate[tile] = Math.max(this.g.maxRate[tile], Math.abs(nh - old) / dt);
+				this.g.border[tile] |= this.growthBits(tile, s, col, nh);
 			}
-			this.g.volume[slot] = vol;
-			this.g.maxDepth[slot] = md;
-			this.g.maxSpeed[slot] = ms;
-			this.g.maxRate[slot] = mr;
-			this.g.border[slot] = bits;
 		}
 	}
 
-	private int growthBits(int s, float depth) {
-		if (depth <= HfCpuTest.MIN_FLOW) {
+	private int growthBits(int tile, int s, int col, float h) {
+		if (h <= HfCpuTest.MIN_FLOW) {
 			return 0;
 		}
-		int slot = s / this.g.tileSpans;
 		int bits = 0;
 		for (int d = 0; d < 4; d++) {
-			int cx = this.columnX(s) + HfTileGrid.DX[d];
-			int cz = this.columnZ(s) + HfTileGrid.DZ[d];
+			int cx = col % this.g.tn + HfTileGrid.DX[d];
+			int cz = col / this.g.tn + HfTileGrid.DZ[d];
 			boolean outside = cx < 0 || cz < 0 || cx >= this.g.tn || cz >= this.g.tn;
-			if (!outside || this.g.nbr[slot * 4 + d] >= 0) {
+			if (!outside || this.g.nbr[tile * 4 + d] >= 0) {
 				continue;
 			}
-			if (this.link(s, d * 2) != HfTileGrid.LINK_NONE || this.link(s, d * 2 + 1) != HfTileGrid.LINK_NONE) {
+			if (HfTileGrid.link(this.links[s], d * 2) != HfTileGrid.LINK_NONE || HfTileGrid.link(this.links[s], d * 2 + 1) != HfTileGrid.LINK_NONE) {
 				bits |= 1 << d;
 			}
 		}
 		return bits;
 	}
 
+	/** Depth of (tile, layer, col), or 0 when the tile or layer does not exist. */
+	float depthAt(int tile, int layer, int col) {
+		if (tile < 0 || this.g.spanPage[tile * 4 + layer] < 0) {
+			return 0.0F;
+		}
+		return this.depth[this.span(tile, layer, col)];
+	}
+
 	double volume() {
 		double v = 0.0;
-		for (int s = 0; s < this.g.count * this.g.tileSpans; s++) {
-			if (this.valid(s)) {
-				v += (double) this.h[s] * this.g.cell * this.g.cell;
+		for (int tile = 0; tile < this.g.count; tile++) {
+			for (int l = 0; l < this.g.layersUsed[tile]; l++) {
+				int base = this.g.spanPage[tile * 4 + l] * this.ps;
+				for (int c = 0; c < this.ps; c++) {
+					if (HfTileGrid.validGeo(this.geo[base + c])) {
+						v += (double) this.depth[base + c] * this.g.cell * this.g.cell;
+					}
+				}
 			}
 		}
 		return v;
 	}
 
-	/** One 1/60 s frame the way HfDomain.frame runs it. Returns the number of solver steps taken. */
+	/** One 1/60 s frame the way WaterWorld + HfDomain run it. Returns the number of solver steps taken. */
 	int frame() {
 		float frameDt = 1.0F / 60.0F;
+		for (int tile : this.g.takeDirty()) {
+			HfTileGrid.Tile t = this.g.build(this.vox, this.g.tileX[tile], this.g.tileZ[tile]);
+			int[] old = this.g.replace(tile, t);
+			if (old == null) {
+				continue;
+			}
+			this.writePages(tile, t);
+			this.remap(old, Arrays.copyOfRange(this.g.spanPage, tile * 4, tile * 4 + 4));
+			this.g.releaseSpanPages(old);
+		}
 		for (int[] req : this.g.growthRequests(this.maxNewTiles)) {
 			this.addTile(req[0], req[1], null);
 		}
-		int[] left = this.g.updateActive(frameDt, this.sleepRate, this.sleepSeconds, this.filmDepth, this.filmRate);
-		for (int slot : left) {
-			int base = slot * this.g.tileSpans * 8;
-			Arrays.fill(this.flux, base, base + this.g.tileSpans * 8, 0.0F);
+		HfTileGrid.Activation act = this.g.updateActive(frameDt, this.sleepRate, this.sleepSeconds, this.filmDepth, this.filmRate);
+		for (int p : act.newFluxPages) {
+			Arrays.fill(this.flux, p * this.ps * 8, (p + 1) * this.ps * 8, 0.0F);
 		}
-		this.frames++;
-		if (this.g.activeList.length == 0) {
+		this.pages = act.pages;
+		if (this.pages.length == 0) {
 			return 0;
 		}
 		float wave = (float) Math.sqrt(9.81F * Math.max(this.g.activeMax(this.g.maxDepth), 0.01F)) + this.g.activeMax(this.g.maxSpeed);
