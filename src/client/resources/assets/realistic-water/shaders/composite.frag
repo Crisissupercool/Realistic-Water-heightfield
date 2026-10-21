@@ -241,14 +241,18 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     // Thin films lie flat; a falling sheet is thin too but must keep its own normal.
     float film = sheet ? 0.0 : 1.0 - smoothstep(0.02, max(G.shadeB.z, 0.03), vertical);
     n = normalize(mix(n, upV, film * 0.9));
+    vec3 tilt = vec3(0.0);
     if (!sheet) {
         vec2 slope = rippleSlope(world, footprint) * pc.rippleGain;
-        n = normalize(n - mat3(G.view) * vec3(slope.x, 0.0, slope.y));
+        tilt = mat3(G.view) * vec3(slope.x, 0.0, slope.y);
+        n = normalize(n - tilt);
     }
     vec3 wrinkled = rippleNormal(n, P, footprint);
     n = normalize(mix(n, wrinkled, smoothstep(0.0, 0.15, dot(wrinkled, V))));
 
-    vec2 offset = n.xy * G.waterA.z * clamp(thickness, 0.0, 2.0) / max(fd, 1.0);
+    // The player's ripples bend reflections fully but refraction only a little: at full strength the riverbed would swim.
+    vec3 nRefract = normalize(n + 0.7 * tilt);
+    vec2 offset = nRefract.xy * G.waterA.z * clamp(thickness, 0.0, 2.0) / max(fd, 1.0);
     vec2 ruv = clamp(uv + offset, vec2(0.0), vec2(1.0));
     float refrDist = linearDepth(texture(sceneDepth, ruv).r);
     float path = max(texture(thicknessTex, ruv).r, 0.0);

@@ -93,9 +93,10 @@ final class HfRipples implements AutoCloseable {
 				double vz = (player.getZ() - player.zo) * 20.0;
 				float speed = (float) Math.hypot(vx, vz);
 				float still = 1.0F - Math.min(speed / 0.5F, 1.0F);
-				target = -0.06F * Math.min(speed, 3.0F) / 3.0F
-					- 0.03F * still * (0.5F + 0.5F * (float) Math.sin(this.time * 5.0F))
-					- 0.15F * (float) Math.min(Math.abs(vy) / 8.0, 1.0) * (Math.abs(vy) > 1.0 ? 1.0F : 0.0F);
+				// First in-game test: 6 cm per 3 b/s with a normal gain of 2 made reflections swim while walking; now a gentler wake.
+				target = -0.025F * Math.min(speed, 3.0F) / 3.0F
+					- 0.012F * still * (0.5F + 0.5F * (float) Math.sin(this.time * 5.0F))
+					- 0.08F * (float) Math.min(Math.abs(vy) / 8.0, 1.0) * (Math.abs(vy) > 1.0 ? 1.0F : 0.0F);
 				target *= WaterSettings.hfRipples;
 				radius = (float) ((box.maxX - box.minX) * 0.5 + 0.1) * PER_BLOCK;
 				this.planeY = surface;

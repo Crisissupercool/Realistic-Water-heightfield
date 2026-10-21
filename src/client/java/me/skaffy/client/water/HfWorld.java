@@ -632,6 +632,12 @@ final class HfWorld {
 		double vx = (player.getX() - player.xo) * 20.0;
 		double vy = (player.getY() - player.yo) * 20.0;
 		double vz = (player.getZ() - player.zo) * 20.0;
+		// Sprinting through shallow water would otherwise shove a half-block bow wave along with the player.
+		double horizontal = Math.hypot(vx, vz);
+		if (horizontal > 2.5) {
+			vx *= 2.5 / horizontal;
+			vz *= 2.5 / horizontal;
+		}
 		var box = player.getBoundingBox();
 		float plunge = 0.0F;
 		float[] sm = this.playerSample;
