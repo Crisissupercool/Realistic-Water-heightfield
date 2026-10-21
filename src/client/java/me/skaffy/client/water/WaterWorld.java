@@ -911,6 +911,8 @@ public final class WaterWorld {
 		HfDomain hf = new HfDomain(grid);
 		this.heightfield = hf;
 		this.failed = false;
+		long setupMs = (System.nanoTime() - start) / 1_000_000L;
+		long topoNs = 0L;
 
 		SolidCache solids = new SolidCache(cpb, false);
 		HfTopology.Voxels voxels = (bx, by, bz) -> solids.blockVoxels(level, bx, by, bz);
@@ -930,7 +932,9 @@ public final class WaterWorld {
 				if (nearX * nearX + nearZ * nearZ > r2) {
 					continue;
 				}
+				long t0 = System.nanoTime();
 				HfTileGrid.Tile tile = grid.build(voxels, tx, tz);
+				topoNs += System.nanoTime() - t0;
 				float[] depth = new float[grid.tileSpans];
 				for (int lz = 0; lz < grid.tn; lz++) {
 					for (int lx = 0; lx < grid.tn; lx++) {
@@ -956,8 +960,9 @@ public final class WaterWorld {
 		}
 		hf.initialVolume = grid.totalVolume();
 		long ms = (System.nanoTime() - start) / 1_000_000L;
-		return String.format("Flooding radius %d to Y=%.1f: %,.0f blocks of water in %d tiles of 16x16 blocks (pool %d), %d spans dropped, built in %d ms%s",
-			radius, waterLevel, hf.initialVolume, grid.count, grid.maxTiles, grid.droppedSpans, ms,
+		return String.format("Flooding radius %d to Y=%.1f: %,.0f blocks of water in %d tiles of 16x16 blocks (pool %d), %d spans dropped, "
+				+ "built in %d ms (GPU setup %d ms, terrain scan %d ms)%s",
+			radius, waterLevel, hf.initialVolume, grid.count, grid.maxTiles, grid.droppedSpans, ms, setupMs, topoNs / 1_000_000L,
 			full ? ". The tile pool is full; raise hfMaxTiles for bigger floods" : "");
 	}
 

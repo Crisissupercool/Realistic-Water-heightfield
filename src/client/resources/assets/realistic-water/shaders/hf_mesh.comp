@@ -29,7 +29,13 @@ float surfaceOf(uint t) {
     return min(geo[t].x + depth[t], geo[t].y);
 }
 
-// Neighbor span in a direction, preferring a wet one. Slot j = 0 holds the largest opening.
+// Two wet spans form one water surface only when their water columns overlap in height. A link only says the open spaces
+// overlap: ground water next to a puddle on a roof is linked too, and averaging the two would draw slanted sheets up the wall.
+bool joined(uint a, uint t) {
+    return wet(t) && geo[t].x < surfaceOf(a) && geo[a].x < surfaceOf(t);
+}
+
+// Neighbor span in a direction, preferring one whose water joins ours. Slot j = 0 holds the largest opening.
 uint pick(uint s, int dir) {
     uint fallback = HF_NONE;
     for (int j = 0; j < 2; j++) {
@@ -43,7 +49,7 @@ uint pick(uint s, int dir) {
         if (t == HF_NONE) {
             continue;
         }
-        if (wet(t)) {
+        if (joined(s, t)) {
             return t;
         }
         if (fallback == HF_NONE) {
@@ -53,12 +59,16 @@ uint pick(uint s, int dir) {
     return fallback;
 }
 
-float sampleHeight(uint t, float fl, float top) {
+float sampleHeight(uint s, uint t, float fl, float top) {
     if (t == HF_NONE) {
         return top;
     }
+    if (wet(t)) {
+        // Water at a different level (a roof, a ledge, the top of a waterfall) is a separate surface: keep our own height.
+        return joined(s, t) ? surfaceOf(t) : top;
+    }
     // A dry neighbor pulls toward its floor (shorelines), but never below our floor or above our surface.
-    return wet(t) ? surfaceOf(t) : clamp(geo[t].x, fl, top);
+    return clamp(geo[t].x, fl, top);
 }
 
 // Height and smooth normal at one corner, from the (up to) four spans sharing it. Adjacent quads compute the same
@@ -73,9 +83,9 @@ vec4 corner(uint s, int sx, int sz, float fl, float top, float ce) {
         nd = pick(nz, dirX);
     }
     float hs = top;
-    float hx = sampleHeight(nx, fl, top);
-    float hz = sampleHeight(nz, fl, top);
-    float hd = nd != HF_NONE ? sampleHeight(nd, fl, top) : 0.5 * (hx + hz);
+    float hx = sampleHeight(s, nx, fl, top);
+    float hz = sampleHeight(s, nz, fl, top);
+    float hd = nd != HF_NONE ? sampleHeight(s, nd, fl, top) : 0.5 * (hx + hz);
     float c = HF_CELL;
     float dhdx = ((hx - hs) + (hd - hz)) * 0.5 / c * float(sx);
     float dhdz = ((hz - hs) + (hd - hx)) * 0.5 / c * float(sz);
@@ -145,7 +155,7 @@ void main() {
     for (int d = 0; d < 4; d++) {
         uint t = pick(s, d);
         inset[d] = t == HF_NONE ? WALL_INSET : 0.0;
-        if (t == HF_NONE || !wet(t)) {
+        if (t == HF_NONE || !joined(s, t)) {
             wallMask |= 1u << d;
         }
     }
