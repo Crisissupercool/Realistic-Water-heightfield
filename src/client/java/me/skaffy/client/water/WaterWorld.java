@@ -353,6 +353,8 @@ public final class WaterWorld {
 
 	public void reload(ClientLevel level) {
 		this.closeRegions();
+		// The heightfield is rebuilt from the realistic water blocks too (its height window then centres on the player).
+		this.hfWorld.close();
 		this.chunkScanQueue.clear();
 		int radius = Minecraft.getInstance().options.renderDistance().get();
 		ChunkPos center = ChunkPos.containing(Minecraft.getInstance().gameRenderer.gameRenderState().levelRenderState.cameraRenderState.blockPos);

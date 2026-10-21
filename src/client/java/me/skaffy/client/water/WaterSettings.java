@@ -153,8 +153,8 @@ public final class WaterSettings {
 	public static float hfSyncInterval = 1.0F;
 	public static int hfSyncTilesPerFrame = 2;
 	/** Height window of a new heightfield, below and above where it starts (water outside it is left alone). */
-	public static int hfWindowBelow = 48;
-	public static int hfWindowAbove = 64;
+	public static int hfWindowBelow = 64;
+	public static int hfWindowAbove = 96;
 	/** Debug: 0 normal, 1 draw only water tops (no side walls), 2 draw only side walls. */
 	public static int hfDebugMesh = 0;
 	public static int hfMaxNewTilesPerFrame = 2;

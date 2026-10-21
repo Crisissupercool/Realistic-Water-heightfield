@@ -78,7 +78,10 @@ final class HfWorld {
 		int maxTiles = Math.clamp(WaterSettings.hfMaxTiles, 16, 4096);
 		int maxPages = Math.clamp(WaterSettings.hfMaxPages, 16, 16384);
 		int maxFluxPages = Math.clamp(WaterSettings.hfMaxFluxPages, 16, maxPages);
-		int refY = Mth.floor(y);
+		// Centre the height window on the player when there is one: on joining a world the first chunk scanned may hold some stray
+		// water far above or below where the player (and usually the water they care about) is.
+		net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+		int refY = mc.player != null ? Mth.floor(mc.player.getY()) : Mth.floor(y);
 		int yMin = Math.max(level.getMinY(), refY - Math.max(8, WaterSettings.hfWindowBelow));
 		int yMax = Math.min(level.getMinY() + level.getHeight(), refY + Math.max(8, WaterSettings.hfWindowAbove));
 		// Tiles line up with chunks: tile (0, 0) is the chunk containing (x, z).
@@ -191,6 +194,18 @@ final class HfWorld {
 		}
 	}
 
+	private boolean warnedWindow;
+
+	private void warnWindow(int y, HfTileGrid g) {
+		net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+		if (!this.warnedWindow && mc.player != null) {
+			this.warnedWindow = true;
+			mc.player.sendSystemMessage(net.minecraft.network.chat.Component.literal(String.format(
+				"Realistic water at Y=%d is outside the heightfield's height window (Y %d to %d) and stays frozen (and invisible). "
+					+ "Stand near it and run /water reload to rebuild the heightfield around you.", y, g.yMin, g.yMax)));
+		}
+	}
+
 	// ---- chunk loads and block changes ----
 
 	/**
@@ -226,6 +241,7 @@ final class HfWorld {
 		HfTileGrid g = hf.grid;
 		if (!inWindow(g, firstY)) {
 			// Outside the heightfield's height window: leave the blocks as they are rather than handing a lake to the particles.
+			this.warnWindow(firstY, g);
 			return true;
 		}
 		int tx = g.tileOfBlockX(pos.x() * 16);
@@ -556,6 +572,7 @@ final class HfWorld {
 	}
 
 	void close() {
+		this.warnedWindow = false;
 		if (this.world.heightfield != null) {
 			this.world.heightfield.close();
 			this.world.heightfield = null;

@@ -699,7 +699,7 @@ final class HfDomain implements AutoCloseable {
 			: String.format("%d awake, %d simulated, %d steps x %.1f ms", awake, g.activeList.length, this.lastSteps, this.lastDt * 1000.0F);
 		double usedMb = (g.usedSpanPages() * (double) this.ps * SPAN_BYTES + g.usedFluxPages() * (double) this.ps * FLUX_BYTES) / 1.0e6;
 		return String.format(
-			(this.reservoirCount > 0 ? "[" + this.reservoirCount + " reservoir cells add/remove water] " : "") + "heightfield: %d/%d tiles, pages %d/%d + flux %d/%d (%.1f of %.0f MB), %d spans dropped  |  volume %,.1f blocks (%+.3f%% since start)  |  "
+			(this.reservoirCount > 0 ? "[" + this.reservoirCount + " reservoir cells add/remove water] " : "") + "heightfield (Y " + g.yMin + " to " + g.yMax + "): %d/%d tiles, pages %d/%d + flux %d/%d (%.1f of %.0f MB), %d spans dropped  |  volume %,.1f blocks (%+.3f%% since start)  |  "
 				+ "max depth %.2f  max speed %.2f b/s  |  %s",
 			g.count, g.maxTiles, g.usedSpanPages(), g.maxPages, g.usedFluxPages(), g.maxFluxPages, usedMb, this.bytes() / 1.0e6, g.droppedSpans,
 			volume, drift, maxDepth, g.activeMax(g.maxSpeed), motion);
