@@ -437,3 +437,16 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   cell (four diamonds per block in shading and foam). Thin water between 0.008 and `hfRenderDepth` is drawn while it moves
   (outflow > 0.002 blocks^3/s on a simulated tile), so shallow streams down steps no longer drop out cell by cell; still films
   stay hidden. Still per cell: shoreline outlines follow the 0.5-block grid (smooth contours would be the next step).
+* **View bobbing, the real cause:** `viewPosAt` rebuilt a pixel's view position by scaling one point unprojected at device
+  depth 0.5, assuming the ray passes through the view-space origin. Bobbing is a shift inside the projection, so the ray
+  starts ~0.05 blocks off the origin, and the depth-0.5 point lies ~0.1 blocks from the eye: direction, position, V and the
+  world coordinates of ripples and foam swung with every bob. Rays are now rebuilt from two unprojected points, and V points
+  at the true (bobbed) eye. (The per-pixel `linearDepth` fix was real but secondary.)
+* **One continuous surface (no puzzle pieces):** `linked(a, dir, t)` = both wet and (columns overlap, or water flows between
+  them over a drop up to 1.6 blocks), symmetric by construction. Streams over steps become sloped ramps instead of separate
+  pieces with sheets; bigger drops keep falling sheets. A corner's height is the average over the part of its four-span loop
+  linked to the span (closure over S-X-D-Z, so every sharing span finds the same set) plus shoreline samples from dry
+  neighbors relative to that water; walls and separate surfaces add nothing. The old rule filled missing neighbors with each
+  span's own height, which split shared corners wherever surfaces differ: a CPU mirror (`HfMeshMirror`) found 86 of 387
+  shared edges cracked (up to 0.6 blocks) on a stepped stream; now 0 cracks and 0 slope mismatch on a stepped stream, a bumpy
+  slope and a lake shore.

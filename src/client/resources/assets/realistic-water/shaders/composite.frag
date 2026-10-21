@@ -23,10 +23,26 @@ float linearDepth(vec2 uv, float device) {
     return -v.z / v.w;
 }
 
+// Point at view-space distance dist along the camera ray through screen point uv. The level projection includes view bobbing,
+// which shifts the camera a little, so the ray does not pass through the view-space origin: it is rebuilt from two points
+// unprojected at different depths. (Scaling a single near-plane point, as before, assumed the origin and was off by the bob
+// shift magnified ~10x, so every water pixel's position, view direction and ripple coordinates swung with each step.)
 vec3 viewPosAt(vec2 uv, float dist) {
-    vec4 v = G.invProj * vec4(uv * 2.0 - 1.0, 0.5, 1.0);
-    vec3 dir = v.xyz / v.w;
-    return dir * (dist / -dir.z);
+    vec2 ndc = uv * 2.0 - 1.0;
+    vec4 a = G.invProj * vec4(ndc, 0.2, 1.0);
+    vec4 b = G.invProj * vec4(ndc, 0.8, 1.0);
+    vec3 p0 = a.xyz / a.w;
+    vec3 p1 = b.xyz / b.w;
+    vec3 ray = p1 - p0;
+    return p0 + ray * ((-dist - p0.z) / ray.z);
+}
+
+// Unit vector from the water point at uv back toward the (bobbed) eye, exact even when the eye is not at the origin.
+vec3 toEyeAt(vec2 uv) {
+    vec2 ndc = uv * 2.0 - 1.0;
+    vec4 a = G.invProj * vec4(ndc, 0.2, 1.0);
+    vec4 b = G.invProj * vec4(ndc, 0.8, 1.0);
+    return normalize(a.xyz / a.w - b.xyz / b.w);
 }
 
 float pixelFootprint(float dist) {
@@ -158,7 +174,7 @@ vec3 sunSpecular(vec3 n, vec3 V, float footprint) {
 
 vec3 shadeAboveLava(vec2 uv, vec3 n, float fd, float ambient) {
     vec3 P = viewPosAt(uv, fd);
-    vec3 V = normalize(-P);
+    vec3 V = toEyeAt(uv);
     n = dot(n, V) < 0.0 ? -n : n;
     float footprint = pixelFootprint(fd);
     vec3 wrinkled = rippleNormal(n, P, footprint);
@@ -254,7 +270,7 @@ float foamPatches(vec2 p, float aer, float footprint) {
 // instead of the flat glass look; foam on the surface shows as soft patches. Ripples around the player bend the surface normal.
 vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, float aer, bool sheet) {
     vec3 P = viewPosAt(uv, fd);
-    vec3 V = normalize(-P);
+    vec3 V = toEyeAt(uv);
     n = dot(n, V) < 0.0 ? -n : n;
     float footprint = pixelFootprint(fd);
     vec3 nWorld = normalize(mat3(G.invView) * n);
@@ -327,7 +343,7 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
 
 vec3 shadeSurfaceFromBelow(vec2 uv, vec3 n, float fd, vec3 deep) {
     vec3 P = viewPosAt(uv, fd);
-    vec3 V = normalize(-P);
+    vec3 V = toEyeAt(uv);
     n = dot(n, V) < 0.0 ? -n : n;
     vec3 wrinkled = rippleNormal(n, P, pixelFootprint(fd));
     n = normalize(mix(n, wrinkled, smoothstep(0.0, 0.15, dot(wrinkled, V))));

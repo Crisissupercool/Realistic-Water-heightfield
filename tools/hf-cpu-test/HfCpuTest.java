@@ -752,6 +752,9 @@ public final class HfCpuTest {
 			check(Math.abs(tiled.volume() - v0) / v0 < 1.0e-5, "volume kept");
 		}
 
+		System.out.println("Mesh: spans drawn as one surface share their corners exactly (no cracks), streams over steps become ramps");
+		HfMeshMirror.run();
+
 		System.out.println(failures == 0 ? "ALL PASSED" : failures + " FAILED");
 		System.exit(failures == 0 ? 0 : 1);
 	}
