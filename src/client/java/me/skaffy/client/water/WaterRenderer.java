@@ -8,7 +8,9 @@ import me.skaffy.client.vk.GraphicsProgram;
 import me.skaffy.client.vk.Program;
 import me.skaffy.client.vk.Sampler;
 import me.skaffy.client.vk.Vk;
+import me.skaffy.client.vk.VkBuf;
 import me.skaffy.client.vk.VkTex;
+import org.jspecify.annotations.Nullable;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.VK10;
 import org.lwjgl.vulkan.VkCommandBuffer;
@@ -95,7 +97,27 @@ public final class WaterRenderer implements AutoCloseable {
 		this.ensureTargets(w, h);
 	}
 
-	public record Body(WaterRegion region, Desc ubo) {
+	/** A particle region (FLIP/MPM) or a heightfield domain, drawn with the same mesh, thickness and composite passes. */
+	public record Body(@Nullable WaterRegion region, @Nullable HfDomain heightfield, Desc ubo) {
+		public Body(WaterRegion region, Desc ubo) {
+			this(region, null, ubo);
+		}
+
+		Material material() {
+			return this.region != null ? this.region.material : Material.WATER;
+		}
+
+		VkBuf meshVerts() {
+			return this.region != null ? this.region.mesher.verts : this.heightfield.verts;
+		}
+
+		VkBuf meshQuads() {
+			return this.region != null ? this.region.mesher.quads : this.heightfield.quads;
+		}
+
+		VkBuf meshCounters() {
+			return this.region != null ? this.region.mesher.meshCounters : this.heightfield.meshCounters;
+		}
 	}
 
 	public void record(VkCommandBuffer cb, List<Body> bodies, Desc view, long mainColorImage, long mainColorView, long mainDepthImage,
@@ -104,6 +126,10 @@ public final class WaterRenderer implements AutoCloseable {
 		int h = this.height;
 		for (Body body : bodies) {
 			WaterRegion r = body.region();
+			if (r == null) {
+				body.heightfield().buildMesh(cb, body.ubo());
+				continue;
+			}
 			r.mesher.build(cb, body.ubo(), r.currentParticles(), r.counters, WaterRegion.C_FLUID + r.cur, r.args, r.staticSolid, r.mesher.fineBox(r.box),
 				WaterSettings.sheetFill);
 		}
@@ -116,10 +142,13 @@ public final class WaterRenderer implements AutoCloseable {
 
 		GraphicsProgram.begin(cb, w, h, this.gbuffer.view, new float[]{0, 0, 0, 0}, this.materialId.view, new float[]{-1, 0, 0, 0}, this.fluidZ.view);
 		for (Body body : bodies) {
+			this.meshFront.bind(cb, body.ubo(), Desc.ssbo(body.meshVerts()), Desc.ssbo(body.meshQuads()), view);
+			this.meshFront.drawIndirect(cb, body.meshCounters(), SurfaceMesher.DRAW_ARGS_OFFSET);
 			WaterRegion r = body.region();
+			if (r == null) {
+				continue;
+			}
 			float radius = WaterSettings.particleRadius / r.res;
-			this.meshFront.bind(cb, body.ubo(), Desc.ssbo(r.mesher.verts), Desc.ssbo(r.mesher.quads), view);
-			this.meshFront.drawIndirect(cb, r.mesher.meshCounters, SurfaceMesher.DRAW_ARGS_OFFSET);
 			this.dropletFront.bind(cb, body.ubo(), Desc.ssbo(r.currentParticles()), Desc.ssbo(r.mesher.densA), view);
 			this.dropletFront.push(cb, Program.f(radius), Program.f(0.0F), Program.f(0.15F));
 			this.dropletFront.drawIndirect(cb, r.args, WaterRegion.ARGS_FLUID_DRAW);
@@ -128,10 +157,13 @@ public final class WaterRenderer implements AutoCloseable {
 
 		GraphicsProgram.begin(cb, w, h, this.thickness.view, new float[]{0, 0, 0, 0}, 0L);
 		for (Body body : bodies) {
+			this.meshThickness.bind(cb, body.ubo(), Desc.ssbo(body.meshVerts()), Desc.ssbo(body.meshQuads()), view, depthTex);
+			this.meshThickness.drawIndirect(cb, body.meshCounters(), SurfaceMesher.DRAW_ARGS_OFFSET);
 			WaterRegion r = body.region();
+			if (r == null) {
+				continue;
+			}
 			float radius = WaterSettings.particleRadius / r.res;
-			this.meshThickness.bind(cb, body.ubo(), Desc.ssbo(r.mesher.verts), Desc.ssbo(r.mesher.quads), view, depthTex);
-			this.meshThickness.drawIndirect(cb, r.mesher.meshCounters, SurfaceMesher.DRAW_ARGS_OFFSET);
 			this.dropletThickness.bind(cb, body.ubo(), Desc.ssbo(r.currentParticles()), Desc.ssbo(r.mesher.densA), view, depthTex);
 			this.dropletThickness.push(cb, Program.f(radius), Program.f(0.0F), Program.f(0.15F));
 			this.dropletThickness.drawIndirect(cb, r.args, WaterRegion.ARGS_FLUID_DRAW);
@@ -143,7 +175,7 @@ public final class WaterRenderer implements AutoCloseable {
 		if (WaterSettings.whitewater) {
 			for (Body body : bodies) {
 				WaterRegion r = body.region();
-				if (!r.material.usesWhitewater()) {
+				if (r == null || !r.material.usesWhitewater()) {
 					continue;
 				}
 				this.whitewaterProgram.bind(cb, body.ubo(), Desc.ssbo(r.currentWhitewater()), depthTex, Desc.tex(this.gbuffer, this.nearest.handle), view);
@@ -158,9 +190,9 @@ public final class WaterRenderer implements AutoCloseable {
 		Desc waterUbo = null;
 		Desc lavaUbo = null;
 		for (Body body : bodies) {
-			if (body.region().material == Material.WATER && waterUbo == null) {
+			if (body.material() == Material.WATER && waterUbo == null) {
 				waterUbo = body.ubo();
-			} else if (body.region().material == Material.LAVA && lavaUbo == null) {
+			} else if (body.material() == Material.LAVA && lavaUbo == null) {
 				lavaUbo = body.ubo();
 			}
 		}

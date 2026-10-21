@@ -133,6 +133,25 @@ final class SolidCache {
 		s.partial[i] = any ? bits : null;
 	}
 
+	/**
+	 * Solid sub-voxels of one block as a bit mask, bit index {@code x + res * (y + res * z)}. Needs {@code res^3 <= 64}.
+	 * Unloaded chunks count as solid.
+	 */
+	long blockVoxels(ClientLevel level, int bx, int by, int bz) {
+		int bits = this.res * this.res * this.res;
+		long full = bits >= 64 ? -1L : (1L << bits) - 1L;
+		Section s = this.section(level, bx >> 4, by >> 4, bz >> 4);
+		if (s == null) {
+			return full;
+		}
+		int i = local(bx, by, bz);
+		return switch (s.kind[i]) {
+			case EMPTY -> 0L;
+			case FULL -> full;
+			default -> s.partial[i][0];
+		};
+	}
+
 	void writeBlock(ClientLevel level, int bx, int by, int bz, int[] out, int cx, int cy, int cz, int nx, int ny) {
 		Section s = this.section(level, bx >> 4, by >> 4, bz >> 4);
 		byte kind;
