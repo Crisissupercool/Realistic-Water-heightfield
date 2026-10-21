@@ -72,7 +72,7 @@ vec2 rippleGradient(vec2 p, float t, float footprint) {
     vec2 q = p;
     for (int i = 0; i < 5; i++) {
         float lambda = 6.2831853 / RIPPLE_FREQ[i];
-        float fade = smoothstep(1.5, 4.0, lambda / max(footprint, 1e-5));
+        float fade = smoothstep(3.0, 8.0, lambda / max(footprint, 1e-5));
         if (fade <= 0.0) {
             break;
         }
