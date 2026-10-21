@@ -62,6 +62,22 @@ public final class WaterCommands {
 					c.getSource().sendFeedback(Component.literal("Removing all realistic lava around you (springs included)"));
 					return 1;
 				})))
+			.then(literal("flood")
+				.executes(c -> flood(c, 12, 3.0))
+				.then(argument("radius", IntegerArgumentType.integer(2, 120))
+					.executes(c -> flood(c, IntegerArgumentType.getInteger(c, "radius"), 3.0))
+					.then(argument("height", DoubleArgumentType.doubleArg(0.1, 48.0))
+						.executes(c -> flood(c, IntegerArgumentType.getInteger(c, "radius"), DoubleArgumentType.getDouble(c, "height"))))))
+			.then(literal("hf")
+				.then(literal("stats").executes(c -> {
+					c.getSource().sendFeedback(Component.literal(WaterWorld.get().heightfieldStats()));
+					return 1;
+				}))
+				.then(literal("clear").executes(c -> {
+					WaterWorld.get().clearHeightfield();
+					c.getSource().sendFeedback(Component.literal("Removed the heightfield water"));
+					return 1;
+				})))
 			.then(literal("set")
 				.then(argument("name", StringArgumentType.word())
 					.suggests((c, b) -> SharedSuggestionProvider.suggest(WaterSettings.fields().keySet(), b))
@@ -93,6 +109,12 @@ public final class WaterCommands {
 			default -> "water";
 		};
 		c.getSource().sendFeedback(Component.literal("Dropped a " + size + "^3 block cube of " + name));
+		return 1;
+	}
+
+	private static int flood(CommandContext<FabricClientCommandSource> c, int radius, double height) {
+		var player = c.getSource().getPlayer();
+		c.getSource().sendFeedback(Component.literal(WaterWorld.get().flood(c.getSource().getLevel(), player.position(), radius, height)));
 		return 1;
 	}
 

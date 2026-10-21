@@ -133,6 +133,18 @@ public final class WaterSettings {
 	public static boolean lavaFlowSounds = true;
 	public static boolean lavaIgniteFlammables = true;
 
+	// Heightfield solver (docs/HEIGHTFIELD_DESIGN.md). Topology settings apply to the next /water flood.
+	public static int hfCellsPerBlock = 2;
+	public static int hfLayers = 4;
+	public static float hfMinOpening = 0.25F;
+	public static int hfMaxDomainBlocks = 256;
+	public static float hfCfl = 0.3F;
+	public static float hfDamping = 0.995F;
+	public static float hfFriction = 0.2F;
+	public static float hfMaxSpeed = 30.0F;
+	public static float hfRenderDepth = 0.01F;
+	public static int hfMaxStepsPerFrame = 8;
+
 	public static String ffmpeg = "";
 	public static boolean renderFreezeWorld = true;
 	public static boolean renderSteadyPreview = true;

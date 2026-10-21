@@ -1,0 +1,60 @@
+#version 450
+// Pass 1 of the virtual-pipe step: outflow from each span through each of its links.
+#include "hf_common.glsl"
+layout(local_size_x = 256) in;
+layout(std430, binding = 1) readonly buffer Geo { vec2 geo[]; };
+layout(std430, binding = 2) readonly buffer Depth { float depth[]; };
+layout(std430, binding = 3) buffer Flux { float flux[]; };
+layout(std430, binding = 4) readonly buffer Links { uint links[]; };
+
+#define HF_DT hp.p0.x
+#define HF_G hp.p0.y
+#define HF_CELL hp.p0.z
+#define HF_KEEP hp.p0.w
+
+void main() {
+    uint s = GID_U;
+    if (s >= uint(HF_SPANS)) {
+        return;
+    }
+    uint base = s * HF_LINKS;
+    vec2 a = geo[s];
+    float hA = depth[s];
+    if (!hfValid(a) || hA <= 0.0) {
+        for (uint k = 0u; k < HF_LINKS; k++) {
+            flux[base + k] = 0.0;
+        }
+        return;
+    }
+    float headA = a.x + hA;
+    float outflow[8];
+    float total = 0.0;
+    for (uint k = 0u; k < HF_LINKS; k++) {
+        outflow[k] = 0.0;
+        uint l = links[base + k];
+        if (l == HF_NONE) {
+            continue;
+        }
+        uint t = hfTarget(l);
+        vec2 b = geo[t];
+        float headB = b.x + depth[t];
+        // Only water inside the shared opening can move.
+        float lo = max(a.x, b.x);
+        float hi = min(a.y, b.y);
+        float wetA = clamp(headA, lo, hi) - lo;
+        if (wetA <= 0.0) {
+            continue;
+        }
+        float wetB = clamp(headB, lo, hi) - lo;
+        float area = HF_CELL * max(wetA, wetB);
+        float q = flux[base + k] * HF_KEEP + HF_DT * HF_G * area * (headA - headB) / HF_CELL;
+        outflow[k] = max(q, 0.0);
+        total += outflow[k];
+    }
+    // Never send out more water than the span holds.
+    float volume = hA * HF_CELL * HF_CELL;
+    float scale = total * HF_DT > volume ? volume / (total * HF_DT) : 1.0;
+    for (uint k = 0u; k < HF_LINKS; k++) {
+        flux[base + k] = outflow[k] * scale;
+    }
+}

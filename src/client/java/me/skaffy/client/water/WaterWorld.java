@@ -125,6 +125,8 @@ public final class WaterWorld {
 	private @Nullable SandRenderer sandRenderer;
 	private @Nullable VkBuf uboRing;
 	private @Nullable VkBuf frameView;
+	private @Nullable HfDomain heightfield;
+	private @Nullable VkBuf hfUbo;
 	private boolean paused;
 	private boolean failed;
 	private long lastFrameNanos;
@@ -656,7 +658,7 @@ public final class WaterWorld {
 
 	public void renderFrame() {
 		Minecraft mc = Minecraft.getInstance();
-		if (this.regions.isEmpty() || this.failed || mc.level == null || Vk.tryDevice() == null) {
+		if ((this.regions.isEmpty() && this.heightfield == null) || this.failed || mc.level == null || Vk.tryDevice() == null) {
 			this.lastFrameNanos = 0L;
 			return;
 		}
@@ -776,7 +778,7 @@ public final class WaterWorld {
 		VulkanGpuTexture depth = (VulkanGpuTexture) main.getDepthTexture();
 		VulkanGpuTextureView colorView = (VulkanGpuTextureView) main.getColorTextureView();
 		VulkanGpuTextureView depthView = (VulkanGpuTextureView) main.getDepthTextureView();
-		if (active.isEmpty() || color == null || depth == null || colorView == null || depthView == null) {
+		if ((active.isEmpty() && this.heightfield == null) || color == null || depth == null || colorView == null || depthView == null) {
 			this.retire(level, merged, drained);
 			Vk.endFrame();
 			this.frameCounter++;
@@ -822,6 +824,9 @@ public final class WaterWorld {
 			r.record(cb, ubo, regionSteps, numSources, this.frameCounter, this.frameView, removals.size());
 			(r.material.isGranular() ? sandBodies : waterBodies).add(new WaterRenderer.Body(r, ubo));
 		}
+		if (this.heightfield != null) {
+			waterBodies.add(this.recordHeightfield(mc, cb, this.heightfield, frameDt, cam, width, height));
+		}
 		Vk.barrier(cb);
 		if (!sandBodies.isEmpty()) {
 			this.sandRenderer.record(cb, sandBodies, width, height, colorView.vkImageView(), depthView.vkImageView());
@@ -837,6 +842,96 @@ public final class WaterWorld {
 		this.retire(level, merged, drained);
 		Vk.endFrame();
 		this.frameCounter++;
+	}
+
+	private WaterRenderer.Body recordHeightfield(Minecraft mc, VkCommandBuffer cb, HfDomain hf, float frameDt, Vec3 cam, int width, int height) {
+		hf.readStats();
+		int steps = 0;
+		float dt = frameDt;
+		if (!this.paused && !mc.isPaused()) {
+			float stable = hf.maxStableDt();
+			steps = Mth.clamp((int) Math.ceil(frameDt / stable), 1, Math.max(1, WaterSettings.hfMaxStepsPerFrame));
+			dt = Math.min(frameDt / steps, stable);
+		}
+		if (this.hfUbo == null) {
+			this.hfUbo = VkBuf.upload((long) UBO_SLOT * Vk.FRAME_RING, VkBuf.UNIFORM);
+		}
+		int o = Vk.ringSlot() * UBO_SLOT;
+		hf.lastDt = dt;
+		this.writeHfGlobals(mc, hf, this.hfUbo.mapped(), o, width, height);
+		this.hfUbo.flush(o, UBO_SIZE);
+		Desc ubo = Desc.ubo(this.hfUbo, o, UBO_SIZE);
+		hf.record(cb, ubo, steps, dt);
+		hf.probe(cb, ubo, this.frameView, (float) (cam.x - hf.originX), (float) cam.y, (float) (cam.z - hf.originZ));
+		return new WaterRenderer.Body(null, hf, ubo);
+	}
+
+	/**
+	 * Milestone-1 test command: builds a fresh heightfield domain around {@code center} and raises the water to {@code center.y + height}
+	 * inside {@code radius}, which collapses like a dam break. Replaces any previous heightfield domain.
+	 */
+	public String flood(ClientLevel level, Vec3 center, int radius, double height) {
+		if (!this.vulkanReady()) {
+			return "Realistic Water needs the Vulkan graphics API";
+		}
+		long start = System.nanoTime();
+		int cpb = Math.clamp(WaterSettings.hfCellsPerBlock, 1, 4);
+		int layers = Math.clamp(WaterSettings.hfLayers, 1, 8);
+		int maxSize = Math.max(32, WaterSettings.hfMaxDomainBlocks);
+		int size = Math.min(maxSize, 2 * (radius + Math.max(16, radius)));
+		size -= size % 2;
+		int clampedRadius = Math.min(radius, size / 2 - 4);
+		int ox = Mth.floor(center.x) - size / 2;
+		int oz = Mth.floor(center.z) - size / 2;
+		int refY = Mth.floor(center.y);
+		float waterLevel = (float) (center.y + height);
+		int worldMin = level.getMinY();
+		int worldMax = level.getMinY() + level.getHeight();
+		int yMin = Math.max(worldMin, refY - 32);
+		int yMax = Math.min(worldMax, Math.max(refY + 24, Mth.ceil(waterLevel) + 8));
+
+		SolidCache solids = new SolidCache(cpb, false);
+		HfTopology topo = HfTopology.build((bx, by, bz) -> solids.blockVoxels(level, bx, by, bz), ox, oz, size, size, yMin, yMax, cpb, layers,
+			WaterSettings.hfMinOpening);
+		float[] depth = new float[topo.spans];
+		double centerX = center.x - ox;
+		double centerZ = center.z - oz;
+		double r2 = (double) clampedRadius * clampedRadius;
+		for (int cz = 0; cz < topo.nz; cz++) {
+			for (int cx = 0; cx < topo.nx; cx++) {
+				double dx = (cx + 0.5) / cpb - centerX;
+				double dz = (cz + 0.5) / cpb - centerZ;
+				if (dx * dx + dz * dz > r2) {
+					continue;
+				}
+				for (int l = 0; l < layers; l++) {
+					int s = topo.span(cx, cz, l);
+					// Fill spans open around the player's height or above: not deep caves, but rooms and tree-covered ground.
+					if (topo.valid(s) && topo.floor[s] < waterLevel && topo.ceil[s] > refY - 2) {
+						depth[s] = Math.min(waterLevel, topo.ceil[s]) - topo.floor[s];
+					}
+				}
+			}
+		}
+		if (this.heightfield != null) {
+			this.heightfield.close();
+		}
+		this.heightfield = new HfDomain(topo, depth, ox, yMin, oz, size, size, cpb);
+		this.failed = false;
+		long ms = (System.nanoTime() - start) / 1_000_000L;
+		return String.format("Flooding radius %d to Y=%.1f: %,.0f blocks of water in a %dx%d domain, %,d spans (%d dropped), built in %d ms",
+			clampedRadius, waterLevel, this.heightfield.initialVolume, size, size, topo.spans, topo.droppedSpans, ms);
+	}
+
+	public String heightfieldStats() {
+		return this.heightfield != null ? this.heightfield.statsLine() : "No heightfield water (use /water flood)";
+	}
+
+	public void clearHeightfield() {
+		if (this.heightfield != null) {
+			this.heightfield.close();
+			this.heightfield = null;
+		}
 	}
 
 	private void retire(ClientLevel level, List<WaterRegion> merged, List<WaterRegion> drained) {
@@ -876,8 +971,6 @@ public final class WaterWorld {
 		ByteBuffer b = this.uboRing.mapped();
 		int o = slot * UBO_SLOT;
 		LevelRenderState levelState = mc.gameRenderer.gameRenderState().levelRenderState;
-		CameraRenderState camera = levelState.cameraRenderState;
-		SkyRenderState sky = levelState.skyRenderState;
 		int res = r.res;
 		float h = 1.0F / res;
 		int[] box = r.box;
@@ -902,44 +995,7 @@ public final class WaterWorld {
 		putFloats(b, o + 144, WaterSettings.wwFoamLifeMin, WaterSettings.wwFoamLifeMax, WaterSettings.wwBubbleBuoyancy, WaterSettings.wwBubbleDrag);
 		putFloats(b, o + 160, WaterSettings.wwSprayDrag, WaterSettings.wwSprayThreshold, WaterSettings.wwBubbleThreshold, WaterSettings.wwMaxPerParticle);
 
-		Matrix4f proj = new Matrix4f(LEVEL_PROJECTION);
-		Matrix4f view = new Matrix4f(camera.viewRotationMatrix);
-		proj.get(o + 176, b);
-		view.get(o + 240, b);
-		new Matrix4f(proj).invert().get(o + 304, b);
-		new Matrix4f(view).invert().get(o + 368, b);
-
-		Vec3 cam = camera.pos;
-		putFloats(b, o + 432, (float) (r.ox - cam.x), (float) (r.oy - cam.y), (float) (r.oz - cam.z), h);
-		putFloats(b, o + 448, width, height, 1.0F / width, 1.0F / height);
-
-		float sunAngle = sky.sunAngle;
-		Vector4f sunWorld = new Vector4f(-Mth.sin(sunAngle), Mth.cos(sunAngle), 0.0F, 0.0F);
-		Vector4f sunView = view.transform(new Vector4f(sunWorld));
-		float sunIntensity = Mth.clamp(sunWorld.y * 4.0F, 0.0F, 1.0F) * (1.0F - sky.rainBrightness * 0.8F);
-		putFloats(b, o + 464, sunView.x, sunView.y, sunView.z, sunIntensity);
-
-		Vector3f skyColor = sky.skyColor != null ? new Vector3f(sky.skyColor) : new Vector3f(0.5F, 0.7F, 1.0F);
-		Vector4f fog = camera.fogData.color;
-		float ambient = Mth.clamp(0.15F + 1.2F * (0.3F * skyColor.x + 0.59F * skyColor.y + 0.11F * skyColor.z), 0.12F, 1.0F);
-		putFloats(b, o + 480, skyColor.x, skyColor.y, skyColor.z, ambient);
-		putFloats(b, o + 496, fog.x, fog.y, fog.z, 1.0F);
-		float refraction = lava ? WaterSettings.lavaRefraction : WaterSettings.refraction;
-		float surfaceSmooth = sand ? WaterSettings.sandSurfaceSmoothing : lava ? WaterSettings.lavaSurfaceSmoothing : WaterSettings.surfaceSmoothing;
-		putFloats(b, o + 512, WaterSettings.particleRadius * h, WaterSettings.thicknessScale, refraction, surfaceSmooth);
-		float absorbR = lava ? WaterSettings.lavaAbsorbR : WaterSettings.absorbR;
-		float absorbG = lava ? WaterSettings.lavaAbsorbG : WaterSettings.absorbG;
-		float absorbB = lava ? WaterSettings.lavaAbsorbB : WaterSettings.absorbB;
-		putFloats(b, o + 528, absorbR, absorbG, absorbB, 0.0F);
-		float scatterR = lava ? WaterSettings.lavaScatterR : WaterSettings.scatterR;
-		float scatterG = lava ? WaterSettings.lavaScatterG : WaterSettings.scatterG;
-		float scatterB = lava ? WaterSettings.lavaScatterB : WaterSettings.scatterB;
-		float scatterDensity = lava ? WaterSettings.lavaScatterDensity : WaterSettings.scatterDensity;
-		putFloats(b, o + 544, scatterR, scatterG, scatterB, scatterDensity);
-		putFloats(b, o + 560, WaterSettings.wwRadius, WaterSettings.foamCoverage, WaterSettings.bubbleAlpha, WaterSettings.sprayAlpha);
-		putFloats(b, o + 3136, (float) (cam.x - r.ox) * res, (float) (cam.y - r.oy) * res, (float) (cam.z - r.oz) * res, res);
-		float underwaterFog = lava ? WaterSettings.lavaUnderwaterFog : WaterSettings.underwaterFog;
-		putFloats(b, o + 3152, underwaterFog, wrap(cam.x), wrap(cam.y), wrap(cam.z));
+		this.writeShading(b, o, mc, r.ox, r.oy, r.oz, h, res, r.material, width, height);
 
 		SurfaceMesher mesher = r.mesher;
 		int sub = mesher.subdivision;
@@ -958,11 +1014,6 @@ public final class WaterWorld {
 			putFloats(b, o + 3296 + k * 32, rm[3], rm[4], rm[5], 0.0F);
 		}
 		putFloats(b, o + 3792, (float) (level.getMinY() - r.oy) * res - 8.0F, WaterRegion.KILL_MARGIN, 0.0F, 0.0F);
-		float detailStrength = lava ? WaterSettings.lavaDetailStrength : WaterSettings.detailStrength;
-		float roughness = lava ? WaterSettings.lavaRoughness : WaterSettings.roughness;
-		float specular = lava ? WaterSettings.lavaSpecular : WaterSettings.specular;
-		putFloats(b, o + 3808, detailStrength, WaterSettings.detailScale, WaterSettings.detailSpeed, roughness);
-		putFloats(b, o + 3824, specular, WaterSettings.wetDarkening, WaterSettings.filmShading, WaterSettings.foamBubbleSize);
 
 		if (sand) {
 			double phi = Math.toRadians(WaterSettings.sandFrictionAngle);
@@ -989,6 +1040,80 @@ public final class WaterWorld {
 			impactLogJ);
 		this.uboRing.flush(o, UBO_SIZE);
 		return sourceCount;
+	}
+
+	/**
+	 * Camera, screen, sky and material shading fields of the Globals UBO, shared by particle regions and the heightfield.
+	 *
+	 * @param ox domain origin in world blocks; the mesh shaders place vertices at origin + vertex * cellSize
+	 * @param cellSize size of one mesh unit in blocks (1 / res for particle regions, 1 for the heightfield)
+	 * @param res cells per block, used for the camera position in grid units
+	 */
+	private void writeShading(ByteBuffer b, int o, Minecraft mc, double ox, double oy, double oz, float cellSize, int res, Material material, int width,
+		int height) {
+		LevelRenderState levelState = mc.gameRenderer.gameRenderState().levelRenderState;
+		CameraRenderState camera = levelState.cameraRenderState;
+		SkyRenderState sky = levelState.skyRenderState;
+		boolean sand = material.isGranular();
+		boolean lava = material == Material.LAVA;
+		float h = 1.0F / res;
+
+		Matrix4f proj = new Matrix4f(LEVEL_PROJECTION);
+		Matrix4f view = new Matrix4f(camera.viewRotationMatrix);
+		proj.get(o + 176, b);
+		view.get(o + 240, b);
+		new Matrix4f(proj).invert().get(o + 304, b);
+		new Matrix4f(view).invert().get(o + 368, b);
+
+		Vec3 cam = camera.pos;
+		putFloats(b, o + 432, (float) (ox - cam.x), (float) (oy - cam.y), (float) (oz - cam.z), cellSize);
+		putFloats(b, o + 448, width, height, 1.0F / width, 1.0F / height);
+
+		float sunAngle = sky.sunAngle;
+		Vector4f sunWorld = new Vector4f(-Mth.sin(sunAngle), Mth.cos(sunAngle), 0.0F, 0.0F);
+		Vector4f sunView = view.transform(new Vector4f(sunWorld));
+		float sunIntensity = Mth.clamp(sunWorld.y * 4.0F, 0.0F, 1.0F) * (1.0F - sky.rainBrightness * 0.8F);
+		putFloats(b, o + 464, sunView.x, sunView.y, sunView.z, sunIntensity);
+
+		Vector3f skyColor = sky.skyColor != null ? new Vector3f(sky.skyColor) : new Vector3f(0.5F, 0.7F, 1.0F);
+		Vector4f fog = camera.fogData.color;
+		float ambient = Mth.clamp(0.15F + 1.2F * (0.3F * skyColor.x + 0.59F * skyColor.y + 0.11F * skyColor.z), 0.12F, 1.0F);
+		putFloats(b, o + 480, skyColor.x, skyColor.y, skyColor.z, ambient);
+		putFloats(b, o + 496, fog.x, fog.y, fog.z, 1.0F);
+		float refraction = lava ? WaterSettings.lavaRefraction : WaterSettings.refraction;
+		float surfaceSmooth = sand ? WaterSettings.sandSurfaceSmoothing : lava ? WaterSettings.lavaSurfaceSmoothing : WaterSettings.surfaceSmoothing;
+		putFloats(b, o + 512, WaterSettings.particleRadius * h, WaterSettings.thicknessScale, refraction, surfaceSmooth);
+		float absorbR = lava ? WaterSettings.lavaAbsorbR : WaterSettings.absorbR;
+		float absorbG = lava ? WaterSettings.lavaAbsorbG : WaterSettings.absorbG;
+		float absorbB = lava ? WaterSettings.lavaAbsorbB : WaterSettings.absorbB;
+		putFloats(b, o + 528, absorbR, absorbG, absorbB, 0.0F);
+		float scatterR = lava ? WaterSettings.lavaScatterR : WaterSettings.scatterR;
+		float scatterG = lava ? WaterSettings.lavaScatterG : WaterSettings.scatterG;
+		float scatterB = lava ? WaterSettings.lavaScatterB : WaterSettings.scatterB;
+		float scatterDensity = lava ? WaterSettings.lavaScatterDensity : WaterSettings.scatterDensity;
+		putFloats(b, o + 544, scatterR, scatterG, scatterB, scatterDensity);
+		putFloats(b, o + 560, WaterSettings.wwRadius, WaterSettings.foamCoverage, WaterSettings.bubbleAlpha, WaterSettings.sprayAlpha);
+		putFloats(b, o + 3136, (float) (cam.x - ox) * res, (float) (cam.y - oy) * res, (float) (cam.z - oz) * res, res);
+		float underwaterFog = lava ? WaterSettings.lavaUnderwaterFog : WaterSettings.underwaterFog;
+		putFloats(b, o + 3152, underwaterFog, wrap(cam.x), wrap(cam.y), wrap(cam.z));
+
+		float detailStrength = lava ? WaterSettings.lavaDetailStrength : WaterSettings.detailStrength;
+		float roughness = lava ? WaterSettings.lavaRoughness : WaterSettings.roughness;
+		float specular = lava ? WaterSettings.lavaSpecular : WaterSettings.specular;
+		putFloats(b, o + 3808, detailStrength, WaterSettings.detailScale, WaterSettings.detailSpeed, roughness);
+		putFloats(b, o + 3824, specular, WaterSettings.wetDarkening, WaterSettings.filmShading, WaterSettings.foamBubbleSize);
+	}
+
+	/** UBO for the heightfield: the shared shading fields plus the few simulation fields its shaders and the composite pass read. */
+	private void writeHfGlobals(Minecraft mc, HfDomain hf, ByteBuffer b, int o, int width, int height) {
+		this.writeShading(b, o, mc, hf.originX, hf.originY, hf.originZ, 1.0F, hf.cellsPerBlock, Material.WATER, width, height);
+		putInts(b, o, hf.nx, 1, hf.nz, hf.spans);
+		putInts(b, o + 32, 0, 0, 0, this.frameCounter);
+		putInts(b, o + 48, 0, 0, 0, 0);
+		putFloats(b, o + 64, 0.0F, -WaterSettings.gravity, 0.0F, hf.lastDt);
+		putFloats(b, o + 96, WaterSettings.hfMaxSpeed, hf.cell, this.simTime, 0.0F);
+		putFloats(b, o + 3184, 0.0F, 0.0F, WaterSettings.nearCull, 0.0F);
+		putFloats(b, o + 3840, Material.WATER.shaderId(), 0.0F, 0.0F, 1.0F);
 	}
 
 	private static float wrap(double v) {
@@ -1115,6 +1240,7 @@ public final class WaterWorld {
 
 	public void clear() {
 		this.closeRegions();
+		this.clearHeightfield();
 		this.sources.clear();
 		this.chunkScanQueue.clear();
 		this.failed = false;
@@ -1140,7 +1266,12 @@ public final class WaterWorld {
 			this.uboRing = null;
 			this.frameView = null;
 		}
+		if (this.hfUbo != null) {
+			this.hfUbo.close();
+			this.hfUbo = null;
+		}
 		WaterRegion.closePrograms();
+		HfDomain.closePrograms();
 		Vk.flushDeferredNow();
 	}
 }

@@ -1,6 +1,7 @@
 # Multi-layer heightfield water: design
 
-Status: draft v1 (2026-10-21). Nothing here is implemented yet.
+Status: milestone 1 code written (2026-10-21), not yet run in game. The topology builder and the solver math pass the CPU
+tests in `tools/hf-cpu-test`; the shaders compile with glslang. See "Milestone 1: what exists" at the end.
 
 ## Goal
 
@@ -160,9 +161,9 @@ underwater.
 **Underwater detection** gets a small heightfield version of `probe.comp`: the camera is underwater if it is inside a span with
 `floor < camY < floor + h`.
 
-**Refactor needed:** `WaterRenderer.Body` currently holds a `WaterRegion` and calls `r.mesher.build(...)`. It becomes an interface
-(`FluidBody`: `buildMesh(cb)`, `verts()`, `quads()`, `meshCounters()`, `hasDroplets()`). `WaterRegion` and the new heightfield tiles
-both implement it. This is the only change to existing shared code. Everything else is in new files.
+**Refactor (done in milestone 1):** `WaterRenderer.Body` now holds either a `WaterRegion` or an `HfDomain`
+(`Body(region, heightfield, ubo)`, with the old 2-argument constructor kept). The mesh, thickness and composite passes read the
+mesh buffers through `Body`; droplets and whitewater are skipped for heightfield bodies.
 
 ## 6. Gameplay sync
 
@@ -175,21 +176,23 @@ both implement it. This is the only change to existing shared code. Everything e
 
 ## 7. Code layout
 
-All new code goes in a new package, so merging upstream updates stays easy.
+New code lives in `me.skaffy.client.water` with an `Hf` prefix. A separate package would not work, since `SolidCache`,
+`Material`'s helpers and the renderer internals are package-private, and widening them would mean more upstream diffs.
 
 ```
-src/client/java/me/skaffy/client/water/hf/
-    HfWorld.java       tiles, scheduling, sleeping, sources, commands glue
-    HfTile.java        one 16x16-block tile, pool slot, dirty flags
-    HfTopology.java    CPU span and link builder, water remap on block change
-    HfSolver.java      records flux, depth and mesh dispatches
-    HfMesher.java      buffers in the WaterRenderer mesh format
+src/client/java/me/skaffy/client/water/
+    HfTopology.java    CPU span and link builder (no Minecraft types, unit-testable)
+    HfDomain.java      GPU buffers, flux/depth/mesh/probe dispatches, stats readback
+    (milestone 3+)     HfTile / tile pool, sleeping; (milestone 4) water remap on block change
 src/client/resources/assets/realistic-water/shaders/
-    hf_common.glsl  hf_flux.comp  hf_depth.comp  hf_mesh.comp  hf_fill.comp  hf_probe.comp
+    hf_common.glsl  hf_flux.comp  hf_depth.comp  hf_mesh.comp  hf_probe.comp   (hf_fill.comp in milestone 5)
+tools/hf-cpu-test/   CPU tests: topology cases and a Java mirror of the flux and depth shaders
 ```
 
-New settings in `WaterSettings`: `hfCellsPerBlock`, `hfLayers`, `hfCfl`, `hfDamping`, `hfFriction`, `hfMinOpening`, `hfDryDepth`,
-`hfSleepEps`, `hfMaxStepsPerFrame`, `waterMode` (`heightfield` | `flip`).
+Settings in `WaterSettings` (change with `/water set`): `hfCellsPerBlock` (2), `hfLayers` (4), `hfMinOpening` (0.25),
+`hfMaxDomainBlocks` (256), `hfCfl` (0.3), `hfDamping` (0.995), `hfFriction` (0.2), `hfMaxSpeed` (30), `hfRenderDepth` (0.01),
+`hfMaxStepsPerFrame` (8). Topology settings apply to the next `/water flood`. Later milestones add `hfSleepEps` and a solver choice
+for placed water.
 
 ## 8. Milestones
 
@@ -216,3 +219,40 @@ New settings in `WaterSettings`: `hfCellsPerBlock`, `hfLayers`, `hfCfl`, `hfDamp
   splashes. Needs a decision before milestone 5.
 * **License:** this fork must keep Skaffy's license, credit Skaffy, link the original project and say clearly that it is a modified
   version (see `LICENSE`, "Fork conditions"). The README notice added with this document covers that.
+
+## 10. Milestone 1: what exists
+
+**Commands**
+
+* `/water flood [radius] [height]` builds a heightfield domain around you (up to `hfMaxDomainBlocks`, default 256 x 256 blocks)
+  and raises the water to your feet + `height` inside `radius`. On flat ground that is a cylinder that collapses like a dam break.
+  Running it again replaces the previous domain.
+* `/water hf stats` shows the domain size, span count, GPU memory, total water volume and its drift since the flood, max depth,
+  max speed, and substeps per frame.
+* `/water hf clear` removes it.
+
+**How a frame runs:** `WaterWorld.recordHeightfield` reads last frame's stats (volume, max depth, max speed), picks the substep count
+from the CFL limit, writes the UBO (shared shading fields via `writeShading`), records flux + depth passes per substep and the
+underwater probe. `WaterRenderer` then builds the mesh (`hf_mesh.comp`) and draws it with the existing passes.
+
+**Tested on the CPU** (`tools/hf-cpu-test`, a Java mirror of the two shader passes, run with plain `javac`/`java`):
+
+| Case | Result |
+|---|---|
+| Spans for a two-storey house over a cave | sky 72+, upper 68-71, ground 64-67, cave 50-55; links symmetric |
+| Span cap (6 gaps, L = 4) | 2 dropped per column, counted |
+| Dam break, r = 6, 2 blocks high, 20 s | volume drift 0.0000%, spreads over the whole 32 x 32 domain and settles flat |
+| Water outside a closed room with one doorway | flows in through the doorway, roof stays dry, no volume drift |
+| Tunnel under a river | tunnel stays dry |
+
+**Not covered yet:** running it in game. Milestone 1's exit test (dam break in a real world, volume within 0.1% over 10 minutes,
+looks right) has to be done on a machine with Java 25 and a Vulkan GPU.
+
+**Known limitations of this milestone**
+
+* Block changes inside the domain are ignored until the next `/water flood` (milestone 4).
+* The topology build runs on the main thread when you flood: expect a hitch of up to a second or two on a 256 x 256 domain.
+* Top-surface normals are per cell (flat-shaded); the ripple detail normals hide most of it. Corners are averaged per span, so tiny
+  cracks between neighboring cells are possible where neighbors pick different links.
+* Water piles up against the domain edge (it is a wall).
+* Not synced to blocks, so swimming and boats don't react to it yet (milestone 5).

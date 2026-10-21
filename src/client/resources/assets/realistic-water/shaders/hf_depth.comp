@@ -1,0 +1,57 @@
+#version 450
+// Pass 2 of the virtual-pipe step: apply in- and outflow to each span's depth, and reduce per-group stats
+// (volume, max depth, max speed) for mass checks and the CFL time step.
+#include "hf_common.glsl"
+layout(local_size_x = 256) in;
+layout(std430, binding = 1) readonly buffer Geo { vec2 geo[]; };
+layout(std430, binding = 2) buffer Depth { float depth[]; };
+layout(std430, binding = 3) readonly buffer Flux { float flux[]; };
+layout(std430, binding = 4) readonly buffer Links { uint links[]; };
+layout(std430, binding = 5) writeonly buffer Stats { vec4 stats[]; };
+
+#define HF_DT hp.p0.x
+#define HF_CELL hp.p0.z
+#define HF_MAX_SPEED hp.p1.x
+
+shared vec3 reduction[256];
+
+void main() {
+    uint s = GID_U;
+    vec3 mine = vec3(0.0);
+    if (s < uint(HF_SPANS) && hfValid(geo[s])) {
+        uint base = s * HF_LINKS;
+        float inflow = 0.0;
+        float outflow = 0.0;
+        float peak = 0.0;
+        for (uint k = 0u; k < HF_LINKS; k++) {
+            uint l = links[base + k];
+            if (l == HF_NONE) {
+                continue;
+            }
+            float o = flux[base + k];
+            float i = flux[hfTarget(l) * HF_LINKS + hfRev(l)];
+            outflow += o;
+            inflow += i;
+            peak = max(peak, max(o, i));
+        }
+        float h = max(depth[s] + HF_DT * (inflow - outflow) / (HF_CELL * HF_CELL), 0.0);
+        depth[s] = h;
+        // Thin films give meaningless speeds (flux / tiny depth), so they are left out of the CFL estimate.
+        float speed = h > 0.05 ? min(peak / (HF_CELL * h), HF_MAX_SPEED) : 0.0;
+        mine = vec3(h * HF_CELL * HF_CELL, h, speed);
+    }
+    uint lid = gl_LocalInvocationIndex;
+    reduction[lid] = mine;
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1) {
+        if (lid < stride) {
+            vec3 m = reduction[lid];
+            vec3 o = reduction[lid + stride];
+            reduction[lid] = vec3(m.x + o.x, max(m.y, o.y), max(m.z, o.z));
+        }
+        barrier();
+    }
+    if (lid == 0u) {
+        stats[GROUP_ID] = vec4(reduction[0], 0.0);
+    }
+}

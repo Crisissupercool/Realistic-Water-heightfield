@@ -1,0 +1,155 @@
+#version 450
+// Builds the heightfield water mesh in the same format SurfaceMesher produces (verts = position + packed normal,
+// quads = 4 vertex indices, meshCounters[1] = quad count), so WaterRenderer can draw and shade it unchanged.
+//
+// Every wet span emits a closed shape: the top surface, a bottom just below the floor, and side walls where the
+// neighbor is dry or blocked. The thickness pass needs both front and back faces; a top-only mesh would render
+// with zero thickness, i.e. perfectly clear water.
+#include "hf_common.glsl"
+layout(local_size_x = 256) in;
+layout(std430, binding = 1) readonly buffer Geo { vec2 geo[]; };
+layout(std430, binding = 2) readonly buffer Depth { float depth[]; };
+layout(std430, binding = 3) readonly buffer Links { uint links[]; };
+layout(std430, binding = 4) writeonly buffer Verts { vec4 verts[]; };
+layout(std430, binding = 5) writeonly buffer Quads { uvec4 quads[]; };
+layout(std430, binding = 6) buffer MeshCounters { uint meshCounters[]; };
+
+#define HF_CELL hp.p0.z
+#define HF_ORIGIN_Y hp.p0.w
+#define HF_RENDER_DRY hp.p1.y
+#define HF_QUAD_CAP uint(hp.p2.x)
+
+const float BOTTOM_OFFSET = 0.02;
+const float WALL_INSET = 0.01;
+
+bool wet(uint t) {
+    return depth[t] > HF_RENDER_DRY;
+}
+
+float surfaceOf(uint t) {
+    return min(geo[t].x + depth[t], geo[t].y);
+}
+
+// Neighbor span in a direction, preferring a wet one. Slot j = 0 holds the largest opening.
+uint pick(uint s, int dir) {
+    uint fallback = HF_NONE;
+    for (int j = 0; j < 2; j++) {
+        uint l = links[s * HF_LINKS + uint(dir * 2 + j)];
+        if (l == HF_NONE) {
+            continue;
+        }
+        uint t = hfTarget(l);
+        if (wet(t)) {
+            return t;
+        }
+        if (fallback == HF_NONE) {
+            fallback = t;
+        }
+    }
+    return fallback;
+}
+
+void accumulate(uint t, float fl, float top, inout float sum, inout float n) {
+    if (t == HF_NONE) {
+        return;
+    }
+    // A dry neighbor pulls the corner down toward its floor (shorelines), but never below our floor or above our surface.
+    sum += wet(t) ? surfaceOf(t) : clamp(geo[t].x, fl, top);
+    n += 1.0;
+}
+
+// Corner height shared with the neighbors on that corner, so adjacent quads (mostly) meet without cracks.
+float cornerHeight(uint s, int sx, int sz, float fl, float top, float ce) {
+    int dirX = sx > 0 ? 0 : 1;
+    int dirZ = sz > 0 ? 2 : 3;
+    uint nx = pick(s, dirX);
+    uint nz = pick(s, dirZ);
+    uint nd = nx != HF_NONE ? pick(nx, dirZ) : HF_NONE;
+    if (nd == HF_NONE && nz != HF_NONE) {
+        nd = pick(nz, dirX);
+    }
+    float sum = top;
+    float n = 1.0;
+    accumulate(nx, fl, top, sum, n);
+    accumulate(nz, fl, top, sum, n);
+    accumulate(nd, fl, top, sum, n);
+    return clamp(sum / n, fl, ce);
+}
+
+void emit(uint q, vec3 a, vec3 b, vec3 c, vec3 d, vec3 normal, bool wall) {
+    if (q >= HF_QUAD_CAP) {
+        return;
+    }
+    float packed = uintBitsToFloat(packNormal(normal, wall));
+    uint v = q * 4u;
+    verts[v] = vec4(a, packed);
+    verts[v + 1u] = vec4(b, packed);
+    verts[v + 2u] = vec4(c, packed);
+    verts[v + 3u] = vec4(d, packed);
+    quads[q] = uvec4(v, v + 1u, v + 2u, v + 3u);
+}
+
+void main() {
+    uint s = GID_U;
+    if (s >= uint(HF_SPANS)) {
+        return;
+    }
+    vec2 g = geo[s];
+    if (!hfValid(g) || !wet(s)) {
+        return;
+    }
+    uint column = s / uint(HF_LAYERS);
+    int cx = int(column % uint(HF_NX));
+    int cz = int(column / uint(HF_NX));
+    float fl = g.x;
+    float ce = g.y;
+    float top = surfaceOf(s);
+    float oy = HF_ORIGIN_Y;
+
+    float h00 = cornerHeight(s, -1, -1, fl, top, ce) - oy;
+    float h10 = cornerHeight(s, 1, -1, fl, top, ce) - oy;
+    float h11 = cornerHeight(s, 1, 1, fl, top, ce) - oy;
+    float h01 = cornerHeight(s, -1, 1, fl, top, ce) - oy;
+
+    uint wallMask = 0u;
+    float inset[4];
+    for (int d = 0; d < 4; d++) {
+        uint t = pick(s, d);
+        inset[d] = t == HF_NONE ? WALL_INSET : 0.0;
+        if (t == HF_NONE || !wet(t)) {
+            wallMask |= 1u << d;
+        }
+    }
+    uint count = 2u + uint(bitCount(wallMask));
+    uint q = atomicAdd(meshCounters[1], count);
+    if (q >= HF_QUAD_CAP) {
+        return;
+    }
+
+    float c = HF_CELL;
+    float x0 = float(cx) * c;
+    float x1 = x0 + c;
+    float z0 = float(cz) * c;
+    float z1 = z0 + c;
+    float b = fl - BOTTOM_OFFSET - oy;
+
+    vec3 up = normalize(vec3(-((h10 + h11) - (h00 + h01)) / (2.0 * c), 1.0, -((h01 + h11) - (h00 + h10)) / (2.0 * c)));
+    emit(q++, vec3(x0, h00, z0), vec3(x1, h10, z0), vec3(x1, h11, z1), vec3(x0, h01, z1), up, false);
+    emit(q++, vec3(x0, b, z0), vec3(x0, b, z1), vec3(x1, b, z1), vec3(x1, b, z0), vec3(0.0, -1.0, 0.0), true);
+    if ((wallMask & 1u) != 0u) {
+        float x = x1 - inset[0];
+        emit(q++, vec3(x, b, z0), vec3(x, b, z1), vec3(x, h11, z1), vec3(x, h10, z0), vec3(1.0, 0.0, 0.0), true);
+    }
+    if ((wallMask & 2u) != 0u) {
+        float x = x0 + inset[1];
+        emit(q++, vec3(x, b, z1), vec3(x, b, z0), vec3(x, h00, z0), vec3(x, h01, z1), vec3(-1.0, 0.0, 0.0), true);
+    }
+    if ((wallMask & 4u) != 0u) {
+        float z = z1 - inset[2];
+        emit(q++, vec3(x1, b, z), vec3(x0, b, z), vec3(x0, h01, z), vec3(x1, h11, z), vec3(0.0, 0.0, 1.0), true);
+    }
+    if ((wallMask & 8u) != 0u) {
+        float z = z0 + inset[3];
+        emit(q++, vec3(x0, b, z), vec3(x1, b, z), vec3(x1, h10, z), vec3(x0, h00, z), vec3(0.0, 0.0, -1.0), true);
+    }
+}
