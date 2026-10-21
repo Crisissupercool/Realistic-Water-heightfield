@@ -616,9 +616,12 @@ final class HfWorld {
 					}
 					int target = HfBlocks.amountFor(fill[r], current);
 					if (mode == HfBlocksPayload.RELEASE) {
-						if (target > 0 || ours) {
+						// Vanilla flowing water without a source dries up, so released water is all sources: a block at least half full
+						// becomes a source, the rest air.
+						int vanilla = fill[r] >= 0.5F ? 8 : 0;
+						if (vanilla > 0 || ours) {
 							positions.add(key);
-							amounts.add((byte) target);
+							amounts.add((byte) vanilla);
 							this.world.expectWater(key, 0);
 						}
 					} else if (target != current) {
