@@ -121,10 +121,12 @@ final class HfTiledSim {
 		return tile;
 	}
 
-	/** Mirror of hf_remap.comp for one tile. */
-	private void remap(int[] oldPages, int[] newPages) {
+	/** Mirror of hf_remap.comp for one tile; fluxPages: the flux pages the tile kept (NONE where none). */
+	private void remap(int[] oldPages, int[] newPages, int[] fluxPages) {
 		for (int col = 0; col < this.ps; col++) {
 			float[] acc = new float[4];
+			int[] src = {-1, -1, -1, -1};
+			float[] srcAmount = new float[4];
 			for (int i = 0; i < 4; i++) {
 				if (oldPages[i] < 0) {
 					continue;
@@ -160,12 +162,39 @@ final class HfTiledSim {
 				}
 				if (best >= 0) {
 					acc[best] += d;
+					if (d > srcAmount[best]) {
+						srcAmount[best] = d;
+						src[best] = i;
+					}
 				}
 			}
 			for (int j = 0; j < 4; j++) {
 				if (newPages[j] >= 0) {
 					this.depth[newPages[j] * this.ps + col] = acc[j];
 				}
+			}
+			float[][] f = new float[4][8];
+			float[][] fo = new float[4][2];
+			for (int i = 0; i < 4; i++) {
+				if (fluxPages[i] < 0) {
+					continue;
+				}
+				int base = fluxPages[i] * this.ps + col;
+				System.arraycopy(this.flux, base * 8, f[i], 0, 8);
+				fo[i][0] = this.foam[base];
+				fo[i][1] = this.foam[this.foamHalf + base];
+			}
+			for (int j = 0; j < 4; j++) {
+				if (fluxPages[j] < 0) {
+					continue;
+				}
+				int base = fluxPages[j] * this.ps + col;
+				int from = src[j];
+				for (int k = 0; k < 8; k++) {
+					this.flux[base * 8 + k] = from >= 0 ? f[from][k] : 0.0F;
+				}
+				this.foam[base] = from >= 0 ? fo[from][0] : 0.0F;
+				this.foam[this.foamHalf + base] = from >= 0 ? fo[from][1] : 0.0F;
 			}
 		}
 	}
@@ -442,7 +471,7 @@ final class HfTiledSim {
 				continue;
 			}
 			this.writePages(tile, t);
-			this.remap(old, Arrays.copyOfRange(this.g.spanPage, tile * 4, tile * 4 + 4));
+			this.remap(old, Arrays.copyOfRange(this.g.spanPage, tile * 4, tile * 4 + 4), Arrays.copyOfRange(this.g.fluxPage, tile * 4, tile * 4 + 4));
 			this.g.releaseSpanPages(old);
 		}
 		for (int[] req : this.g.growthRequests(this.maxNewTiles)) {

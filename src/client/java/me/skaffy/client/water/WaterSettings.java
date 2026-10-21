@@ -176,6 +176,8 @@ public final class WaterSettings {
 	public static float hfRipples = 1.0F;
 	/** How much the ripples bend the surface when shading (multiplies their slope). */
 	public static float hfRippleNormal = 2.0F;
+	/** How big a crater and ring wave a body hitting heightfield water makes (scales the displaced volume); 0 turns splashes off. */
+	public static float hfSplash = 1.0F;
 	/** How white foam and falling water show on heightfield water (0 off, 1 normal). */
 	public static float hfFoam = 1.0F;
 	/** Seconds foam takes to fade to about a third once nothing churns the water any more. */

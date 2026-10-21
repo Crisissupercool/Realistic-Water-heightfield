@@ -616,6 +616,97 @@ final class HfWorld {
 		player.setDeltaMovement(v.x + (tx - v.x) * k, v.y, v.z + (tz - v.z) * k);
 	}
 
+	// ---- splashes ----
+
+	private double prevFeet = Double.NaN;
+
+	/**
+	 * Call each client tick: a body hitting the surface fast opens a crater and piles the water it pushed away into a ring around
+	 * it (volume exact), which gravity turns into an expanding wave. The displaced volume grows with impact speed^1.5 (energy
+	 * per area), so jumping in from 1 block barely rings the surface while falling from 100 blocks throws a wave blocks wide.
+	 */
+	void splash(net.minecraft.client.Minecraft mc) {
+		var player = mc.player;
+		HfDomain hf = this.world.heightfield;
+		float[] sm = this.freshPlayerSample();
+		if (player == null || hf == null || sm == null || sm[4] < 0.5F || WaterSettings.hfSplash <= 0.0F || player.isSpectator()) {
+			this.prevFeet = Double.NaN;
+			return;
+		}
+		double feet = player.getY();
+		double vy = (player.getY() - player.yo) * 20.0;
+		double prev = this.prevFeet;
+		this.prevFeet = feet;
+		double surface = sm[2];
+		if (Double.isNaN(prev) || prev <= surface || feet > surface + 0.05 || vy > -2.0 || sm[3] < 0.2F) {
+			return;
+		}
+		double speed = -vy;
+		double volume = Math.min(0.4 * Math.pow(speed / 5.0, 1.5) * WaterSettings.hfSplash, 40.0);
+		double radius = Math.clamp(0.5 + 0.35 * Math.sqrt(volume), 0.6, 4.0);
+		double craterDepth = Math.min(2.0 * volume / (Math.PI * radius * radius), 0.8 * sm[3]);
+		this.crater(hf, player.getX(), player.getZ(), (float) surface, radius, craterDepth);
+	}
+
+	/** Moves water from a paraboloid crater of radius r and depth d at (x, z) into a ring from r to 2r, through injects. */
+	private void crater(HfDomain hf, double x, double z, float surface, double r, double d) {
+		HfTileGrid g = hf.grid;
+		float y = surface - 0.05F;
+		float area = g.cell * g.cell;
+		int cpb = g.cpb;
+		int c0x = (int) Math.floor((x - 2.0 * r) * cpb);
+		int c1x = (int) Math.ceil((x + 2.0 * r) * cpb);
+		int c0z = (int) Math.floor((z - 2.0 * r) * cpb);
+		int c1z = (int) Math.ceil((z + 2.0 * r) * cpb);
+		List<float[]> takes = new java.util.ArrayList<>();
+		List<float[]> gives = new java.util.ArrayList<>();
+		double removed = 0.0;
+		double weights = 0.0;
+		for (int cz = c0z; cz <= c1z; cz++) {
+			for (int cx = c0x; cx <= c1x; cx++) {
+				double wx = (cx + 0.5) / cpb;
+				double wz = (cz + 0.5) / cpb;
+				double dist = Math.hypot(wx - x, wz - z);
+				if (dist >= 2.0 * r) {
+					continue;
+				}
+				int[] at = g.locate(wx, wz);
+				if (at == null) {
+					continue;
+				}
+				int layer = g.layerAt(at[0], at[1], y);
+				if (layer == HfTileGrid.NONE) {
+					continue;
+				}
+				float floor = g.floorOf(g.tileGeo[at[0]][layer * g.pageSpans + at[1]]);
+				float local = surface - floor;
+				if (local <= 0.0F) {
+					continue;
+				}
+				if (dist < r) {
+					double take = Math.min(d * (1.0 - (dist / r) * (dist / r)), 0.8 * local);
+					if (take > 0.0) {
+						takes.add(new float[]{at[0], at[1], (float) take});
+						removed += take * area;
+					}
+				} else {
+					double w = Math.sin(Math.PI * (dist - r) / r);
+					gives.add(new float[]{at[0], at[1], (float) w});
+					weights += w;
+				}
+			}
+		}
+		if (removed <= 0.0 || weights <= 0.0) {
+			return;
+		}
+		for (float[] t : takes) {
+			hf.inject((int) t[0], (int) t[1], y, -t[2]);
+		}
+		for (float[] t : gives) {
+			hf.inject((int) t[0], (int) t[1], y, (float) (removed * t[2] / weights / area));
+		}
+	}
+
 	// ---- stirring (the water reacts to bodies moving through it) ----
 
 	private static final float[] NO_STIR = new float[0];

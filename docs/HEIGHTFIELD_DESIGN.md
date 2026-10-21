@@ -450,3 +450,16 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   span's own height, which split shared corners wherever surfaces differ: a CPU mirror (`HfMeshMirror`) found 86 of 387
   shared edges cracked (up to 0.6 blocks) on a stepped stream; now 0 cracks and 0 slope mismatch on a stepped stream, a bumpy
   slope and a lake shore.
+* **Reversed depth:** the game's depth buffer is reversed (near = 1, the renderer tests GREATER). The eye direction helper
+  assumed depth grows with distance, so V pointed away from the eye and broke reflections everywhere; it now picks the nearer
+  unprojected point by distance.
+* **Block edits keep the flow:** `HfTileGrid.replace` used to free a tile's flux pages, so breaking one block stopped all flow in
+  that 16x16 tile (and any border neighbors rebuilt with it) while untouched neighbors kept pushing: the water surged. A
+  simulated tile now keeps its flux pages when it has one for every new layer, and `hf_remap.comp` moves each column's flux and
+  foam with the water body that fills each new layer most. CPU check: a steady channel's total flux went 151 -> 1.25 across a
+  rebuild before, 151 -> 151 now.
+* **Splashes:** `HfWorld.splash` (each tick) detects the player crossing the surface faster than 2 b/s (from the gameplay
+  sample) and opens a paraboloid crater, its water injected into a ring r..2r (volume exact): displaced volume
+  0.4 x (speed / 5)^1.5 blocks^3 x `hfSplash` (cap 40), radius 0.5 + 0.35 sqrt(volume) (0.6..4), depth limited to 80% of the
+  water there. Gravity turns it into a rebound jet and an expanding ring. CPU numbers in 4-deep water: 5 b/s (a 1-block jump)
+  0.015 wave at 3 blocks; 20 b/s 0.13; 78 b/s (terminal speed) 0.79 at 3 blocks, 0.15 at 8, rebound jet 1.9 blocks.

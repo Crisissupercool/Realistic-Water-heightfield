@@ -577,6 +577,7 @@ public final class WaterWorld {
 		this.waterEchoes.expire(this.frameCounter);
 		this.hfEchoes.expire(this.millis());
 		this.hfWorld.pushPlayer(mc);
+		this.hfWorld.splash(mc);
 		this.sandEchoes.expire(this.frameCounter);
 		this.lavaEchoes.expire(this.frameCounter);
 		Vec3 listener = mc.player != null ? mc.player.getEyePosition() : null;

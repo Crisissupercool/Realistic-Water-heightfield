@@ -24,6 +24,75 @@ public final class HfCpuTest {
 		return sim.g.floorOf(sim.geo[sim.g.span(tile, 0, col)]) + sim.depthAt(tile, 0, col);
 	}
 
+	/** Mirror of HfWorld.crater: a paraboloid crater of radius r and depth d at (x, z), its water piled into a ring r..2r. */
+	static void crater(HfTiledSim sim, double x, double z, float surface, double r, double d) {
+		HfTileGrid g = sim.g;
+		float y = surface - 0.05F;
+		float area = g.cell * g.cell;
+		int cpb = g.cpb;
+		java.util.List<float[]> takes = new java.util.ArrayList<>();
+		java.util.List<float[]> gives = new java.util.ArrayList<>();
+		double removed = 0.0;
+		double weights = 0.0;
+		for (int cz = (int) Math.floor((z - 2.0 * r) * cpb); cz <= (int) Math.ceil((z + 2.0 * r) * cpb); cz++) {
+			for (int cx = (int) Math.floor((x - 2.0 * r) * cpb); cx <= (int) Math.ceil((x + 2.0 * r) * cpb); cx++) {
+				double wx = (cx + 0.5) / cpb;
+				double wz = (cz + 0.5) / cpb;
+				double dist = Math.hypot(wx - x, wz - z);
+				if (dist >= 2.0 * r) {
+					continue;
+				}
+				int[] at = g.locate(wx, wz);
+				if (at == null) {
+					continue;
+				}
+				int layer = g.layerAt(at[0], at[1], y);
+				if (layer == HfTileGrid.NONE) {
+					continue;
+				}
+				float local = surface - g.floorOf(g.tileGeo[at[0]][layer * g.pageSpans + at[1]]);
+				if (local <= 0.0F) {
+					continue;
+				}
+				if (dist < r) {
+					double take = Math.min(d * (1.0 - (dist / r) * (dist / r)), 0.8 * local);
+					if (take > 0.0) {
+						takes.add(new float[]{at[0], at[1], (float) take});
+						removed += take * area;
+					}
+				} else {
+					double w = Math.sin(Math.PI * (dist - r) / r);
+					gives.add(new float[]{at[0], at[1], (float) w});
+					weights += w;
+				}
+			}
+		}
+		if (removed <= 0.0 || weights <= 0.0) {
+			return;
+		}
+		for (float[] t : takes) {
+			sim.inject((int) t[0], (int) t[1], y, -t[2]);
+		}
+		for (float[] t : gives) {
+			sim.inject((int) t[0], (int) t[1], y, (float) (removed * t[2] / weights / area));
+		}
+	}
+
+	/** Sum of all outflows of a tile's simulated spans (blocks^3/s). */
+	static double totalFlux(HfTiledSim sim, HfTileGrid grid, int tile) {
+		double sum = 0.0;
+		for (int l = 0; l < grid.layersUsed[tile]; l++) {
+			int fp = grid.fluxPage[tile * 4 + l];
+			if (fp < 0) {
+				continue;
+			}
+			for (int i = fp * grid.pageSpans * 8; i < (fp + 1) * grid.pageSpans * 8; i++) {
+				sum += sim.flux[i];
+			}
+		}
+		return sum;
+	}
+
 	static void check(boolean ok, String what) {
 		System.out.println((ok ? "  ok   " : "  FAIL ") + what);
 		if (!ok) {
@@ -750,6 +819,56 @@ public final class HfCpuTest {
 			}
 			check(later < 0.05F, String.format("30 s later the foam has faded: %.3f", later));
 			check(Math.abs(tiled.volume() - v0) / v0 < 1.0e-5, "volume kept");
+		}
+
+		System.out.println("Edits: a tile rebuilt for a block edit keeps its flow (the water does not stop and surge back)");
+		{
+			Solid solid = (x, y, z) -> y < 64 || (z < 4 || z > 11) && y < 70;
+			HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 4, 16, 16);
+			HfTiledSim tiled = new HfTiledSim(grid, voxels(solid));
+			tiled.maxNewTiles = 0;
+			int tn = grid.tn;
+			int tile = tiled.addTile(0, 0, null);
+			for (int z = 4; z < 12; z++) {
+				grid.setReservoir(tile, (z * C) * tn + 1, 65.0F, HfTileGrid.RESERVOIR_FIXED);
+				grid.setReservoir(tile, (z * C) * tn + tn - 2, 64.3F, HfTileGrid.RESERVOIR_FIXED);
+			}
+			for (int f = 0; f < 900; f++) {
+				tiled.frame();
+			}
+			double before = totalFlux(tiled, grid, tile);
+			grid.markDirtyBlock(8, 66, 2);
+			tiled.frame();
+			double after = totalFlux(tiled, grid, tile);
+			check(before > 0.1 && after > 0.8 * before, String.format("a steady channel flow keeps going through the rebuild: flux %.3f -> %.3f", before, after));
+		}
+
+		System.out.println("Splashes: an impact's crater and ring scale with its speed, volume exact");
+		{
+			Solid solid = (x, y, z) -> y < 60 || (x == 0 || x == 15 || z == 0 || z == 15) && y < 70;
+			float[] waves = new float[2];
+			float[] speeds = {5.0F, 78.0F};
+			for (int k = 0; k < 2; k++) {
+				HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 4, 16, 16);
+				HfTiledSim tiled = new HfTiledSim(grid, voxels(solid));
+				tiled.maxNewTiles = 0;
+				int tn = grid.tn;
+				int tile = tiled.addTile(0, 0, (l, col) -> l == 0 && col % tn >= C && col % tn < 15 * C && col / tn >= C && col / tn < 15 * C ? 4.0 : 0.0);
+				double v0 = tiled.volume();
+				// Same sizing as HfWorld.splash.
+				double volume = Math.min(0.4 * Math.pow(speeds[k] / 5.0, 1.5), 40.0);
+				double r = Math.clamp(0.5 + 0.35 * Math.sqrt(volume), 0.6, 4.0);
+				double d = Math.min(2.0 * volume / (Math.PI * r * r), 0.8 * 4.0);
+				crater(tiled, 8.0, 8.0, 64.0F, r, d);
+				check(Math.abs(tiled.volume() - v0) / v0 < 1.0e-5, String.format("%.0f b/s impact: crater and ring keep the volume", speeds[k]));
+				for (int f = 0; f < 120; f++) {
+					grid.quiet[tile] = 0.0F;
+					tiled.frame();
+					waves[k] = Math.max(waves[k], Math.abs(surfaceAt(tiled, tile, 11.0F, 8.0F) - 64.0F));
+				}
+			}
+			check(waves[0] > 0.005F && waves[0] < 0.05F, String.format("jumping in (5 b/s) rings the surface lightly: %.3f at 3 blocks", waves[0]));
+			check(waves[1] > 10.0F * waves[0], String.format("falling at terminal speed (78 b/s) throws a real wave: %.3f at 3 blocks", waves[1]));
 		}
 
 		System.out.println("Mesh: spans drawn as one surface share their corners exactly (no cracks), streams over steps become ramps");

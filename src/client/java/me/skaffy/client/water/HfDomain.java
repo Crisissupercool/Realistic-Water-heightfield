@@ -61,8 +61,11 @@ final class HfDomain implements AutoCloseable {
 	private record Added(int tile, int[] pages, VkBuf staging) {
 	}
 
-	/** A rebuilt tile: new pages (geo, links) to upload, then water to remap from the old pages, which are freed afterwards. */
-	private record Rebuilt(int[] oldPages, int[] newPages, VkBuf staging) {
+	/**
+	 * A rebuilt tile: new pages (geo, links) to upload, then water to remap from the old pages, which are freed afterwards.
+	 * fluxPages: the flux pages the tile kept through the rebuild (NONE where it has none), whose flow the remap moves too.
+	 */
+	private record Rebuilt(int[] oldPages, int[] newPages, int[] fluxPages, VkBuf staging) {
 	}
 
 	final HfTileGrid grid;
@@ -246,7 +249,9 @@ final class HfDomain implements AutoCloseable {
 		}
 		int[] pages = new int[HfTileGrid.MAX_LAYERS];
 		System.arraycopy(this.grid.spanPage, tile * 4, pages, 0, HfTileGrid.MAX_LAYERS);
-		this.rebuilt.add(new Rebuilt(old, pages, this.stage(t, null)));
+		int[] fluxPages = new int[HfTileGrid.MAX_LAYERS];
+		System.arraycopy(this.grid.fluxPage, tile * 4, fluxPages, 0, HfTileGrid.MAX_LAYERS);
+		this.rebuilt.add(new Rebuilt(old, pages, fluxPages, this.stage(t, null)));
 		this.tilesDirty = true;
 		this.meshDirty = true;
 		return true;
@@ -444,7 +449,9 @@ final class HfDomain implements AutoCloseable {
 				int[] o = r.oldPages();
 				int[] q = r.newPages();
 				this.bind(p[5], cb, ubo, ring, this.stats);
-				p[5].push(cb, this.grid.tn, this.grid.cpb, this.grid.yMin, 0, o[0], o[1], o[2], o[3], q[0], q[1], q[2], q[3], 0, 0, 0, 0);
+				int[] f = r.fluxPages();
+				p[5].push(cb, this.grid.tn, this.grid.cpb, this.grid.yMin, (int) this.foamHalf, o[0], o[1], o[2], o[3], q[0], q[1], q[2], q[3],
+					f[0], f[1], f[2], f[3]);
 				p[5].dispatch(cb, ComputeProgram.groups(this.ps, 256), 1, 1);
 			}
 			Vk.barrier(cb);

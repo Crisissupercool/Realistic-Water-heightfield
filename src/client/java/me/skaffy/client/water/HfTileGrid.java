@@ -337,8 +337,25 @@ final class HfTileGrid {
 		this.layersUsed[tile] = t.layersUsed;
 		this.tileGeo[tile] = t.geo;
 		this.version[tile]++;
-		this.releaseFlux(tile);
-		this.active[tile] = false;
+		// A simulated tile keeps its flux pages through the rebuild (the remap moves each column's flow along with its water), so
+		// breaking a block does not stop the flow of the whole tile while its neighbors keep pushing, which made the water
+		// surge. Only when the tile now needs a layer it holds no flux page for does it start over (fluxes zeroed).
+		boolean keep = this.active[tile];
+		for (int l = 0; l < t.layersUsed && keep; l++) {
+			keep = this.fluxPage[tile * 4 + l] != NONE;
+		}
+		if (keep) {
+			for (int l = t.layersUsed; l < MAX_LAYERS; l++) {
+				int p = this.fluxPage[tile * 4 + l];
+				if (p != NONE) {
+					this.freeFlux.add(p);
+					this.fluxPage[tile * 4 + l] = NONE;
+				}
+			}
+		} else {
+			this.releaseFlux(tile);
+			this.active[tile] = false;
+		}
 		this.quiet[tile] = 0.0F;
 		return old;
 	}

@@ -37,12 +37,15 @@ vec3 viewPosAt(vec2 uv, float dist) {
     return p0 + ray * ((-dist - p0.z) / ray.z);
 }
 
-// Unit vector from the water point at uv back toward the (bobbed) eye, exact even when the eye is not at the origin.
+// Unit vector from the water point at uv back toward the (bobbed) eye, exact even when the eye is not at the origin. The depth
+// buffer is reversed (near = 1), so which unprojected point is nearer is decided by distance, not by depth value.
 vec3 toEyeAt(vec2 uv) {
     vec2 ndc = uv * 2.0 - 1.0;
     vec4 a = G.invProj * vec4(ndc, 0.2, 1.0);
     vec4 b = G.invProj * vec4(ndc, 0.8, 1.0);
-    return normalize(a.xyz / a.w - b.xyz / b.w);
+    vec3 pa = a.xyz / a.w;
+    vec3 pb = b.xyz / b.w;
+    return -pa.z < -pb.z ? normalize(pa - pb) : normalize(pb - pa);
 }
 
 float pixelFootprint(float dist) {

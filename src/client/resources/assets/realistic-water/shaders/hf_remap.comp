@@ -2,12 +2,17 @@
 // After a tile's terrain changed (block placed or broken, chunk loaded), moves its water from the old span pages into the
 // rebuilt ones, column by column. Each old body of water goes whole into the new span it overlaps most (or the nearest one
 // when a block now fills it), so the volume is exact; water squeezed into a smaller span is under pressure and flows out.
+// A tile that stays simulated keeps its flux pages (indexed by layer): each new layer takes the flow and foam of the old body
+// that gave it the most water, so the water keeps moving through the edit instead of stopping and surging back.
 #include "hf_common.glsl"
 layout(local_size_x = 256) in;
 layout(std430, binding = 2) buffer Depth { float depth[]; };
+layout(std430, binding = 3) buffer Flux { float flux[]; };
 
 #define HF_OLD_PAGES floatBitsToInt(hp.p0)
 #define HF_NEW_PAGES floatBitsToInt(hp.p1)
+#define HF_FLUX_PAGES hp.p2
+#define HF_FOAM_HALF uint(HF_COUNT)
 
 void main() {
     uint col = GID_U;
@@ -18,8 +23,12 @@ void main() {
     ivec4 newPages = HF_NEW_PAGES;
     vec2 ng[4];
     float acc[4];
+    int src[4];
+    float srcAmount[4];
     for (int j = 0; j < 4; j++) {
         acc[j] = 0.0;
+        src[j] = -1;
+        srcAmount[j] = 0.0;
         ng[j] = newPages[j] >= 0 ? hfGeo(uint(newPages[j]) * hfPageSpans() + col) : vec2(1.0e30, -1.0e30);
     }
     for (int i = 0; i < 4; i++) {
@@ -51,7 +60,35 @@ void main() {
         }
         if (best >= 0) {
             acc[best] += d;
+            if (d > srcAmount[best]) {
+                srcAmount[best] = d;
+                src[best] = i;
+            }
         }
+    }
+    // Flow and foam move with the water (read everything first: old and new layers share these pages).
+    ivec4 fluxPages = HF_FLUX_PAGES;
+    float f[4][8];
+    float fo[4][2];
+    for (int i = 0; i < 4; i++) {
+        uint base = fluxPages[i] >= 0 ? uint(fluxPages[i]) * hfPageSpans() + col : 0u;
+        for (uint k = 0u; k < HF_LINKS; k++) {
+            f[i][k] = fluxPages[i] >= 0 ? flux[base * HF_LINKS + k] : 0.0;
+        }
+        fo[i][0] = fluxPages[i] >= 0 ? foam[base] : 0.0;
+        fo[i][1] = fluxPages[i] >= 0 ? foam[HF_FOAM_HALF + base] : 0.0;
+    }
+    for (int j = 0; j < 4; j++) {
+        if (fluxPages[j] < 0) {
+            continue;
+        }
+        uint base = uint(fluxPages[j]) * hfPageSpans() + col;
+        int from = src[j];
+        for (uint k = 0u; k < HF_LINKS; k++) {
+            flux[base * HF_LINKS + k] = from >= 0 ? f[from][k] : 0.0;
+        }
+        foam[base] = from >= 0 ? fo[from][0] : 0.0;
+        foam[HF_FOAM_HALF + base] = from >= 0 ? fo[from][1] : 0.0;
     }
     for (int j = 0; j < 4; j++) {
         if (newPages[j] >= 0) {
