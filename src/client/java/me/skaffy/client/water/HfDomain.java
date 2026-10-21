@@ -75,8 +75,16 @@ final class HfDomain implements AutoCloseable {
 	double lastVolume;
 	float lastMaxDepth;
 	float lastMaxSpeed;
+	/** Fastest surface rise or fall anywhere in the domain, blocks/s: the visible motion, used to decide when to sleep. */
+	float lastMaxRate;
 	int lastSteps;
 	float lastDt;
+	/** True once a stats readback has arrived, so sleep is never decided on the all-zero stats of a fresh domain. */
+	boolean statsSeen;
+	/** Seconds the surface has moved slower than {@link WaterSettings#hfSleepRate}; past {@link WaterSettings#hfSleepSeconds} the solver sleeps. */
+	float quietSeconds;
+	private boolean meshDirty = true;
+	private float meshRenderDepth = Float.NaN;
 
 	HfDomain(HfTopology topo, float[] initialDepth, int originX, int originY, int originZ, int sizeX, int sizeZ, int cellsPerBlock) {
 		this.originX = originX;
@@ -138,10 +146,10 @@ final class HfDomain implements AutoCloseable {
 	}
 
 	/** Reads the stats this ring slot recorded {@link Vk#FRAME_RING} frames ago. Call once per frame before {@link #record}. */
-	void readStats() {
+	boolean readStats() {
 		int slot = Vk.ringSlot();
 		if (!this.statsPending[slot]) {
-			return;
+			return false;
 		}
 		this.statsPending[slot] = false;
 		VkBuf rb = this.statsReadback[slot];
@@ -150,15 +158,29 @@ final class HfDomain implements AutoCloseable {
 		double volume = 0.0;
 		float maxDepth = 0.0F;
 		float maxSpeed = 0.0F;
+		float maxRate = 0.0F;
 		for (int i = 0; i < this.statsSlots; i++) {
 			int o = i * STATS_BYTES;
 			volume += b.getFloat(o);
 			maxDepth = Math.max(maxDepth, b.getFloat(o + 4));
 			maxSpeed = Math.max(maxSpeed, b.getFloat(o + 8));
+			maxRate = Math.max(maxRate, b.getFloat(o + 12));
 		}
+		this.lastMaxRate = maxRate;
 		this.lastVolume = volume;
 		this.lastMaxDepth = maxDepth;
 		this.lastMaxSpeed = maxSpeed;
+		this.statsSeen = true;
+		return true;
+	}
+
+	/** Settled water: the solver skips its steps until something wakes it (for now only a new flood, which builds a new domain). */
+	boolean asleep() {
+		return this.statsSeen && this.quietSeconds >= WaterSettings.hfSleepSeconds;
+	}
+
+	void wake() {
+		this.quietSeconds = 0.0F;
 	}
 
 	/** Largest stable time step for the last known depth and speed (shallow-water CFL condition). */
@@ -209,11 +231,20 @@ final class HfDomain implements AutoCloseable {
 			this.statsPending[slot] = true;
 			Vk.barrier(cb);
 		}
+		if (steps > 0) {
+			this.meshDirty = true;
+		}
 		this.lastSteps = steps;
 		this.lastDt = dt;
 	}
 
+	/** Rebuilds the surface mesh only when the water moved or the render threshold changed; otherwise last frame's mesh is drawn again. */
 	void buildMesh(VkCommandBuffer cb, Desc ubo) {
+		if (!this.meshDirty && this.meshRenderDepth == WaterSettings.hfRenderDepth) {
+			return;
+		}
+		this.meshDirty = false;
+		this.meshRenderDepth = WaterSettings.hfRenderDepth;
 		ComputeProgram[] p = programs();
 		this.meshCounters.fill(cb, 0);
 		Vk.barrier(cb);
@@ -240,9 +271,10 @@ final class HfDomain implements AutoCloseable {
 		double drift = this.initialVolume > 0.0 ? (this.lastVolume - this.initialVolume) / this.initialVolume * 100.0 : 0.0;
 		return String.format(
 			"heightfield: %dx%d blocks at (%d, %d), %,d spans (%d dropped), %.0f MB  |  volume %,.1f blocks (%+.3f%% since start)  |  "
-				+ "max depth %.2f  max speed %.1f b/s  |  %d steps x %.1f ms",
+				+ "max depth %.2f  max speed %.2f b/s  |  %s",
 			this.sizeX, this.sizeZ, this.originX, this.originZ, this.spans, this.droppedSpans, this.bytes() / 1.0e6, this.lastVolume, drift,
-			this.lastMaxDepth, this.lastMaxSpeed, this.lastSteps, this.lastDt * 1000.0F);
+			this.lastMaxDepth, this.lastMaxSpeed,
+			this.asleep() ? "asleep (settled)" : String.format("%d steps x %.1f ms", this.lastSteps, this.lastDt * 1000.0F));
 	}
 
 	@Override

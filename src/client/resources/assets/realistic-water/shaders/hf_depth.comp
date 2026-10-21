@@ -1,6 +1,6 @@
 #version 450
 // Pass 2 of the virtual-pipe step: apply in- and outflow to each span's depth, and reduce per-group stats
-// (volume, max depth, max speed) for mass checks and the CFL time step.
+// (volume, max depth, max speed, max surface rate) for mass checks, the CFL time step and sleeping.
 #include "hf_common.glsl"
 layout(local_size_x = 256) in;
 layout(std430, binding = 1) readonly buffer Geo { vec2 geo[]; };
@@ -13,11 +13,11 @@ layout(std430, binding = 5) writeonly buffer Stats { vec4 stats[]; };
 #define HF_CELL hp.p0.z
 #define HF_MAX_SPEED hp.p1.x
 
-shared vec3 reduction[256];
+shared vec4 reduction[256];
 
 void main() {
     uint s = GID_U;
-    vec3 mine = vec3(0.0);
+    vec4 mine = vec4(0.0);
     if (s < uint(HF_SPANS) && hfValid(geo[s])) {
         uint base = s * HF_LINKS;
         float inflow = 0.0;
@@ -34,24 +34,25 @@ void main() {
             inflow += i;
             peak = max(peak, max(o, i));
         }
-        float h = max(depth[s] + HF_DT * (inflow - outflow) / (HF_CELL * HF_CELL), 0.0);
+        float old = depth[s];
+        float h = max(old + HF_DT * (inflow - outflow) / (HF_CELL * HF_CELL), 0.0);
         depth[s] = h;
         // Thin films give meaningless speeds (flux / tiny depth), so they are left out of the CFL estimate.
         float speed = h > 0.05 ? min(peak / (HF_CELL * h), HF_MAX_SPEED) : 0.0;
-        mine = vec3(h * HF_CELL * HF_CELL, h, speed);
+        mine = vec4(h * HF_CELL * HF_CELL, h, speed, abs(h - old) / HF_DT);
     }
     uint lid = gl_LocalInvocationIndex;
     reduction[lid] = mine;
     barrier();
     for (uint stride = 128u; stride > 0u; stride >>= 1) {
         if (lid < stride) {
-            vec3 m = reduction[lid];
-            vec3 o = reduction[lid + stride];
-            reduction[lid] = vec3(m.x + o.x, max(m.y, o.y), max(m.z, o.z));
+            vec4 m = reduction[lid];
+            vec4 o = reduction[lid + stride];
+            reduction[lid] = vec4(m.x + o.x, max(m.y, o.y), max(m.z, o.z), max(m.w, o.w));
         }
         barrier();
     }
     if (lid == 0u) {
-        stats[GROUP_ID] = vec4(reduction[0], 0.0);
+        stats[GROUP_ID] = reduction[0];
     }
 }

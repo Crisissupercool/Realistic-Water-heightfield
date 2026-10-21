@@ -2,9 +2,9 @@
 // Builds the heightfield water mesh in the same format SurfaceMesher produces (verts = position + packed normal,
 // quads = 4 vertex indices, meshCounters[1] = quad count), so WaterRenderer can draw and shade it unchanged.
 //
-// Every wet span emits a closed shape: the top surface, a bottom just below the floor, and side walls where the
-// neighbor is dry or blocked. The thickness pass needs both front and back faces; a top-only mesh would render
-// with zero thickness, i.e. perfectly clear water.
+// Every wet span emits its top surface and side walls where the neighbor is dry or blocked, but no bottom: every vertex
+// carries the OPEN flag, and mesh_thickness.frag closes open shapes at the scene depth (the riverbed). That halves the
+// geometry and removes a full layer of overdraw from the additive thickness pass.
 #include "hf_common.glsl"
 layout(local_size_x = 256) in;
 layout(std430, binding = 1) readonly buffer Geo { vec2 geo[]; };
@@ -19,7 +19,7 @@ layout(std430, binding = 6) buffer MeshCounters { uint meshCounters[]; };
 #define HF_RENDER_DRY hp.p1.y
 #define HF_QUAD_CAP uint(hp.p2.x)
 
-const float BOTTOM_OFFSET = 0.02;
+const uint OPEN = 0x80000000u;
 const float WALL_INSET = 0.01;
 
 bool wet(uint t) {
@@ -89,10 +89,10 @@ void emitTop(uint q, vec3 a, vec3 b, vec3 c, vec3 d, vec3 na, vec3 nb, vec3 nc, 
         return;
     }
     uint v = q * 4u;
-    verts[v] = vec4(a, uintBitsToFloat(packNormal(na, false)));
-    verts[v + 1u] = vec4(b, uintBitsToFloat(packNormal(nb, false)));
-    verts[v + 2u] = vec4(c, uintBitsToFloat(packNormal(nc, false)));
-    verts[v + 3u] = vec4(d, uintBitsToFloat(packNormal(nd, false)));
+    verts[v] = vec4(a, uintBitsToFloat(packNormal(na, false) | OPEN));
+    verts[v + 1u] = vec4(b, uintBitsToFloat(packNormal(nb, false) | OPEN));
+    verts[v + 2u] = vec4(c, uintBitsToFloat(packNormal(nc, false) | OPEN));
+    verts[v + 3u] = vec4(d, uintBitsToFloat(packNormal(nd, false) | OPEN));
     quads[q] = uvec4(v, v + 1u, v + 2u, v + 3u);
 }
 
@@ -100,7 +100,7 @@ void emit(uint q, vec3 a, vec3 b, vec3 c, vec3 d, vec3 normal, bool wall) {
     if (q >= HF_QUAD_CAP) {
         return;
     }
-    float packed = uintBitsToFloat(packNormal(normal, wall));
+    float packed = uintBitsToFloat(packNormal(normal, wall) | OPEN);
     uint v = q * 4u;
     verts[v] = vec4(a, packed);
     verts[v + 1u] = vec4(b, packed);
@@ -144,7 +144,7 @@ void main() {
             wallMask |= 1u << d;
         }
     }
-    uint count = 2u + uint(bitCount(wallMask));
+    uint count = 1u + uint(bitCount(wallMask));
     uint q = atomicAdd(meshCounters[1], count);
     if (q >= HF_QUAD_CAP) {
         return;
@@ -155,11 +155,10 @@ void main() {
     float x1 = x0 + c;
     float z0 = float(cz) * c;
     float z1 = z0 + c;
-    float b = fl - BOTTOM_OFFSET - oy;
+    float b = fl - oy;
 
     emitTop(q++, vec3(x0, h00, z0), vec3(x1, h10, z0), vec3(x1, h11, z1), vec3(x0, h01, z1),
         cornerNormal(c00), cornerNormal(c10), cornerNormal(c11), cornerNormal(c01));
-    emit(q++, vec3(x0, b, z0), vec3(x0, b, z1), vec3(x1, b, z1), vec3(x1, b, z0), vec3(0.0, -1.0, 0.0), true);
     if ((wallMask & 1u) != 0u) {
         float x = x1 - inset[0];
         emit(q++, vec3(x, b, z0), vec3(x, b, z1), vec3(x, h11, z1), vec3(x, h10, z0), vec3(1.0, 0.0, 0.0), true);

@@ -846,9 +846,14 @@ public final class WaterWorld {
 
 	private WaterRenderer.Body recordHeightfield(Minecraft mc, VkCommandBuffer cb, HfDomain hf, float frameDt, Vec3 cam, int width, int height) {
 		hf.readStats();
+		if (hf.statsSeen && hf.lastMaxRate < WaterSettings.hfSleepRate) {
+			hf.quietSeconds += frameDt;
+		} else {
+			hf.wake();
+		}
 		int steps = 0;
 		float dt = frameDt;
-		if (!this.paused && !mc.isPaused()) {
+		if (!this.paused && !mc.isPaused() && !hf.asleep()) {
 			float stable = hf.maxStableDt();
 			steps = Mth.clamp((int) Math.ceil(frameDt / stable), 1, Math.max(1, WaterSettings.hfMaxStepsPerFrame));
 			dt = Math.min(frameDt / steps, stable);

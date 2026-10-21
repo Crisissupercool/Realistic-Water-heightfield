@@ -31,6 +31,7 @@ public final class HfCpuTest {
 		final float cell = 1.0F / C;
 		float maxDepth;
 		float maxSpeed;
+		float maxRate;
 
 		Sim(HfTopology t, float[] h) {
 			this.t = t;
@@ -82,6 +83,7 @@ public final class HfCpuTest {
 			double vol = 0.0;
 			maxDepth = 0.0F;
 			maxSpeed = 0.0F;
+			maxRate = 0.0F;
 			float[] next = h.clone();
 			for (int s = 0; s < t.spans; s++) {
 				if (!t.valid(s)) {
@@ -104,6 +106,7 @@ public final class HfCpuTest {
 				}
 				float nh = Math.max(h[s] + dt * (in - out) / (cell * cell), 0.0F);
 				next[s] = nh;
+				maxRate = Math.max(maxRate, Math.abs(nh - h[s]) / dt);
 				vol += (double) nh * cell * cell;
 				maxDepth = Math.max(maxDepth, nh);
 				if (nh > 0.05F) {
@@ -169,6 +172,19 @@ public final class HfCpuTest {
 			}
 		}
 		return h;
+	}
+
+	static int dryCells(HfTopology t, float[] h, float below) {
+		int dry = 0;
+		for (int cz = 0; cz < t.nz; cz++) {
+			for (int cx = 0; cx < t.nx; cx++) {
+				int s = t.span(cx, cz, 0);
+				if (t.valid(s) && h[s] < below) {
+					dry++;
+				}
+			}
+		}
+		return dry;
 	}
 
 	static boolean linksSymmetric(HfTopology t) {
@@ -239,6 +255,22 @@ public final class HfCpuTest {
 			int edge = t.span(1, 1, 0);
 			check(sim.h[edge] > 0.0F, "water reached the far corner of the domain");
 			check(sim.maxDepth < 1.0F, "settled: max depth " + sim.maxDepth);
+			check(dryCells(t, sim.h, 0.01F) == 0, "no dry holes in the settled pool");
+		}
+
+		System.out.println("Solver: settled water can sleep (surface rate below WaterSettings.hfSleepRate = 0.002 b/s)");
+		for (float height : new float[]{0.6F, 2.0F, 3.0F}) {
+			Solid solid = (x, y, z) -> y < 64;
+			HfTopology t = HfTopology.build(voxels(solid), 0, 0, 32, 32, 40, 96, C, L, 0.25F);
+			Sim sim = new Sim(t, flood(t, 32, 16, 16, 6, 64.0F + height, 64.0F));
+			int asleepAt = -1;
+			for (int frame = 0; frame < 120 * 60 && asleepAt < 0; frame += 60) {
+				sim.run(60);
+				if (sim.maxRate < 0.002F) {
+					asleepAt = frame / 60 + 1;
+				}
+			}
+			check(asleepAt > 0, String.format("column %.1f high: surface still after %d s (rate %.4f b/s)", height, asleepAt, sim.maxRate));
 		}
 
 		System.out.println("Solver: doorway into a closed room");

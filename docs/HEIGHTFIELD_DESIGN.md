@@ -256,3 +256,22 @@ looks right) has to be done on a machine with Java 25 and a Vulkan GPU.
   cracks between neighboring cells are possible where neighbors pick different links.
 * Water piles up against the domain edge (it is a wall).
 * Not synced to blocks, so swimming and boats don't react to it yet (milestone 5).
+
+## 11. First in-game results and the performance pass
+
+Measured on a laptop with an RX 6500M at 1920×1200 (`/water flood 60` = 240×240-block domain, 921,600 spans):
+
+| | fps | frame time |
+|---|---|---|
+| no water | 549 | 1.8 ms |
+| flood, simulation paused | 97 | 10.3 ms |
+| flood, simulating | 58 | 17.2 ms |
+
+So about 8.5 ms to draw and 6.9 ms to simulate, while the water sat still. Volume drift stayed at 0.000%. Changes made in response:
+
+- **Sleep:** `hf_depth.comp` now also reduces the fastest surface rise or fall (blocks/s). When that stays below `hfSleepRate` (0.002) for `hfSleepSeconds` (1 s), the solver stops stepping. Only a new flood wakes it until block edits exist (milestone 4). CPU tests: a dam break falls asleep after 24–37 s.
+- **Mesh caching:** `hf_mesh.comp` only runs after the solver stepped (or `hfRenderDepth` changed); otherwise last frame's mesh is drawn again.
+- **No bottom faces:** heightfield vertices carry an OPEN flag (bit 31 of the packed normal). For open faces `mesh_thickness.frag` measures every face from the scene depth, so an entry with no matching exit is closed by the terrain and entry/exit pairs still cancel. This halves the geometry and removes one full-screen layer of additive overdraw.
+- **Visuals:** smooth per-corner normals (no facets), and the ripple detail now fades by grazing angle with a stricter footprint, which removed the moire rings.
+
+Not yet done: half-resolution thickness/composite passes, and moving the topology build (236 ms for the radius-60 domain) off the main thread.

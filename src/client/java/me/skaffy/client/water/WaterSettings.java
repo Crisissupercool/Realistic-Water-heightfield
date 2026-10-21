@@ -144,6 +144,9 @@ public final class WaterSettings {
 	public static float hfMaxSpeed = 30.0F;
 	public static float hfRenderDepth = 0.01F;
 	public static int hfMaxStepsPerFrame = 8;
+	/** When the surface everywhere rises or falls slower than this (blocks/s) for {@link #hfSleepSeconds}, the heightfield stops simulating until woken. */
+	public static float hfSleepRate = 0.002F;
+	public static float hfSleepSeconds = 1.0F;
 
 	public static String ffmpeg = "";
 	public static boolean renderFreezeWorld = true;

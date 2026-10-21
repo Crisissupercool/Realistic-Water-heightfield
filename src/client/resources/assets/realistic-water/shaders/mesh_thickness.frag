@@ -5,6 +5,7 @@ layout(binding = 4) uniform sampler2D sceneDepth;
 layout(location = 0) in vec3 vView;
 layout(location = 1) in vec3 vNormal;
 layout(location = 2) in float vWall;
+layout(location = 3) in float vOpen;
 layout(location = 0) out float outThickness;
 
 float linearDepth(float device) {
@@ -20,5 +21,13 @@ void main() {
         gn = -gn;
     }
     bool entering = dot(gn, -vView) > 0.0;
+    if (vOpen > 0.5) {
+        // Open (heightfield) shape: every face is measured from the scene depth, so an entry with no matching exit is
+        // closed by the terrain behind it, while entry/exit pairs still cancel the offset. Capped to keep R32F precise.
+        float scene = min(linearDepth(texture(sceneDepth, uv).r), 512.0);
+        float d = min(dist, scene);
+        outThickness = entering ? scene - d : d - scene;
+        return;
+    }
     outThickness = entering ? -dist : dist;
 }
