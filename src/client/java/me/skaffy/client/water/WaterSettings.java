@@ -162,7 +162,14 @@ public final class WaterSettings {
 	public static float hfDamping = 0.995F;
 	public static float hfFriction = 0.2F;
 	public static float hfMaxSpeed = 30.0F;
-	public static float hfRenderDepth = 0.01F;
+	/** Water thinner than this is not drawn: still films (thinner than hfMinFlowDepth) stay invisible instead of shimmering squares. */
+	public static float hfRenderDepth = 0.035F;
+	/** Lowers the drawn surface like vanilla's 8/9-high water (blocks, for water at least a block deep). */
+	public static float hfSurfaceDrop = 0.111F;
+	/** How strongly moving heightfield water pulls the player along (fraction of the velocity difference per tick, when fully submerged). */
+	public static float hfCurrentDrag = 0.15F;
+	/** Outflow over an edge (blocks^3/s) above which a falling sheet is drawn. */
+	public static float hfCurtainMinFlow = 0.005F;
 	public static int hfMaxStepsPerFrame = 8;
 	/** When the surface everywhere rises or falls slower than this (blocks/s) for {@link #hfSleepSeconds}, the heightfield stops simulating until woken. */
 	public static float hfSleepRate = 0.002F;

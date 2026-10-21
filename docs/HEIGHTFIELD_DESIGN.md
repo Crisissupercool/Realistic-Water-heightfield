@@ -368,3 +368,16 @@ growth now builds tiles from the blocks, and never over unloaded chunks. (2) The
 so captured water leaked into the surrounding sea (invisibly, rendered under the vanilla water). Every fluid that is not realistic
 water now counts as solid for the heightfield; capture opens exactly the cells it converts (and rebuilds tiles that existed before).
 Edge reservoirs are not saved; after a reload the sea boundary is a wall, which holds the captured water at its level.
+
+## 15. Rendering pass 1 and player currents (as built)
+
+* **Falling sheets:** `hf_mesh.comp` emits a vertical sheet where a span pours over an edge (its outflow in that direction is above
+  `hfCurtainMinFlow` and the water it flows into lies below its floor), from the lip down to where it lands, 0.06 blocks out from the
+  edge. Sleeping tiles have no flux pages and draw none.
+* **Surface height like vanilla:** the drawn surface is lowered by `hfSurfaceDrop` (1/9 block, scaled down in water under a block deep),
+  so heightfield water meets vanilla water flush.
+* **Still films hidden:** `hfRenderDepth` is now 0.035, just above `hfMinFlowDepth`: films that cannot move are not drawn.
+* **Currents (player only):** `hf_sample.comp` samples the span at the player's feet each frame (surface, depth, velocity from the
+  outflows through its faces); a few frames later the client tick pulls the player's horizontal velocity toward the water's,
+  `hfCurrentDrag` (0.15) per tick when fully submerged, fading in with the current's speed (none in still water) and the submerged
+  fraction. Flying and spectators are left alone. Other entities and boats come later (needs a sample per entity, batched).

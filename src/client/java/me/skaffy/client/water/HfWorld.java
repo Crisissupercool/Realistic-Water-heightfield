@@ -582,8 +582,42 @@ final class HfWorld {
 
 	// ---- block sync ----
 
+	// ---- currents ----
+
+	/** Latest water sample at the player: {u, w, surface, depth, found, floor}, and when it arrived. */
+	private float[] playerSample;
+	private long playerSampleNanos;
+
+	/** Call each client tick: water moving around the player pulls it along (horizontal drag toward the water velocity). */
+	void pushPlayer(net.minecraft.client.Minecraft mc) {
+		var player = mc.player;
+		float[] sm = this.playerSample;
+		if (player == null || sm == null || this.world.heightfield == null || WaterSettings.hfCurrentDrag <= 0.0F
+			|| System.nanoTime() - this.playerSampleNanos > 250_000_000L || sm[4] < 0.5F || sm[3] < 0.1F
+			|| player.isSpectator() || player.getAbilities().flying) {
+			return;
+		}
+		double feet = player.getY();
+		double submerged = Math.clamp((sm[2] - feet) / Math.max(0.5, player.getBbHeight()), 0.0, 1.0);
+		double speed = Math.hypot(sm[0], sm[1]);
+		if (submerged <= 0.0 || speed < 0.05) {
+			return;
+		}
+		// Blocks per second -> blocks per tick; the pull fades in with the current so still water does not add drag of its own.
+		double k = Math.min(1.0, WaterSettings.hfCurrentDrag * submerged * Math.min(1.0, speed / 0.5));
+		Vec3 v = player.getDeltaMovement();
+		double tx = sm[0] / 20.0;
+		double tz = sm[1] / 20.0;
+		player.setDeltaMovement(v.x + (tx - v.x) * k, v.y, v.z + (tz - v.z) * k);
+	}
+
 	/** Call each frame before planning: writes arrived depth readbacks into blocks. */
 	void receive(ClientLevel level, HfDomain hf) {
+		float[] sm = hf.takeSample();
+		if (sm != null) {
+			this.playerSample = sm;
+			this.playerSampleNanos = System.nanoTime();
+		}
 		List<HfDomain.TileDepth> arrived = hf.takeDepths();
 		for (HfDomain.TileDepth td : arrived) {
 			this.writeTile(level, hf, td, this.releasing ? HfBlocksPayload.RELEASE : HfBlocksPayload.WRITE);
@@ -600,8 +634,12 @@ final class HfWorld {
 		}
 	}
 
-	/** Call each frame after the solver steps: asks for the depth of tiles due for a block sync. */
-	void request(VkCommandBuffer cb, HfDomain hf, float frameDt) {
+	/** Call each frame after the solver steps: samples the water at the player and asks for the depth of tiles due for a block sync. */
+	void request(VkCommandBuffer cb, me.skaffy.client.vk.Desc ubo, HfDomain hf, float frameDt) {
+		var player = net.minecraft.client.Minecraft.getInstance().player;
+		if (player != null) {
+			hf.sample(cb, ubo, player.getX(), player.getY() + 0.1, player.getZ());
+		}
 		if (!canWrite()) {
 			return;
 		}

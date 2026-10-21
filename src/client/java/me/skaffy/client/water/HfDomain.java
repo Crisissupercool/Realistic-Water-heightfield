@@ -41,7 +41,8 @@ final class HfDomain implements AutoCloseable {
 				new ComputeProgram("mesh_args.comp", U, S),
 				new ComputeProgram("hf_remap.comp", layout),
 				new ComputeProgram("hf_inject.comp", layout),
-				new ComputeProgram("hf_reservoir.comp", layout)
+				new ComputeProgram("hf_reservoir.comp", layout),
+				new ComputeProgram("hf_sample.comp", layout)
 			};
 		}
 		return programs;
@@ -126,6 +127,11 @@ final class HfDomain implements AutoCloseable {
 	private final int[][] syncTiles = new int[Vk.FRAME_RING][];
 	private final int[][] syncVersions = new int[Vk.FRAME_RING][];
 
+	// Gameplay sample at the player (see hf_sample.comp), read back a few frames later.
+	private final VkBuf sampleBuf;
+	private final VkBuf[] sampleReadback = new VkBuf[Vk.FRAME_RING];
+	private final boolean[] samplePending = new boolean[Vk.FRAME_RING];
+
 	/** A tile's depth as read back from the GPU, per {@code layer * pageSpans + col}. */
 	record TileDepth(int tile, int version, float[] depth) {
 	}
@@ -164,6 +170,10 @@ final class HfDomain implements AutoCloseable {
 			this.syncReadback[i] = VkBuf.readback((long) MAX_SYNC_TILES * HfTileGrid.MAX_LAYERS * this.ps * 4L);
 		}
 		this.reservoirBuf = VkBuf.device(MAX_RESERVOIRS * 16L, 0);
+		this.sampleBuf = VkBuf.device(32L, 0);
+		for (int i = 0; i < Vk.FRAME_RING; i++) {
+			this.sampleReadback[i] = VkBuf.readback(32L);
+		}
 		this.tilesDirty = true;
 		programs();
 	}
@@ -280,6 +290,36 @@ final class HfDomain implements AutoCloseable {
 		this.initialVolume += dv;
 		this.meshDirty = true;
 		return true;
+	}
+
+	/** Samples the water at world point (x, y, z) for gameplay; {@link #takeSample} returns it a few frames later. */
+	void sample(VkCommandBuffer cb, Desc ubo, double x, double y, double z) {
+		int[] at = this.grid.locate(x, z);
+		if (at == null) {
+			return;
+		}
+		int ring = Vk.ringSlot();
+		ComputeProgram[] p = programs();
+		this.bind(p[8], cb, ubo, ring, this.stats, this.sampleBuf);
+		p[8].push(cb, this.push(at[1], (float) y, 0.0F, this.cell, at[0], 0.0F, 0.0F, 0.0F, 0.0F, 0, 0, 0, 0));
+		p[8].dispatch(cb, 1, 1, 1);
+		Vk.barrier(cb);
+		this.sampleBuf.copyTo(cb, this.sampleReadback[ring], 0, 0, 32L);
+		this.samplePending[ring] = true;
+		Vk.barrier(cb);
+	}
+
+	/** {u, w, surface, depth, found, floor} from the sample recorded {@link Vk#FRAME_RING} frames ago, or null. */
+	float[] takeSample() {
+		int ring = Vk.ringSlot();
+		if (!this.samplePending[ring]) {
+			return null;
+		}
+		this.samplePending[ring] = false;
+		VkBuf rb = this.sampleReadback[ring];
+		rb.invalidate(0, 32L);
+		ByteBuffer b = rb.mapped();
+		return new float[]{b.getFloat(0), b.getFloat(4), b.getFloat(8), b.getFloat(12), b.getFloat(16), b.getFloat(20)};
 	}
 
 	/** Copies the depth of up to {@link #MAX_SYNC_TILES} tiles back to the CPU; {@link #takeDepths} returns them a few frames later. */
@@ -657,7 +697,8 @@ final class HfDomain implements AutoCloseable {
 		Vk.barrier(cb);
 		int pages = this.grid.maxPages;
 		this.bind(p[2], cb, ubo, ring, this.stats);
-		p[2].push(cb, this.push(pages, 0.0F, 0.0F, this.cell, this.originY, 0.0F, WaterSettings.hfRenderDepth, 0.0F, WaterSettings.hfDebugMesh,
+		p[2].push(cb, this.push(pages, WaterSettings.hfSurfaceDrop, WaterSettings.hfCurtainMinFlow, this.cell, this.originY, 0.0F,
+			WaterSettings.hfRenderDepth, 0.0F, WaterSettings.hfDebugMesh,
 			this.quadCapacity, 0, 0, 0));
 		p[2].dispatch(cb, pages * this.groupsPerPage, 1, 1);
 		Vk.barrier(cb);
@@ -718,8 +759,10 @@ final class HfDomain implements AutoCloseable {
 		List<AutoCloseable> all = new ArrayList<>(List.of(
 			this.geo, this.depth, this.flux, this.links, this.tileInfo, this.pageOwner, this.stats, this.verts, this.quads, this.meshCounters));
 		all.add(this.reservoirBuf);
+		all.add(this.sampleBuf);
 		for (int i = 0; i < Vk.FRAME_RING; i++) {
 			all.add(this.injectRing[i]);
+			all.add(this.sampleReadback[i]);
 			all.add(this.syncReadback[i]);
 			all.add(this.debugReadback[i]);
 			all.add(this.statsReadback[i]);

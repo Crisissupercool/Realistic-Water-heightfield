@@ -573,6 +573,7 @@ public final class WaterWorld {
 		}
 		this.waterEchoes.expire(this.frameCounter);
 		this.hfEchoes.expire(this.millis());
+		this.hfWorld.pushPlayer(mc);
 		this.sandEchoes.expire(this.frameCounter);
 		this.lavaEchoes.expire(this.frameCounter);
 		Vec3 listener = mc.player != null ? mc.player.getEyePosition() : null;
@@ -964,7 +965,7 @@ public final class WaterWorld {
 		this.hfUbo.flush(o, UBO_SIZE);
 		Desc ubo = Desc.ubo(this.hfUbo, o, UBO_SIZE);
 		hf.record(cb, ubo, act, steps, dt);
-		this.hfWorld.request(cb, hf, frameDt);
+		this.hfWorld.request(cb, ubo, hf, frameDt);
 		hf.probe(cb, ubo, this.frameView, cam.x, cam.y, cam.z);
 		return new WaterRenderer.Body(null, hf, ubo);
 	}

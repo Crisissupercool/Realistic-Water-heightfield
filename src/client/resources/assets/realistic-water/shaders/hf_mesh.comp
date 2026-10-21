@@ -8,10 +8,15 @@
 #include "hf_common.glsl"
 layout(local_size_x = 256) in;
 layout(std430, binding = 2) readonly buffer Depth { float depth[]; };
+layout(std430, binding = 3) readonly buffer Flux { float flux[]; };
 layout(std430, binding = 9) writeonly buffer Verts { vec4 verts[]; };
 layout(std430, binding = 10) writeonly buffer Quads { uvec4 quads[]; };
 layout(std430, binding = 11) buffer MeshCounters { uint meshCounters[]; };
 
+// Vanilla draws a full water block 1/9 below its top; the heightfield surface is lowered the same (scaled down in shallow water).
+#define HF_SURFACE_DROP hp.p0.x
+// Outflow (blocks^3/s) over a drop above which a falling sheet is drawn.
+#define HF_CURTAIN_MIN hp.p0.y
 #define HF_CELL hp.p0.z
 #define HF_ORIGIN_Y hp.p0.w
 #define HF_RENDER_DRY hp.p1.y
@@ -21,6 +26,7 @@ layout(std430, binding = 11) buffer MeshCounters { uint meshCounters[]; };
 
 const uint OPEN = 0x80000000u;
 const float WALL_INSET = 0.01;
+const float CURTAIN_OUT = 0.06;
 
 bool wet(uint t) {
     return depth[t] > HF_RENDER_DRY;
@@ -94,6 +100,7 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce) {
     float dhdx = ((hx - hs) + (hd - hz)) * 0.5 / c * float(sx);
     float dhdz = ((hz - hs) + (hd - hx)) * 0.5 / c * float(sz);
     float h = clamp(0.25 * (hs + hx + hz + hd), fl, ce);
+    h -= HF_SURFACE_DROP * clamp(h - fl, 0.0, 1.0);
     vec3 n = normalize(vec3(-dhdx, 1.0, -dhdz));
     return vec4(n.x, h, n.z, 0.0);
 }
@@ -156,20 +163,32 @@ void main() {
     float h01 = c01.y - oy;
 
     uint wallMask = 0u;
+    uint curtainMask = 0u;
     float inset[4];
+    float curtainBottom[4];
     for (int d = 0; d < 4; d++) {
         HfSpan t;
         bool ok = pick(a, d, t);
         inset[d] = ok ? 0.0 : WALL_INSET;
+        curtainBottom[d] = 0.0;
         if (!ok || !joined(s, t.span)) {
             wallMask |= 1u << d;
+        }
+        // Water pouring over an edge onto lower ground or into lower water: a falling sheet down to where it lands.
+        if (ok && !joined(s, t.span) && a.flux != HF_NONE) {
+            float land = wet(t.span) ? surfaceOf(t.span) : hfGeo(t.span).x;
+            float q = flux[a.flux + uint(d * 2)] + flux[a.flux + uint(d * 2 + 1)];
+            if (land < fl - 0.05 && q > HF_CURTAIN_MIN) {
+                curtainMask |= 1u << d;
+                curtainBottom[d] = land - oy;
+            }
         }
     }
     if (HF_DEBUG == 1) {
         wallMask = 0u;
     }
     bool drawTop = HF_DEBUG != 2;
-    uint count = (drawTop ? 1u : 0u) + uint(bitCount(wallMask));
+    uint count = (drawTop ? 1u : 0u) + uint(bitCount(wallMask)) + uint(bitCount(curtainMask));
     if (count == 0u) {
         return;
     }
@@ -202,5 +221,25 @@ void main() {
     if ((wallMask & 8u) != 0u) {
         float z = z0 + inset[3];
         emit(q++, vec3(x0, b, z), vec3(x1, b, z), vec3(x1, h10, z), vec3(x0, h00, z), vec3(0.0, 0.0, -1.0), true);
+    }
+    if ((curtainMask & 1u) != 0u) {
+        float x = x1 + CURTAIN_OUT;
+        float y = curtainBottom[0];
+        emit(q++, vec3(x, y, z0), vec3(x, y, z1), vec3(x, h11, z1), vec3(x, h10, z0), vec3(1.0, 0.0, 0.0), true);
+    }
+    if ((curtainMask & 2u) != 0u) {
+        float x = x0 - CURTAIN_OUT;
+        float y = curtainBottom[1];
+        emit(q++, vec3(x, y, z1), vec3(x, y, z0), vec3(x, h00, z0), vec3(x, h01, z1), vec3(-1.0, 0.0, 0.0), true);
+    }
+    if ((curtainMask & 4u) != 0u) {
+        float z = z1 + CURTAIN_OUT;
+        float y = curtainBottom[2];
+        emit(q++, vec3(x1, y, z), vec3(x0, y, z), vec3(x0, h01, z), vec3(x1, h11, z), vec3(0.0, 0.0, 1.0), true);
+    }
+    if ((curtainMask & 8u) != 0u) {
+        float z = z0 - CURTAIN_OUT;
+        float y = curtainBottom[3];
+        emit(q++, vec3(x0, y, z), vec3(x1, y, z), vec3(x1, h10, z), vec3(x0, h00, z), vec3(0.0, 0.0, -1.0), true);
     }
 }

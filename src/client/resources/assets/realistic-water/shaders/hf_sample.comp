@@ -1,0 +1,42 @@
+#version 450
+// Samples the water at one point for gameplay (the player's feet): the span whose open space contains that height, its surface,
+// depth and horizontal velocity from the outflows through its faces. Output (aux binding): (u, w, surface, depth), (found, floor, 0, 0).
+#include "hf_common.glsl"
+layout(local_size_x = 1) in;
+layout(std430, binding = 2) readonly buffer Depth { float depth[]; };
+layout(std430, binding = 3) readonly buffer Flux { float flux[]; };
+layout(std430, binding = 14) buffer Aux { vec4 result[]; };
+
+#define HF_SAMPLE_Y hp.p0.x
+#define HF_CELL hp.p0.z
+#define HF_SAMPLE_TILE uint(hp.p0.w)
+#define HF_SAMPLE_COL uint(HF_COUNT)
+
+void main() {
+    result[0] = vec4(0.0);
+    result[1] = vec4(0.0);
+    uint tile = HF_SAMPLE_TILE;
+    for (uint l = 0u; l < 4u; l++) {
+        int page = tileInfo[tile * 4u + 2u][l];
+        if (page < 0) {
+            continue;
+        }
+        HfSpan a = hfMake(tile, l, HF_SAMPLE_COL, uint(page));
+        vec2 g = hfGeo(a.span);
+        if (!hfValid(g) || HF_SAMPLE_Y < g.x - 0.5 || HF_SAMPLE_Y >= g.y) {
+            continue;
+        }
+        float h = depth[a.span];
+        vec2 vel = vec2(0.0);
+        if (a.flux != HF_NONE && h > 0.02) {
+            float px = flux[a.flux] + flux[a.flux + 1u];
+            float nx = flux[a.flux + 2u] + flux[a.flux + 3u];
+            float pz = flux[a.flux + 4u] + flux[a.flux + 5u];
+            float nz = flux[a.flux + 6u] + flux[a.flux + 7u];
+            vel = vec2(px - nx, pz - nz) / (HF_CELL * max(h, 0.05));
+        }
+        result[0] = vec4(vel, min(g.x + h, g.y), h);
+        result[1] = vec4(1.0, g.x, 0.0, 0.0);
+        return;
+    }
+}
