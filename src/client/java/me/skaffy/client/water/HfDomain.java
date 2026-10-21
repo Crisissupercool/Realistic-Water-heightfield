@@ -17,7 +17,8 @@ import org.lwjgl.vulkan.VkCommandBuffer;
  * dispatches, and reads the stats back.
  *
  * <p>All heightfield shaders share one binding layout: 0 Globals UBO, 1 geo, 2 depth, 3 flux, 4 links, 5 page list, 6 tile info,
- * 7 tile active flags, 8 stats, 9 verts, 10 quads, 11 mesh counters, 12 view state (probe only), 13 page owners.
+ * 7 tile active flags, 8 stats, 9 verts, 10 quads, 11 mesh counters, 12 view state (probe only), 13 page owners, 14 aux
+ * (inject or reservoir entries).
  */
 final class HfDomain implements AutoCloseable {
 	/** Two vec4 per (span page, group of 256 spans): (volume, max depth, max speed, max rate), (border bits, 0, 0, 0). */
@@ -31,14 +32,16 @@ final class HfDomain implements AutoCloseable {
 		if (programs == null) {
 			int U = Desc.UBO;
 			int S = Desc.SSBO;
-			int[] layout = {U, S, S, S, S, S, S, S, S, S, S, S, S, S};
+			int[] layout = {U, S, S, S, S, S, S, S, S, S, S, S, S, S, S};
 			programs = new ComputeProgram[]{
 				new ComputeProgram("hf_flux.comp", layout),
 				new ComputeProgram("hf_depth.comp", layout),
 				new ComputeProgram("hf_mesh.comp", layout),
 				new ComputeProgram("hf_probe.comp", layout),
 				new ComputeProgram("mesh_args.comp", U, S),
-				new ComputeProgram("hf_remap.comp", layout)
+				new ComputeProgram("hf_remap.comp", layout),
+				new ComputeProgram("hf_inject.comp", layout),
+				new ComputeProgram("hf_reservoir.comp", layout)
 			};
 		}
 		return programs;
@@ -107,6 +110,26 @@ final class HfDomain implements AutoCloseable {
 	private String[] debugRequestLabels;
 	private String debugText;
 
+	// Water added or removed at given spans (placed blocks, floods, captures into existing tiles), applied at the next record.
+	private static final int MAX_INJECT = 65_536;
+	/** Pending injects as {tile, col, y, depth}; resolved to spans only when applied, after any rebuild of the tile. */
+	private final List<float[]> injects = new ArrayList<>();
+	private final VkBuf[] injectRing = new VkBuf[Vk.FRAME_RING];
+	// Reservoirs (see HfTileGrid), re-uploaded when they change.
+	private static final int MAX_RESERVOIRS = 65_536;
+	private final VkBuf reservoirBuf;
+	private int reservoirCount;
+
+	// Depth read back for writing water into blocks: per ring slot, the tiles copied and where.
+	static final int MAX_SYNC_TILES = 4;
+	private final VkBuf[] syncReadback = new VkBuf[Vk.FRAME_RING];
+	private final int[][] syncTiles = new int[Vk.FRAME_RING][];
+	private final int[][] syncVersions = new int[Vk.FRAME_RING][];
+
+	/** A tile's depth as read back from the GPU, per {@code layer * pageSpans + col}. */
+	record TileDepth(int tile, int version, float[] depth) {
+	}
+
 	HfDomain(HfTileGrid grid, int maxQuads) {
 		this.grid = grid;
 		this.originX = grid.originX;
@@ -137,7 +160,10 @@ final class HfDomain implements AutoCloseable {
 		this.meshCounters = VkBuf.device(64, VkBuf.INDIRECT);
 		for (int i = 0; i < Vk.FRAME_RING; i++) {
 			this.debugReadback[i] = VkBuf.readback(DEBUG_SPANS * 12L);
+			this.injectRing[i] = VkBuf.upload(MAX_INJECT * 8L, VkBuf.STORAGE);
+			this.syncReadback[i] = VkBuf.readback((long) MAX_SYNC_TILES * HfTileGrid.MAX_LAYERS * this.ps * 4L);
 		}
+		this.reservoirBuf = VkBuf.device(MAX_RESERVOIRS * 16L, 0);
 		this.tilesDirty = true;
 		programs();
 	}
@@ -183,6 +209,7 @@ final class HfDomain implements AutoCloseable {
 		}
 		this.grid.volume[tile] = volume;
 		this.grid.maxDepth[tile] = maxDepth;
+		this.initialVolume += volume;
 		int[] pages = new int[t.layersUsed];
 		for (int l = 0; l < t.layersUsed; l++) {
 			pages[l] = this.grid.spanPage[tile * 4 + l];
@@ -229,9 +256,127 @@ final class HfDomain implements AutoCloseable {
 	}
 
 	private void bind(ComputeProgram p, VkCommandBuffer cb, Desc ubo, int ring, VkBuf view) {
+		this.bind(p, cb, ubo, ring, view, this.reservoirBuf);
+	}
+
+	private void bind(ComputeProgram p, VkCommandBuffer cb, Desc ubo, int ring, VkBuf view, VkBuf aux) {
 		p.bind(cb, ubo, Desc.ssbo(this.geo), Desc.ssbo(this.depth), Desc.ssbo(this.flux), Desc.ssbo(this.links), Desc.ssbo(this.listRing[ring]),
 			Desc.ssbo(this.tileInfo), Desc.ssbo(this.activeRing[ring]), Desc.ssbo(this.stats), Desc.ssbo(this.verts), Desc.ssbo(this.quads),
-			Desc.ssbo(this.meshCounters), Desc.ssbo(view), Desc.ssbo(this.pageOwner));
+			Desc.ssbo(this.meshCounters), Desc.ssbo(view), Desc.ssbo(this.pageOwner), Desc.ssbo(aux));
+	}
+
+	/**
+	 * Adds (or with a negative amount removes) water depth in the span of column {@code col} that contains height y. Applied at
+	 * the next {@link #record}, after new tiles are uploaded; wakes the tile. Counts as intended, so the volume drift stays meaningful.
+	 */
+	boolean inject(int tile, int col, float y, float addDepth) {
+		if (this.grid.layerAt(tile, col, y) == HfTileGrid.NONE) {
+			return false;
+		}
+		this.injects.add(new float[]{tile, col, y, addDepth});
+		this.grid.quiet[tile] = 0.0F;
+		double dv = (double) addDepth * this.cell * this.cell;
+		this.grid.volume[tile] += dv;
+		this.initialVolume += dv;
+		this.meshDirty = true;
+		return true;
+	}
+
+	/** Copies the depth of up to {@link #MAX_SYNC_TILES} tiles back to the CPU; {@link #takeDepths} returns them a few frames later. */
+	void requestDepths(VkCommandBuffer cb, int[] tiles) {
+		int ring = Vk.ringSlot();
+		int n = Math.min(tiles.length, MAX_SYNC_TILES);
+		long tileBytes = (long) HfTileGrid.MAX_LAYERS * this.ps * 4L;
+		int[] versions = new int[n];
+		for (int i = 0; i < n; i++) {
+			int tile = tiles[i];
+			versions[i] = this.grid.version[tile];
+			for (int l = 0; l < this.grid.layersUsed[tile]; l++) {
+				long src = (long) this.grid.spanPage[tile * 4 + l] * this.ps * 4L;
+				this.depth.copyTo(cb, this.syncReadback[ring], src, i * tileBytes + l * this.ps * 4L, this.ps * 4L);
+			}
+		}
+		this.syncTiles[ring] = java.util.Arrays.copyOf(tiles, n);
+		this.syncVersions[ring] = versions;
+		Vk.barrier(cb);
+	}
+
+	/** Depth read back for the tiles requested {@link Vk#FRAME_RING} frames ago (empty when none). */
+	List<TileDepth> takeDepths() {
+		int ring = Vk.ringSlot();
+		int[] tiles = this.syncTiles[ring];
+		List<TileDepth> out = new ArrayList<>();
+		if (tiles == null) {
+			return out;
+		}
+		this.syncTiles[ring] = null;
+		long tileBytes = (long) HfTileGrid.MAX_LAYERS * this.ps * 4L;
+		VkBuf rb = this.syncReadback[ring];
+		rb.invalidate(0, tiles.length * tileBytes);
+		ByteBuffer b = rb.mapped();
+		for (int i = 0; i < tiles.length; i++) {
+			int n = this.grid.layersUsed[tiles[i]] * this.ps;
+			float[] d = new float[n];
+			for (int k = 0; k < n; k++) {
+				d[k] = b.getFloat((int) (i * tileBytes) + k * 4);
+			}
+			out.add(new TileDepth(tiles[i], this.syncVersions[ring][i], d));
+		}
+		return out;
+	}
+
+	private void flushInjectsAndReservoirs(VkCommandBuffer cb, Desc ubo, int ring) {
+		ComputeProgram[] p = programs();
+		if (!this.injects.isEmpty()) {
+			java.util.LinkedHashMap<Integer, Float> merged = new java.util.LinkedHashMap<>();
+			// At most MAX_INJECT entries per frame; the rest wait for the next frames.
+			List<float[]> batch = this.injects.subList(0, Math.min(MAX_INJECT, this.injects.size()));
+			for (float[] e : batch) {
+				int tile = (int) e[0];
+				int col = (int) e[1];
+				int layer = this.grid.layerAt(tile, col, e[2]);
+				if (layer != HfTileGrid.NONE) {
+					merged.merge(this.grid.span(tile, layer, col), e[3], Float::sum);
+				}
+			}
+			batch.clear();
+			ByteBuffer b = this.injectRing[ring].mapped();
+			int n = 0;
+			for (var e : merged.entrySet()) {
+				if (n >= MAX_INJECT) {
+					break;
+				}
+				b.putInt(n * 8, e.getKey()).putFloat(n * 8 + 4, e.getValue());
+				n++;
+			}
+			this.injectRing[ring].flush(0, n * 8L);
+			this.bind(p[6], cb, ubo, ring, this.stats, this.injectRing[ring]);
+			p[6].push(cb, this.push(n, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0, 0, 0, 0));
+			p[6].dispatch(cb, ComputeProgram.groups(n, 64), 1, 1);
+			Vk.barrier(cb);
+		}
+		if (this.grid.reservoirsDirty) {
+			this.grid.reservoirsDirty = false;
+			var all = this.grid.reservoirs();
+			int n = Math.min(all.size(), MAX_RESERVOIRS);
+			if (n > 0) {
+				VkBuf staging = VkBuf.upload(n * 16L, 0);
+				ByteBuffer b = staging.mapped();
+				int i = 0;
+				for (float[] r : all) {
+					if (i >= n) {
+						break;
+					}
+					b.putInt(i * 16, (int) r[0]).putInt(i * 16 + 4, (int) r[1]).putFloat(i * 16 + 8, r[2]).putInt(i * 16 + 12, (int) r[3]);
+					i++;
+				}
+				staging.flush(0, n * 16L);
+				staging.copyTo(cb, this.reservoirBuf, 0, 0, n * 16L);
+				Vk.destroyLater(staging);
+				Vk.barrier(cb);
+			}
+			this.reservoirCount = n;
+		}
 	}
 
 	/** Rebuilt tiles first (their old pages may be handed to new tiles this frame), then the remaps, then new tiles and the tables. */
@@ -431,6 +576,7 @@ final class HfDomain implements AutoCloseable {
 			this.tilesDirty = true;
 		}
 		this.flushUploads(cb, ubo, ring, act.newFluxPages);
+		this.flushInjectsAndReservoirs(cb, ubo, ring);
 
 		int[] list = act.pages;
 		ByteBuffer lb = this.listRing[ring].mapped();
@@ -459,6 +605,12 @@ final class HfDomain implements AutoCloseable {
 				p[1].push(cb, pc);
 				p[1].dispatch(cb, groups, 1, 1);
 				Vk.barrier(cb);
+				if (this.reservoirCount > 0) {
+					this.bind(p[7], cb, ubo, ring, this.stats, this.reservoirBuf);
+					p[7].push(cb, this.push(this.reservoirCount, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0, 0, 0, 0));
+					p[7].dispatch(cb, ComputeProgram.groups(this.reservoirCount, 64), 1, 1);
+					Vk.barrier(cb);
+				}
 			}
 			this.stats.copyTo(cb, this.statsReadback[ring], 0, 0, (long) this.grid.maxPages * this.groupsPerPage * STATS_BYTES);
 			int[] entries = new int[n * 2];
@@ -547,7 +699,7 @@ final class HfDomain implements AutoCloseable {
 			: String.format("%d awake, %d simulated, %d steps x %.1f ms", awake, g.activeList.length, this.lastSteps, this.lastDt * 1000.0F);
 		double usedMb = (g.usedSpanPages() * (double) this.ps * SPAN_BYTES + g.usedFluxPages() * (double) this.ps * FLUX_BYTES) / 1.0e6;
 		return String.format(
-			"heightfield: %d/%d tiles, pages %d/%d + flux %d/%d (%.1f of %.0f MB), %d spans dropped  |  volume %,.1f blocks (%+.3f%% since start)  |  "
+			(this.reservoirCount > 0 ? "[" + this.reservoirCount + " reservoir cells add/remove water] " : "") + "heightfield: %d/%d tiles, pages %d/%d + flux %d/%d (%.1f of %.0f MB), %d spans dropped  |  volume %,.1f blocks (%+.3f%% since start)  |  "
 				+ "max depth %.2f  max speed %.2f b/s  |  %s",
 			g.count, g.maxTiles, g.usedSpanPages(), g.maxPages, g.usedFluxPages(), g.maxFluxPages, usedMb, this.bytes() / 1.0e6, g.droppedSpans,
 			volume, drift, maxDepth, g.activeMax(g.maxSpeed), motion);
@@ -565,7 +717,10 @@ final class HfDomain implements AutoCloseable {
 		this.rebuilt.clear();
 		List<AutoCloseable> all = new ArrayList<>(List.of(
 			this.geo, this.depth, this.flux, this.links, this.tileInfo, this.pageOwner, this.stats, this.verts, this.quads, this.meshCounters));
+		all.add(this.reservoirBuf);
 		for (int i = 0; i < Vk.FRAME_RING; i++) {
+			all.add(this.injectRing[i]);
+			all.add(this.syncReadback[i]);
 			all.add(this.debugReadback[i]);
 			all.add(this.statsReadback[i]);
 			all.add(this.listRing[i]);

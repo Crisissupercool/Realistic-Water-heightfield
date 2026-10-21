@@ -1,0 +1,35 @@
+#version 450
+// Reservoirs, applied after every depth pass to simulated tiles: the edges of a captured area where the water continues outside
+// (an ocean or a river) and springs (at the top of the spring block) are held at their level (mode 0); mode 1 only fills up.
+// Entries are (tile, column, level as float bits, mode).
+#include "hf_common.glsl"
+layout(local_size_x = 64) in;
+layout(std430, binding = 2) buffer Depth { float depth[]; };
+layout(std430, binding = 14) readonly buffer Aux { ivec4 entries[]; };
+
+void main() {
+    uint i = GID_U;
+    if (i >= uint(HF_COUNT)) {
+        return;
+    }
+    ivec4 e = entries[i];
+    uint tile = uint(e.x);
+    if (tileActive[tile] == 0u) {
+        return;
+    }
+    float level = intBitsToFloat(e.z);
+    for (uint l = 0u; l < 4u; l++) {
+        int page = tileInfo[tile * 4u + 2u][l];
+        if (page < 0) {
+            continue;
+        }
+        uint s = uint(page) * hfPageSpans() + uint(e.y);
+        vec2 g = hfGeo(s);
+        if (!hfValid(g) || !(g.x < level && level <= g.y)) {
+            continue;
+        }
+        float target = level - g.x;
+        depth[s] = e.w == 0 ? target : max(depth[s], target);
+        return;
+    }
+}

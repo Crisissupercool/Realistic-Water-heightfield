@@ -1,7 +1,7 @@
 # Multi-layer heightfield water: design
 
-Status (2026-10-21): milestones 1 and 3 run in game (sections 10-12). Paged tile memory and block edits (section 13) are written
-and pass the CPU tests, not yet run in game.
+Status (2026-10-21): milestones 1 and 3, paged memory and block edits run in game (sections 10-13). The heightfield owning world water
+(section 14) is written and passes the CPU tests, not yet run in game.
 
 ## Goal
 
@@ -334,3 +334,30 @@ raises the floor and puts the displaced water on top with no volume change.
 hole; it now still drains into a neighbor whose water surface lies below the film's floor, so it only refuses to spread sideways
 on level ground. Known visual issues, left for the rendering pass: the half-block cell grid and 16-block tiles are visible in the
 surface; a sheet of water standing against walls near a breach (debug with `hfDebugMesh` and `/water hf column`).
+
+## 14. The heightfield owns world water (as built)
+
+Skaffy's realistic water blocks are the mod's water in the world: invisible to vanilla rendering, static (they never tick), not
+replaceable by vanilla water, swimmable, and saved with the world. The heightfield now uses them as its saved and gameplay state
+(`HfWorld`, setting `hfOwnsWater`):
+
+* **Import:** when a chunk loads, its realistic water goes into a heightfield tile (built if missing) instead of particles; springs
+  (infinite blocks) become fixed-level reservoir cells at the top of the block. Water the particle simulation owns stays with it.
+  A tile that already exists is authoritative and is not re-imported.
+* **Placed / picked-up water** (not our own writes, see the echo bookkeeping) is injected into or removed from the span at that block.
+* **Write-back:** a tile's depth is read back when it falls asleep and every `hfSyncInterval` (1 s) while awake, at most
+  `hfSyncTilesPerFrame` tiles per frame. `HfBlocks` turns each block column's spans into fill fractions and amounts 0..8 (with a 3/4-step
+  hysteresis against flicker; films under 1/16 block write nothing), and only changed blocks are sent (`HfBlocksPayload`, mode WRITE).
+* **Capture** (`/water hf capture [radius]`): vanilla water blocks in a circle become realistic water (mode CAPTURE) and heightfield
+  water. Edge columns whose water continues outside become fixed-level reservoirs, so a lake connected to the sea cannot drain below
+  sea level. Waterlogged blocks and plants (kelp, seagrass) are left vanilla.
+* **Release** (`/water hf release`): the solver pauses, every tile is written back as vanilla water (mode RELEASE), then the heightfield
+  closes. **Clear** (`/water hf clear`) removes the heightfield and the realistic water blocks in its tiles (springs stay).
+* **Reservoirs:** `hf_reservoir.comp` runs after each depth pass on simulated tiles and sets a cell's depth so the surface sits at the
+  reservoir level (springs too: they refill and also take back overshoot, like a vanilla source).
+* **Height window:** a heightfield covers `hfWindowBelow` (48) below to `hfWindowAbove` (64) above where it was created; water outside is
+  left as static blocks.
+
+Block writes go through the integrated server (singleplayer or LAN host, operator check on the server side). Other clients only show
+the heightfield. CPU tests: blocks -> spans -> blocks round trip is exact, a pool fills or drains to a fixed edge level, a spring fills
+its basin to its top and stops, inject adds exactly depth x cell area.

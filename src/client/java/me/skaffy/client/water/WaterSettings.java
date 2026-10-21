@@ -145,6 +145,16 @@ public final class WaterSettings {
 	public static int hfMaxFluxPages = 384;
 	/** Quads in the shared heightfield surface mesh (80 B each). */
 	public static int hfMaxQuads = 400_000;
+	/** The heightfield owns realistic water: chunk loads, placed water and springs go to it instead of the particle simulation. */
+	public static boolean hfOwnsWater = true;
+	/** Write the heightfield's water back into realistic water blocks (swimming, saving). Needs singleplayer or hosting. */
+	public static boolean hfSyncBlocks = true;
+	/** Seconds between block syncs of a tile while its water moves; settled tiles sync once when they fall asleep. */
+	public static float hfSyncInterval = 1.0F;
+	public static int hfSyncTilesPerFrame = 2;
+	/** Height window of a new heightfield, below and above where it starts (water outside it is left alone). */
+	public static int hfWindowBelow = 48;
+	public static int hfWindowAbove = 64;
 	/** Debug: 0 normal, 1 draw only water tops (no side walls), 2 draw only side walls. */
 	public static int hfDebugMesh = 0;
 	public static int hfMaxNewTilesPerFrame = 2;

@@ -127,10 +127,11 @@ public final class WaterWorld {
 	private @Nullable SandRenderer sandRenderer;
 	private @Nullable VkBuf uboRing;
 	private @Nullable VkBuf frameView;
-	private @Nullable HfDomain heightfield;
+	@Nullable HfDomain heightfield;
+	final HfWorld hfWorld = new HfWorld(this);
 	private @Nullable VkBuf hfUbo;
 	private boolean paused;
-	private boolean failed;
+	boolean failed;
 	private long lastFrameNanos;
 	private float simTime;
 	private int frameCounter;
@@ -153,7 +154,7 @@ public final class WaterWorld {
 		return RealisticWaterFluid.isRealistic(state);
 	}
 
-	private static int waterAmount(BlockState state) {
+	static int waterAmount(BlockState state) {
 		FluidState fluid = state.getFluidState();
 		return RealisticWaterFluid.isRealistic(fluid) ? fluid.getAmount() : 0;
 	}
@@ -224,7 +225,7 @@ public final class WaterWorld {
 		return Math.max(1, WaterSettings.resolution);
 	}
 
-	private static boolean isHost() {
+	static boolean isHost() {
 		return Minecraft.getInstance().getSingleplayerServer() != null;
 	}
 
@@ -249,7 +250,7 @@ public final class WaterWorld {
 
 	private boolean warnedNoVulkan;
 
-	private boolean vulkanReady() {
+	boolean vulkanReady() {
 		if (Vk.tryDevice() != null) {
 			return true;
 		}
@@ -362,7 +363,11 @@ public final class WaterWorld {
 		Material oldSpring = springMaterial(oldState);
 		Material newSpring = springMaterial(newState);
 		long key = pos.asLong();
-		if (newSpring != null) {
+		boolean springToHeightfield = (newSpring == Material.WATER || newSpring == null && oldSpring == Material.WATER)
+			&& this.hfWorld.onSpring(level, pos.immutable(), newSpring != null);
+		if (springToHeightfield) {
+			this.sources.remove(pos);
+		} else if (newSpring != null) {
 			this.addSource(pos, newSpring);
 		} else if (oldSpring != null) {
 			this.sources.remove(pos);
@@ -371,6 +376,8 @@ public final class WaterWorld {
 		int waterAfter = waterAmount(newState);
 		if (waterBefore != waterAfter) {
 			if (this.waterEchoes.consume(key, waterAfter)) {
+			} else if (springToHeightfield || this.hfWorld.onWaterChanged(level, pos.immutable(), waterBefore, waterAfter)) {
+				// The heightfield took it.
 			} else if (waterAfter > waterBefore) {
 				this.addWater(pos.immutable(), waterBefore / 8.0, waterAfter >= 8 ? 1.0 : waterAfter / 8.0);
 			} else {
@@ -444,6 +451,20 @@ public final class WaterWorld {
 		}
 	}
 
+	/** Echo bookkeeping for the heightfield's own block writes, so they are not mistaken for placed water. */
+	void expectWater(long key, int amount) {
+		this.waterEchoes.expect(key, amount, this.frameCounter);
+	}
+
+	/** The amount a pending write will leave at {@code key}, or -1. */
+	int expectedWater(long key) {
+		return this.waterEchoes.expected.containsKey(key) ? this.waterEchoes.expected.get(key) : -1;
+	}
+
+	boolean ownedByParticles(long key) {
+		return this.owned(key, Material.WATER);
+	}
+
 	private boolean owned(long key, Material material) {
 		for (WaterRegion r : this.regions) {
 			if (r.material == material && r.owned.contains(key)) {
@@ -460,6 +481,8 @@ public final class WaterWorld {
 		LevelChunk chunk = level.getChunk(chunkPos.x(), chunkPos.z());
 		LevelChunkSection[] sections = chunk.getSections();
 		BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+		// Realistic water (and water springs) in this chunk belong to the heightfield when it owns water; lava and sand stay here.
+		boolean heightfieldWater = this.hfWorld.importChunk(level, chunkPos);
 		for (int s = 0; s < sections.length; s++) {
 			LevelChunkSection section = sections[s];
 			if (section.hasOnlyAir()
@@ -480,11 +503,13 @@ public final class WaterWorld {
 				pos.set((chunkPos.x() << 4) + (i & 15), baseY + ((i >> 4) & 15), (chunkPos.z() << 4) + (i >> 8));
 				Material spring = springMaterial(state);
 				if (spring != null) {
-					this.addSource(pos, spring);
+					if (!(heightfieldWater && spring == Material.WATER)) {
+						this.addSource(pos, spring);
+					}
 					continue;
 				}
 				long key = pos.asLong();
-				if (water > 0 && !this.owned(key, Material.WATER)) {
+				if (water > 0 && !heightfieldWater && !this.owned(key, Material.WATER)) {
 					this.addWater(pos.immutable(), 0.0, water >= 8 ? 1.0 : water / 8.0);
 				}
 				if (lava > 0 && !this.owned(key, Material.LAVA)) {
@@ -834,6 +859,10 @@ public final class WaterWorld {
 			(r.material.isGranular() ? sandBodies : waterBodies).add(new WaterRenderer.Body(r, ubo));
 		}
 		if (this.heightfield != null) {
+			// Block sync arrivals first: finishing a release closes the heightfield.
+			this.hfWorld.receive(level, this.heightfield);
+		}
+		if (this.heightfield != null) {
 			waterBodies.add(this.recordHeightfield(mc, cb, this.heightfield, frameDt, cam, width, height));
 		}
 		Vk.barrier(cb);
@@ -860,7 +889,7 @@ public final class WaterWorld {
 		if (column != null && mc.player != null) {
 			mc.player.sendSystemMessage(Component.literal(column));
 		}
-		boolean running = !this.paused && !mc.isPaused();
+		boolean running = !this.paused && !mc.isPaused() && !this.hfWorld.releasing;
 		HfTileGrid.Activation act = new HfTileGrid.Activation(new int[0], new int[0]);
 		int steps = 0;
 		float dt = frameDt;
@@ -901,100 +930,22 @@ public final class WaterWorld {
 		this.hfUbo.flush(o, UBO_SIZE);
 		Desc ubo = Desc.ubo(this.hfUbo, o, UBO_SIZE);
 		hf.record(cb, ubo, act, steps, dt);
+		this.hfWorld.request(cb, hf, frameDt);
 		hf.probe(cb, ubo, this.frameView, cam.x, cam.y, cam.z);
 		return new WaterRenderer.Body(null, hf, ubo);
 	}
 
-	/**
-	 * Test command: builds fresh sparse heightfield water around {@code center} and raises it to {@code center.y + height} inside
-	 * {@code radius}, which collapses like a dam break and spreads into new 16x16-block tiles as it flows. Replaces any previous
-	 * heightfield water.
-	 */
+	/** Test command, see {@link HfWorld#flood}. */
 	public String flood(ClientLevel level, Vec3 center, int radius, double height) {
-		if (!this.vulkanReady()) {
-			return "Realistic Water needs the Vulkan graphics API";
-		}
-		long start = System.nanoTime();
-		int cpb = Math.clamp(WaterSettings.hfCellsPerBlock, 1, 4);
-		int layers = Math.clamp(WaterSettings.hfLayers, 1, HfTileGrid.MAX_LAYERS);
-		int maxTiles = Math.clamp(WaterSettings.hfMaxTiles, 16, 4096);
-		int maxPages = Math.clamp(WaterSettings.hfMaxPages, 16, 16384);
-		int maxFluxPages = Math.clamp(WaterSettings.hfMaxFluxPages, 16, maxPages);
-		int refY = Mth.floor(center.y);
-		float waterLevel = (float) (center.y + height);
-		int worldMin = level.getMinY();
-		int worldMax = level.getMinY() + level.getHeight();
-		int yMin = Math.max(worldMin, refY - 32);
-		int yMax = Math.min(worldMax, Math.max(refY + 24, Mth.ceil(waterLevel) + 8));
-		// Tiles line up with chunks: tile (0, 0) is the chunk the player stands in.
-		int originX = Math.floorDiv(Mth.floor(center.x), HfTileGrid.TILE_BLOCKS) * HfTileGrid.TILE_BLOCKS;
-		int originZ = Math.floorDiv(Mth.floor(center.z), HfTileGrid.TILE_BLOCKS) * HfTileGrid.TILE_BLOCKS;
-		HfTileGrid grid = new HfTileGrid(originX, originZ, yMin, yMax, cpb, layers, WaterSettings.hfMinOpening, maxTiles, maxPages, maxFluxPages);
-		if (this.heightfield != null) {
-			this.heightfield.close();
-		}
-		HfDomain hf = new HfDomain(grid, WaterSettings.hfMaxQuads);
-		this.heightfield = hf;
-		this.failed = false;
-		long setupMs = (System.nanoTime() - start) / 1_000_000L;
-		long topoNs = 0L;
+		return this.hfWorld.flood(level, center, radius, height);
+	}
 
-		SolidCache solids = new SolidCache(cpb, false);
-		HfTopology.Voxels voxels = (bx, by, bz) -> solids.blockVoxels(level, bx, by, bz);
-		int tb = HfTileGrid.TILE_BLOCKS;
-		int tx0 = grid.tileOfBlockX(Mth.floor(center.x - radius));
-		int tx1 = grid.tileOfBlockX(Mth.floor(center.x + radius));
-		int tz0 = grid.tileOfBlockZ(Mth.floor(center.z - radius));
-		int tz1 = grid.tileOfBlockZ(Mth.floor(center.z + radius));
-		double r2 = (double) radius * radius;
-		boolean full = false;
-		for (int tz = tz0; tz <= tz1 && !full; tz++) {
-			for (int tx = tx0; tx <= tx1; tx++) {
-				double minX = originX + tx * (double) tb;
-				double minZ = originZ + tz * (double) tb;
-				double nearX = Mth.clamp(center.x, minX, minX + tb) - center.x;
-				double nearZ = Mth.clamp(center.z, minZ, minZ + tb) - center.z;
-				if (nearX * nearX + nearZ * nearZ > r2) {
-					continue;
-				}
-				long t0 = System.nanoTime();
-				HfTileGrid.Tile tile = grid.build(voxels, tx, tz);
-				topoNs += System.nanoTime() - t0;
-				float[] depth = new float[tile.layersUsed * grid.pageSpans];
-				for (int lz = 0; lz < grid.tn; lz++) {
-					for (int lx = 0; lx < grid.tn; lx++) {
-						double dx = minX + (lx + 0.5) / cpb - center.x;
-						double dz = minZ + (lz + 0.5) / cpb - center.z;
-						if (dx * dx + dz * dz > r2) {
-							continue;
-						}
-						for (int l = 0; l < tile.layersUsed; l++) {
-							int i = l * grid.pageSpans + lz * grid.tn + lx;
-							int g = tile.geo[i];
-							if (!HfTileGrid.validGeo(g)) {
-								continue;
-							}
-							float floor = grid.floorOf(g);
-							float ceil = grid.ceilOf(g);
-							// Fill spans open around the player's height or above: not deep caves, but rooms and tree-covered ground.
-							if (floor < waterLevel && ceil > refY - 2) {
-								depth[i] = Math.min(waterLevel, ceil) - floor;
-							}
-						}
-					}
-				}
-				if (hf.addTile(tx, tz, tile, depth) == HfTileGrid.NONE) {
-					full = true;
-					break;
-				}
-			}
-		}
-		hf.initialVolume = grid.totalVolume();
-		long ms = (System.nanoTime() - start) / 1_000_000L;
-		return String.format("Flooding radius %d to Y=%.1f: %,.0f blocks of water in %d tiles of 16x16 blocks (pool %d), %d spans dropped, "
-				+ "built in %d ms (GPU setup %d ms, terrain scan %d ms)%s",
-			radius, waterLevel, hf.initialVolume, grid.count, grid.maxTiles, grid.droppedSpans, ms, setupMs, topoNs / 1_000_000L,
-			full ? ". The tile pool is full; raise hfMaxTiles / hfMaxPages for bigger floods" : "");
+	public String captureWater(ClientLevel level, Vec3 center, int radius) {
+		return this.hfWorld.capture(level, center, radius);
+	}
+
+	public String releaseWater() {
+		return this.hfWorld.release();
 	}
 
 	public String heightfieldStats() {
@@ -1017,11 +968,8 @@ public final class WaterWorld {
 			: "No heightfield tile there";
 	}
 
-	public void clearHeightfield() {
-		if (this.heightfield != null) {
-			this.heightfield.close();
-			this.heightfield = null;
-		}
+	public String clearHeightfield(ClientLevel level) {
+		return this.hfWorld.clear(level);
 	}
 
 	private void retire(ClientLevel level, List<WaterRegion> merged, List<WaterRegion> drained) {
@@ -1330,7 +1278,8 @@ public final class WaterWorld {
 
 	public void clear() {
 		this.closeRegions();
-		this.clearHeightfield();
+		// Leaving the world: drop the heightfield but keep its water blocks; they are imported again on the next load.
+		this.hfWorld.close();
 		this.sources.clear();
 		this.chunkScanQueue.clear();
 		this.failed = false;

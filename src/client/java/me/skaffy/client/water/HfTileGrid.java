@@ -94,6 +94,22 @@ final class HfTileGrid {
 	int count;
 	int droppedSpans;
 	private final Set<Integer> dirty = new LinkedHashSet<>();
+	/** CPU copy of each tile's packed geometry ({@code layer * pageSpans + col}), for block sync and placing water. */
+	final int[][] tileGeo;
+	/** Bumped on every rebuild, so a block sync computed from an older topology is thrown away. */
+	final int[] version;
+
+	// Reservoirs: sub-columns held at a water level (ocean or river edges of a captured area) or filled up to it (springs).
+	static final int RESERVOIR_FIXED = 0;
+	static final int RESERVOIR_SOURCE = 1;
+	private final HashMap<Long, float[]> reservoirs = new HashMap<>();
+	boolean reservoirsDirty;
+
+	// Block sync scheduling (heightfield -> realistic water blocks).
+	final float[] syncAge;
+	final boolean[] syncForced;
+	final boolean[] syncedAsleep;
+	final boolean[] syncPending;
 
 	// Per-tile stats, filled in by whoever ran the depth pass (GPU readback or the CPU test).
 	final double[] volume;
@@ -150,6 +166,12 @@ final class HfTileGrid {
 		this.border = new int[maxTiles];
 		this.quiet = new float[maxTiles];
 		this.active = new boolean[maxTiles];
+		this.tileGeo = new int[maxTiles][];
+		this.version = new int[maxTiles];
+		this.syncAge = new float[maxTiles];
+		this.syncForced = new boolean[maxTiles];
+		this.syncedAsleep = new boolean[maxTiles];
+		this.syncPending = new boolean[maxTiles];
 	}
 
 	// ---- packing ----
@@ -276,6 +298,7 @@ final class HfTileGrid {
 		int[] pages = this.takeSpanPages(s, t.layersUsed);
 		System.arraycopy(pages, 0, this.spanPage, s * 4, MAX_LAYERS);
 		this.layersUsed[s] = t.layersUsed;
+		this.tileGeo[s] = t.geo;
 		this.slots.put(key(tx, tz), s);
 		this.tileX[s] = tx;
 		this.tileZ[s] = tz;
@@ -312,6 +335,8 @@ final class HfTileGrid {
 		int[] pages = this.takeSpanPages(tile, t.layersUsed);
 		System.arraycopy(pages, 0, this.spanPage, tile * 4, MAX_LAYERS);
 		this.layersUsed[tile] = t.layersUsed;
+		this.tileGeo[tile] = t.geo;
+		this.version[tile]++;
 		this.releaseFlux(tile);
 		this.active[tile] = false;
 		this.quiet[tile] = 0.0F;
@@ -431,6 +456,9 @@ final class HfTileGrid {
 				this.quiet[s] = 0.0F;
 			}
 			awake[s] = this.quiet[s] < sleepSeconds;
+			if (awake[s]) {
+				this.syncedAsleep[s] = false;
+			}
 		}
 		boolean[] want = new boolean[this.count];
 		for (int s = 0; s < this.count; s++) {
@@ -480,6 +508,91 @@ final class HfTileGrid {
 		}
 		this.activeList = Arrays.copyOf(tiles, nTiles);
 		return new Activation(Arrays.copyOf(pages, nPages), Arrays.copyOf(fresh, nFresh));
+	}
+
+	// ---- columns, reservoirs, block sync ----
+
+	/** Tile and column of world point (x, z) as {tile, col}, or null when no tile covers it. */
+	int[] locate(double x, double z) {
+		int tx = this.tileOfBlockX((int) Math.floor(x));
+		int tz = this.tileOfBlockZ((int) Math.floor(z));
+		int tile = this.slotAt(tx, tz);
+		if (tile == NONE) {
+			return null;
+		}
+		int lx = Math.clamp((int) Math.floor((x - this.originX - tx * (double) TILE_BLOCKS) * this.cpb), 0, this.tn - 1);
+		int lz = Math.clamp((int) Math.floor((z - this.originZ - tz * (double) TILE_BLOCKS) * this.cpb), 0, this.tn - 1);
+		return new int[]{tile, lz * this.tn + lx};
+	}
+
+	/** Layer of the span in column {@code col} whose open space contains height y, or {@link #NONE}. */
+	int layerAt(int tile, int col, float y) {
+		int[] geo = this.tileGeo[tile];
+		for (int l = 0; l < this.layersUsed[tile]; l++) {
+			int g = geo[l * this.pageSpans + col];
+			if (validGeo(g) && this.floorOf(g) <= y && y < this.ceilOf(g)) {
+				return l;
+			}
+		}
+		return NONE;
+	}
+
+	private static long reservoirKey(int tile, int col) {
+		return (long) tile << 32 | col;
+	}
+
+	void setReservoir(int tile, int col, float level, int mode) {
+		this.reservoirs.put(reservoirKey(tile, col), new float[]{tile, col, level, mode});
+		this.reservoirsDirty = true;
+	}
+
+	void removeReservoir(int tile, int col) {
+		if (this.reservoirs.remove(reservoirKey(tile, col)) != null) {
+			this.reservoirsDirty = true;
+		}
+	}
+
+	/** Reservoir entries as {tile, col, level, mode}. */
+	java.util.Collection<float[]> reservoirs() {
+		return this.reservoirs.values();
+	}
+
+	/**
+	 * Picks tiles whose water should be written back to blocks this frame: forced ones first, then tiles that just fell asleep,
+	 * then awake tiles not synced for {@code interval} seconds (oldest first). They stay pending until {@link #synced}.
+	 */
+	int[] pickSync(float frameDt, float interval, float sleepSeconds, int max) {
+		int[] out = new int[Math.min(max, this.count)];
+		int n = 0;
+		for (int s = 0; s < this.count; s++) {
+			this.syncAge[s] += frameDt;
+		}
+		for (int pass = 0; pass < 3 && n < out.length; pass++) {
+			for (int s = 0; s < this.count && n < out.length; s++) {
+				if (this.syncPending[s]) {
+					continue;
+				}
+				boolean asleep = this.quiet[s] >= sleepSeconds;
+				boolean pick = switch (pass) {
+					case 0 -> this.syncForced[s];
+					case 1 -> asleep && !this.syncedAsleep[s];
+					default -> !asleep && this.syncAge[s] >= interval;
+				};
+				if (pick) {
+					this.syncPending[s] = true;
+					out[n++] = s;
+				}
+			}
+		}
+		return Arrays.copyOf(out, n);
+	}
+
+	/** A tile's block sync finished; {@code asleep}: whether it was asleep then (so it is not synced again until it wakes). */
+	void synced(int tile, boolean asleep) {
+		this.syncPending[tile] = false;
+		this.syncForced[tile] = false;
+		this.syncAge[tile] = 0.0F;
+		this.syncedAsleep[tile] = asleep;
 	}
 
 	int awakeCount(float sleepSeconds) {

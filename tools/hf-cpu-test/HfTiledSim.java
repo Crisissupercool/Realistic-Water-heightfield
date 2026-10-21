@@ -281,6 +281,48 @@ final class HfTiledSim {
 		return bits;
 	}
 
+	/** Mirror of hf_reservoir.comp. */
+	void applyReservoirs() {
+		for (float[] r : this.g.reservoirs()) {
+			int tile = (int) r[0];
+			int col = (int) r[1];
+			float level = r[2];
+			if (!this.g.active[tile]) {
+				continue;
+			}
+			for (int l = 0; l < 4; l++) {
+				int page = this.g.spanPage[tile * 4 + l];
+				if (page < 0) {
+					continue;
+				}
+				int s = page * this.ps + col;
+				int gg = this.geo[s];
+				if (!HfTileGrid.validGeo(gg)) {
+					continue;
+				}
+				float fl = this.g.floorOf(gg);
+				if (!(fl < level && level <= this.g.ceilOf(gg))) {
+					continue;
+				}
+				float target = level - fl;
+				this.depth[s] = r[3] == HfTileGrid.RESERVOIR_FIXED ? target : Math.max(this.depth[s], target);
+				break;
+			}
+		}
+	}
+
+	/** Mirror of HfDomain.inject + hf_inject.comp (applied immediately here). */
+	boolean inject(int tile, int col, float y, float add) {
+		int layer = this.g.layerAt(tile, col, y);
+		if (layer < 0) {
+			return false;
+		}
+		int s = this.span(tile, layer, col);
+		this.depth[s] = Math.max(this.depth[s] + add, 0.0F);
+		this.g.quiet[tile] = 0.0F;
+		return true;
+	}
+
 	/** Depth of (tile, layer, col), or 0 when the tile or layer does not exist. */
 	float depthAt(int tile, int layer, int col) {
 		if (tile < 0 || this.g.spanPage[tile * 4 + layer] < 0) {
@@ -336,6 +378,7 @@ final class HfTiledSim {
 		for (int i = 0; i < steps; i++) {
 			this.fluxPass(dt, keep);
 			this.depthPass(dt);
+			this.applyReservoirs();
 		}
 		return steps;
 	}

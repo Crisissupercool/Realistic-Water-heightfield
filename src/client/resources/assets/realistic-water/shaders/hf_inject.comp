@@ -1,0 +1,16 @@
+#version 450
+// Adds (or removes) water at given spans: placed and picked-up water blocks, floods and captures into existing tiles.
+// Entries are (span, depth to add as float bits); the CPU merges entries per span, so no two invocations touch the same span.
+#include "hf_common.glsl"
+layout(local_size_x = 64) in;
+layout(std430, binding = 2) buffer Depth { float depth[]; };
+layout(std430, binding = 14) readonly buffer Aux { uvec2 entries[]; };
+
+void main() {
+    uint i = GID_U;
+    if (i >= uint(HF_COUNT)) {
+        return;
+    }
+    uvec2 e = entries[i];
+    depth[e.x] = max(depth[e.x] + uintBitsToFloat(e.y), 0.0);
+}

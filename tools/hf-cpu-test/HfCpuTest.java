@@ -585,6 +585,86 @@ public final class HfCpuTest {
 			check(Math.abs(tiled.volume() - v1) / v1 < 1.0e-5, String.format("volume after settling %.4f (was %.4f)", tiled.volume(), v1));
 		}
 
+		System.out.println("Block sync: spans -> block amounts -> spans");
+		{
+			Solid solid = (x, y, z) -> y < 64 || y == 70 && x < 4;
+			HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 4, 16, 16);
+			HfTileGrid.Tile t = grid.build(voxels(solid), 0, 0);
+			// Block amounts: column x=8,z=8 holds 2 full blocks and a 3/8 block on top; x=2,z=2 (under the ledge) 1 full block.
+			HfBlocks.Amounts blocks = (x, y, z) -> {
+				if (x == 8 && z == 8) {
+					return y == 64 || y == 65 ? 8 : y == 66 ? 3 : 0;
+				}
+				return x == 2 && z == 2 && y == 64 ? 8 : 0;
+			};
+			float[] depth = HfBlocks.depthFromBlocks(grid, 0, 0, t.geo, t.layersUsed, blocks);
+			int col = (8 * C) * grid.tn + 8 * C;
+			check(Math.abs(depth[col] - 2.375F) < 1.0e-6F, "import: column depth 2 + 3/8 = " + depth[col]);
+			int under = (2 * C) * grid.tn + 2 * C;
+			float underDepth = 0.0F;
+			for (int l = 0; l < t.layersUsed; l++) {
+				int gg = t.geo[l * grid.pageSpans + under];
+				if (HfTileGrid.validGeo(gg) && grid.floorOf(gg) == 64.0F) {
+					underDepth = depth[l * grid.pageSpans + under];
+				}
+			}
+			check(t.layersUsed == 2 && underDepth == 1.0F, "under the ledge: 2 layers, the lower one holds 1 block of water (" + underDepth + ")");
+			boolean same = true;
+			for (int bz = 0; bz < 16; bz++) {
+				for (int bx = 0; bx < 16; bx++) {
+					float[] fill = HfBlocks.blockFills(grid, t.geo, t.layersUsed, depth, bx, bz);
+					for (int y = 40; y < 96; y++) {
+						int back = HfBlocks.amountFor(fill[y - 40], 0);
+						int x = bx;
+						int z = bz;
+						if (back != blocks.at(x, y, z)) {
+							same = false;
+						}
+					}
+				}
+			}
+			check(same, "write-back gives the same block amounts");
+			check(HfBlocks.amountFor(0.03F, 0) == 0, "a 3 cm film writes no block (air)");
+			check(HfBlocks.amountFor(0.40F, 3) == 3, "hysteresis keeps 3/8 while the fill stays within 3/4 of a step");
+		}
+
+		System.out.println("Reservoirs: an edge held at its level fills or drains a pool to it, a spring fills its basin and stops");
+		{
+			// Basin: floor at 64, walls 3 high around x,z in [2,13].
+			Solid solid = (x, y, z) -> y < 64 || y < 67 && (x < 2 || x > 13 || z < 2 || z > 13);
+			for (float start : new float[]{0.0F, 2.0F}) {
+				HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 4, 16, 16);
+				HfTiledSim tiled = new HfTiledSim(grid, voxels(solid));
+				tiled.maxNewTiles = 0;
+				int tile = tiled.addTile(0, 0, (l, c) -> start);
+				grid.setReservoir(tile, (7 * C) * grid.tn + 2 * C, 65.0F, HfTileGrid.RESERVOIR_FIXED);
+				for (int f = 0; f < 3600; f++) {
+					tiled.frame();
+				}
+				float mid = tiled.depthAt(tile, 0, (8 * C) * grid.tn + 8 * C);
+				check(Math.abs(mid - 1.0F) < 0.02F, String.format("pool starting %.0f deep settles to the edge level 65: depth %.3f", start, mid));
+			}
+			HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 4, 16, 16);
+			HfTiledSim tiled = new HfTiledSim(grid, voxels(solid));
+			tiled.maxNewTiles = 0;
+			int tile = tiled.addTile(0, 0, null);
+			grid.setReservoir(tile, (7 * C) * grid.tn + 7 * C, 66.0F, HfTileGrid.RESERVOIR_FIXED);
+			for (int f = 0; f < 3600; f++) {
+				tiled.frame();
+			}
+			float mid = tiled.depthAt(tile, 0, (10 * C) * grid.tn + 10 * C);
+			double vol = tiled.volume();
+			check(Math.abs(mid - 2.0F) < 0.03F, String.format("spring basin fills to the spring top (66): depth %.3f", mid));
+			int extra = 0;
+			for (int f = 0; f < 600; f++) {
+				extra += tiled.frame();
+			}
+			check(Math.abs(tiled.volume() - vol) / vol < 1.0e-3, String.format("and stops there: volume %.2f -> %.2f", vol, tiled.volume()));
+			double before = tiled.volume();
+			tiled.inject(tile, (4 * C) * grid.tn + 4 * C, 66.5F, 1.0F);
+			check(Math.abs(tiled.volume() - before - 0.25) < 1.0e-4, "inject adds depth x cell area: +" + (tiled.volume() - before));
+		}
+
 		System.out.println(failures == 0 ? "ALL PASSED" : failures + " FAILED");
 		System.exit(failures == 0 ? 0 : 1);
 	}

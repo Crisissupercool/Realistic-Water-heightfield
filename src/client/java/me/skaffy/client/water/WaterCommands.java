@@ -77,9 +77,15 @@ public final class WaterCommands {
 					c.getSource().sendFeedback(Component.literal(WaterWorld.get().heightfieldColumn(Minecraft.getInstance())));
 					return 1;
 				}))
+				.then(literal("capture")
+					.executes(c -> capture(c, 24))
+					.then(argument("radius", IntegerArgumentType.integer(1, 64)).executes(c -> capture(c, IntegerArgumentType.getInteger(c, "radius")))))
+				.then(literal("release").executes(c -> {
+					c.getSource().sendFeedback(Component.literal(WaterWorld.get().releaseWater()));
+					return 1;
+				}))
 				.then(literal("clear").executes(c -> {
-					WaterWorld.get().clearHeightfield();
-					c.getSource().sendFeedback(Component.literal("Removed the heightfield water"));
+					c.getSource().sendFeedback(Component.literal(WaterWorld.get().clearHeightfield(c.getSource().getLevel())));
 					return 1;
 				})))
 			.then(literal("set")
@@ -119,6 +125,11 @@ public final class WaterCommands {
 	private static int flood(CommandContext<FabricClientCommandSource> c, int radius, double height) {
 		var player = c.getSource().getPlayer();
 		c.getSource().sendFeedback(Component.literal(WaterWorld.get().flood(c.getSource().getLevel(), player.position(), radius, height)));
+		return 1;
+	}
+
+	private static int capture(CommandContext<FabricClientCommandSource> c, int radius) {
+		c.getSource().sendFeedback(Component.literal(WaterWorld.get().captureWater(c.getSource().getLevel(), c.getSource().getPlayer().position(), radius)));
 		return 1;
 	}
 
