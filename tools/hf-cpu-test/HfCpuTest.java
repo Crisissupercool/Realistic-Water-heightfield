@@ -45,13 +45,14 @@ public final class HfCpuTest {
 			for (int s = 0; s < t.spans; s++) {
 				int base = s * 8;
 				float hA = h[s];
-				if (!t.valid(s) || hA <= MIN_FLOW) {
+				if (!t.valid(s) || hA <= 0.0F) {
 					for (int k = 0; k < 8; k++) {
 						flux[base + k] = 0.0F;
 					}
 					continue;
 				}
 				float headA = t.floor[s] + hA;
+				boolean film = hA <= MIN_FLOW;
 				float[] out = new float[8];
 				float total = 0.0F;
 				for (int k = 0; k < 8; k++) {
@@ -61,6 +62,9 @@ public final class HfCpuTest {
 					}
 					int b = l >>> 3;
 					float headB = t.floor[b] + h[b];
+					if (film && headB >= t.floor[s]) {
+						continue;
+					}
 					float lo = Math.max(t.floor[s], t.floor[b]);
 					float hi = Math.min(t.ceil[s], t.ceil[b]);
 					float wetA = Math.clamp(headA, lo, hi) - lo;
@@ -489,6 +493,34 @@ public final class HfCpuTest {
 			check(drift < 0.1, String.format("volume drift %.4f%%", drift));
 			check(tiled.frame() == 0, "no solver steps once asleep");
 			check(grid.usedFluxPages() == 0, "asleep tiles hold no flux pages (peak was " + peakFlux + ")");
+		}
+
+		System.out.println("Thin film drains into a hole instead of stopping at its edge");
+		{
+			Solid solid = (x, y, z) -> y < 64 && !(x >= 14 && x < 16 && z >= 14 && z < 16 && y >= 63);
+			HfTopology t = HfTopology.build(voxels(solid), 0, 0, 32, 32, 40, 96, C, L, 0.25F);
+			float[] h = new float[t.spans];
+			for (int cz = 0; cz < t.nz; cz++) {
+				for (int cx = 0; cx < t.nx; cx++) {
+					int s = t.span(cx, cz, 0);
+					if (t.valid(s) && t.floor[s] == 64.0F) {
+						h[s] = 0.02F;
+					}
+				}
+			}
+			Sim sim = new Sim(t, h);
+			double v0 = sim.volume();
+			sim.run(600);
+			double inHole = 0.0;
+			for (int cz = 14 * C; cz < 16 * C; cz++) {
+				for (int cx = 14 * C; cx < 16 * C; cx++) {
+					inHole += sim.h[t.span(cx, cz, 0)] * (1.0 / (C * C));
+				}
+			}
+			int edge = t.span(13 * C + 1, 15 * C, 0);
+			check(inHole > 0.01, String.format("water collected in the hole: %.3f blocks", inHole));
+			check(sim.h[edge] < 0.02F, "the film next to the hole drained into it: " + sim.h[edge]);
+			check(Math.abs(sim.volume() - v0) / v0 < 1.0e-4, "volume kept");
 		}
 
 		System.out.println("Block edits: breaking a dam lets the water through, placing blocks in water displaces it");

@@ -165,13 +165,14 @@ final class HfTiledSim {
 				int base = this.fluxBase(tile, layer, col);
 				int ga = this.geo[s];
 				float hA = this.depth[s];
-				if (!HfTileGrid.validGeo(ga) || hA <= HfCpuTest.MIN_FLOW) {
+				if (!HfTileGrid.validGeo(ga) || hA <= 0.0F) {
 					Arrays.fill(this.flux, base, base + 8, 0.0F);
 					continue;
 				}
 				float fa = this.g.floorOf(ga);
 				float ca = this.g.ceilOf(ga);
 				float headA = fa + hA;
+				boolean film = hA <= HfCpuTest.MIN_FLOW;
 				float[] out = new float[8];
 				float total = 0.0F;
 				for (int k = 0; k < 8; k++) {
@@ -187,6 +188,9 @@ final class HfTiledSim {
 					int gb = this.geo[b];
 					float fb = this.g.floorOf(gb);
 					float headB = fb + this.depth[b];
+					if (film && headB >= fa) {
+						continue;
+					}
 					float lo = Math.max(fa, fb);
 					float hi = Math.min(ca, this.g.ceilOf(gb));
 					float wetA = Math.clamp(headA, lo, hi) - lo;

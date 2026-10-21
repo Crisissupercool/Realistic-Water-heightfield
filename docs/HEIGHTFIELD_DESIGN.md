@@ -329,3 +329,8 @@ Tiles over unloaded chunks are not rebuilt (they would read as solid).
 CPU tests: the paged solver is still bit-identical to the dense one; open-ground tiles use 1 page each; sleeping tiles hold no
 flux pages; breaking an 8-block gap in a dam at a tile border lets the water through with 0.00001 % drift; placing 32 blocks in a pool
 raises the floor and puts the displaced water on top with no volume change.
+
+**Follow-ups from the first block-edit test (2026-10-21).** A thin film (under `hfMinFlowDepth`) used to stop at the edge of a
+hole; it now still drains into a neighbor whose water surface lies below the film's floor, so it only refuses to spread sideways
+on level ground. Known visual issues, left for the rendering pass: the half-block cell grid and 16-block tiles are visible in the
+surface; a sheet of water standing against walls near a breach (debug with `hfDebugMesh` and `/water hf column`).

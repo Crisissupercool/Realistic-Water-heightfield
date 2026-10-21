@@ -9,7 +9,8 @@ layout(std430, binding = 3) buffer Flux { float flux[]; };
 #define HF_G hp.p0.y
 #define HF_CELL hp.p0.z
 #define HF_KEEP hp.p0.w
-// Water thinner than this does not flow out: it stays as a film, so floods stop spreading over open ground.
+// Water thinner than this does not spread sideways: it stays as a film, so floods stop spreading over open ground.
+// It still drains over an edge into a neighbor whose water surface lies below its floor (holes, steps, slopes).
 #define HF_MIN_FLOW hp.p1.z
 
 void main() {
@@ -20,13 +21,14 @@ void main() {
     uint base = a.flux;
     vec2 ga = hfGeo(a.span);
     float hA = depth[a.span];
-    if (!hfValid(ga) || hA <= HF_MIN_FLOW) {
+    if (!hfValid(ga) || hA <= 0.0) {
         for (uint k = 0u; k < HF_LINKS; k++) {
             flux[base + k] = 0.0;
         }
         return;
     }
     float headA = ga.x + hA;
+    bool film = hA <= HF_MIN_FLOW;
     float outflow[8];
     float total = 0.0;
     for (uint k = 0u; k < HF_LINKS; k++) {
@@ -38,6 +40,9 @@ void main() {
         }
         vec2 gb = hfGeo(b.span);
         float headB = gb.x + depth[b.span];
+        if (film && headB >= ga.x) {
+            continue;
+        }
         // Only water inside the shared opening can move.
         float lo = max(ga.x, gb.x);
         float hi = min(ga.y, gb.y);
