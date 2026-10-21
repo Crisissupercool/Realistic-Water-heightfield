@@ -15,8 +15,11 @@ layout(location = 0) out vec4 outColor;
 
 const float PI = 3.14159265;
 
-float linearDepth(float device) {
-    vec4 v = G.invProj * vec4(0.0, 0.0, device, 1.0);
+// View-space distance of the scene at screen point uv. The level projection includes view bobbing (a small rotation and
+// shift), so depth must be unprojected at the pixel itself: reading it at the screen centre was off by a few percent toward
+// the screen edges, swinging with every bob, which made thickness, refraction and reflections jump while walking.
+float linearDepth(vec2 uv, float device) {
+    vec4 v = G.invProj * vec4(uv * 2.0 - 1.0, device, 1.0);
     return -v.z / v.w;
 }
 
@@ -65,7 +68,7 @@ vec3 traceReflection(vec3 origin, vec3 R, out float hit) {
         if (!projectToScreen(pos, suv)) {
             break;
         }
-        float sceneDist = linearDepth(texture(sceneDepth, suv).r);
+        float sceneDist = linearDepth(suv, texture(sceneDepth, suv).r);
         if (-pos.z > sceneDist) {
             vec3 a = last;
             vec3 b = pos;
@@ -75,7 +78,7 @@ vec3 traceReflection(vec3 origin, vec3 R, out float hit) {
                 if (!projectToScreen(m, muv)) {
                     break;
                 }
-                if (-m.z > linearDepth(texture(sceneDepth, muv).r)) {
+                if (-m.z > linearDepth(muv, texture(sceneDepth, muv).r)) {
                     b = m;
                 } else {
                     a = m;
@@ -84,7 +87,7 @@ vec3 traceReflection(vec3 origin, vec3 R, out float hit) {
             if (!projectToScreen(b, suv)) {
                 break;
             }
-            float behind = -b.z - linearDepth(texture(sceneDepth, suv).r);
+            float behind = -b.z - linearDepth(suv, texture(sceneDepth, suv).r);
             if (behind > 0.35 + 0.05 * -b.z) {
                 break;
             }
@@ -293,7 +296,7 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     float shift = length(offset);
     offset *= shift > 0.03 ? 0.03 / shift : 1.0;
     vec2 ruv = clamp(uv + offset, vec2(0.0), vec2(1.0));
-    float refrDist = linearDepth(texture(sceneDepth, ruv).r);
+    float refrDist = linearDepth(ruv, texture(sceneDepth, ruv).r);
     float path = max(texture(thicknessTex, ruv).r, 0.0);
     if (refrDist < fd) {
         ruv = uv;
@@ -349,7 +352,7 @@ void main() {
     bool lavaPass = pc.filterMat > 1.5;
     vec4 foam = texture(foamTex, uv);
     float sceneDev = texture(sceneDepth, uv).r;
-    float sceneDist = linearDepth(sceneDev);
+    float sceneDist = linearDepth(uv, sceneDev);
     bool hasFluid = fd > 0.0 && fd < sceneDist;
     bool underwater = viewState.x > 0.5;
     bool matTagged = matId >= -0.5;

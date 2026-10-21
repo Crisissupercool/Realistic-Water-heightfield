@@ -318,8 +318,9 @@ final class HfTiledSim {
 					peak = Math.max(peak, Math.max(o, fi));
 					if (fi > 0.0F) {
 						foamIn += fi * this.foam[read + nbBase / 8];
-						if (this.g.floorOf(this.geo[this.span(nb[0], nb[1], nb[2])]) > floorA + old) {
-							falling += fi;
+						float drop = this.g.floorOf(this.geo[this.span(nb[0], nb[1], nb[2])]) - (floorA + old);
+						if (drop > 0.0F) {
+							falling += fi * Math.min(drop, 4.0F);
 						}
 					}
 				}
@@ -329,7 +330,7 @@ final class HfTiledSim {
 				float speed = nh > 0.05F ? Math.min(peak / (cell * nh), 30.0F) : 0.0F;
 				float mass = foamA * old + dt * (foamIn - out * foamA) / area;
 				float f = nh > 1.0e-4F ? Math.clamp(mass / nh, 0.0F, 1.0F) * foamKeep : 0.0F;
-				f = Math.max(f, 0.9F * smoothstep(0.0F, 1.5F, falling / area));
+				f = Math.max(f, 0.9F * smoothstep(0.0F, 3.0F, falling / area));
 				f = Math.max(f, 0.5F * smoothstep(4.0F, 9.0F, speed));
 				float[] st = this.stirAt(tile, col, floorA, floorA + nh);
 				if (st[2] > 0.0F) {

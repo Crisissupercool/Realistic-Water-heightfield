@@ -422,3 +422,13 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   slope 2 blocks to the side). `composite.frag` bends the normal of water within 0.6 blocks of that level by the field's slope
   x `hfRippleNormal` (2), fading with distance and toward the field edge. It moves no water and ignores shores (waves run under
   land and vanish). `hfRipples` scales the source, 0 turns it off.
+* **View bobbing broke depth (fixed):** the captured level projection includes bobbing (a small rotation and shift), but every
+  fragment shader unprojected scene depth at the screen centre (`invProj * (0, 0, d, 1)`), which is only exact for a pure
+  perspective matrix. Off-centre the error was a few percent of the distance and swung with each bob, so water thickness, the
+  refraction validity test and the reflection hit test all jittered while walking. `linearDepth(uv, d)` now unprojects at
+  the pixel (composite, mesh/droplet thickness, whitewater).
+* **Reflections and refraction:** SSR refines a crossing with 6 bisection steps and rejects crossings far behind the surface;
+  refraction offsets by the normal's lean from vertical (flat water no longer shifts the bed) and is capped at 3% of the screen.
+* **Cascades:** adjacent sheets over the same edge share their corner vertices (average landing height and throw), so a
+  stepped slope shows one curtain per step instead of a row of arches; sheet whiteness scales with the outflow (trickles stay
+  clearer); falling-water foam is weighted by drop height (full at 3 blocks/s x blocks), so 1-block steps barely foam.

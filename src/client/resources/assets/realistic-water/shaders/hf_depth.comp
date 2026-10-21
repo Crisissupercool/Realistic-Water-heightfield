@@ -18,9 +18,10 @@ layout(std430, binding = 8) writeonly buffer Stats { vec4 stats[]; };
 #define HF_FOAM_KEEP hp.p1.w
 #define HF_FOAM_READ uint(hp.p2.x)
 #define HF_FOAM_WRITE uint(hp.p2.y)
-// Rate (blocks of depth per second) of water falling into a span that makes it fully white; flow speeds (blocks/s) over which
+// Water falling into a span, weighted by how far it falls (blocks of depth per second x blocks, up to 4), that makes it fully
+// white: a trickle down a 1-block step barely foams, a waterfall does. Flow speeds (blocks/s) over which
 // fast water turns white; body speeds over which a body stirs up foam.
-const float FOAM_FALL_RATE = 1.5;
+const float FOAM_FALL_RATE = 3.0;
 const vec2 FOAM_FAST = vec2(4.0, 9.0);
 const vec2 FOAM_STIR = vec2(1.5, 4.0);
 
@@ -79,8 +80,9 @@ void main() {
             if (i > 0.0) {
                 foamIn += i * foam[HF_FOAM_READ + hfFoamIndex(b)];
                 // Water arriving from a span whose floor lies above our surface drops in: a waterfall or a step.
-                if (hfGeo(b.span).x > floorA + old) {
-                    falling += i;
+                float drop = hfGeo(b.span).x - (floorA + old);
+                if (drop > 0.0) {
+                    falling += i * min(drop, 4.0);
                 }
             }
         }
