@@ -172,10 +172,14 @@ public final class WaterSettings {
 	public static float hfCurtainMinFlow = 0.005F;
 	/** How hard the player pushes heightfield water when moving through it (bow wave, wake, rings when jumping in); 0 turns it off. */
 	public static float hfStirStrength = 1.0F;
+	/** How strongly the player makes fine ripples on heightfield water (wading, swimming, bobbing, jumping in); 0 turns them off. */
+	public static float hfRipples = 1.0F;
+	/** How much the ripples bend the surface when shading (multiplies their slope). */
+	public static float hfRippleNormal = 2.0F;
 	/** How white foam and falling water show on heightfield water (0 off, 1 normal). */
 	public static float hfFoam = 1.0F;
 	/** Seconds foam takes to fade to about a third once nothing churns the water any more. */
-	public static float hfFoamLife = 2.5F;
+	public static float hfFoamLife = 1.5F;
 	public static int hfMaxStepsPerFrame = 8;
 	/** When the surface everywhere rises or falls slower than this (blocks/s) for {@link #hfSleepSeconds}, the heightfield stops simulating until woken. */
 	public static float hfSleepRate = 0.002F;

@@ -139,6 +139,7 @@ public final class WaterWorld {
 	private @Nullable SolidCache solids;
 	private @Nullable SolidCache sandSolids;
 	private @Nullable WaterRenderer renderer;
+	private @Nullable HfRipples ripples;
 	private @Nullable SandRenderer sandRenderer;
 	private @Nullable VkBuf uboRing;
 	private @Nullable VkBuf frameView;
@@ -856,6 +857,9 @@ public final class WaterWorld {
 		if (this.renderer == null) {
 			this.renderer = new WaterRenderer();
 		}
+		if (this.ripples == null) {
+			this.ripples = new HfRipples();
+		}
 		if (this.sandRenderer == null) {
 			this.sandRenderer = new SandRenderer();
 		}
@@ -906,6 +910,7 @@ public final class WaterWorld {
 			Vk.barrier(cb);
 		}
 		if (!waterBodies.isEmpty()) {
+			this.renderer.ripples(this.heightfield != null ? this.ripples : null);
 			this.renderer.record(cb, waterBodies, Desc.ssbo(this.frameView), color.vkImage(), colorView.vkImageView(), depth.vkImage(),
 				depthView.vkImageView());
 		}
@@ -968,6 +973,7 @@ public final class WaterWorld {
 		Desc ubo = Desc.ubo(this.hfUbo, o, UBO_SIZE);
 		hf.record(cb, ubo, act, steps, dt);
 		this.hfWorld.request(cb, ubo, hf, frameDt);
+		this.ripples.record(cb, mc, this.hfWorld.freshPlayerSample(), frameDt, running);
 		hf.probe(cb, ubo, this.frameView, cam.x, cam.y, cam.z);
 		return new WaterRenderer.Body(null, hf, ubo);
 	}
@@ -1341,6 +1347,10 @@ public final class WaterWorld {
 			this.sandRenderer.close();
 			this.sandRenderer = null;
 		}
+		if (this.ripples != null) {
+			this.ripples.close();
+			this.ripples = null;
+		}
 		if (this.uboRing != null) {
 			this.uboRing.close();
 			this.frameView.close();
@@ -1353,6 +1363,7 @@ public final class WaterWorld {
 		}
 		WaterRegion.closePrograms();
 		HfDomain.closePrograms();
+		HfRipples.closeProgram();
 		Vk.flushDeferredNow();
 	}
 }

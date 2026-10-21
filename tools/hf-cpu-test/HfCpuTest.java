@@ -703,7 +703,7 @@ public final class HfCpuTest {
 			check(bow > 0.1F && bow < 0.4F, String.format("wading at 2.5 b/s through 1.2 deep water: bow wave ahead +%.3f", bow));
 			check(trough < -0.02F, String.format("trough behind it: %.3f", trough));
 			check(side > 0.005F, String.format("the wake spreads sideways: %.3f at 2.5 blocks", side));
-			check(foamPeak > 0.2F, String.format("foam stirred up around the body: %.2f", foamPeak));
+			check(foamPeak > 0.03F && foamPeak < 0.35F, String.format("a little foam stirred up around the body: %.2f", foamPeak));
 			check(Math.abs(tiled.volume() - v0) / v0 < 1.0e-5, String.format("volume %.4f -> %.4f", v0, tiled.volume()));
 
 			HfTileGrid g2 = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 4, 16, 16);

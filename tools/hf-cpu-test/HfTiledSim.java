@@ -24,7 +24,7 @@ final class HfTiledSim {
 	final float[] foam;
 	final int foamHalf;
 	int foamRead;
-	float foamLife = 2.5F;
+	float foamLife = 1.5F;
 	/** Bodies stirring the water, 12 floats each in the Globals entity layout (see HfWorld.stir and hfStir). */
 	float[] stir = new float[0];
 	float stirRate = 8.0F;
@@ -329,11 +329,11 @@ final class HfTiledSim {
 				float speed = nh > 0.05F ? Math.min(peak / (cell * nh), 30.0F) : 0.0F;
 				float mass = foamA * old + dt * (foamIn - out * foamA) / area;
 				float f = nh > 1.0e-4F ? Math.clamp(mass / nh, 0.0F, 1.0F) * foamKeep : 0.0F;
-				f = Math.max(f, smoothstep(0.0F, 0.8F, falling / area));
-				f = Math.max(f, 0.8F * smoothstep(2.5F, 6.0F, speed));
+				f = Math.max(f, 0.9F * smoothstep(0.0F, 1.5F, falling / area));
+				f = Math.max(f, 0.5F * smoothstep(4.0F, 9.0F, speed));
 				float[] st = this.stirAt(tile, col, floorA, floorA + nh);
 				if (st[2] > 0.0F) {
-					f = Math.max(f, 0.6F * smoothstep(0.8F, 3.0F, (float) Math.hypot(st[0], st[1])));
+					f = Math.max(f, 0.35F * smoothstep(1.5F, 4.0F, (float) Math.hypot(st[0], st[1])));
 				}
 				this.foam[write + base / 8] = nh > 0.0F ? f : 0.0F;
 				this.g.volume[tile] += (double) nh * cell * cell;

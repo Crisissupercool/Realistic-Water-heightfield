@@ -26,6 +26,8 @@ public final class WaterRenderer implements AutoCloseable {
 	private final GraphicsProgram dropletThickness;
 	private final GraphicsProgram whitewaterProgram;
 	private final GraphicsProgram compositeProgram;
+	private final VkBuf noRipples;
+	private @Nullable HfRipples ripples;
 	private final Sampler nearest = new Sampler(false);
 	private final Sampler linear = new Sampler(true);
 
@@ -57,7 +59,21 @@ public final class WaterRenderer implements AutoCloseable {
 			new GraphicsProgram.State(VkTex.RGBA16F, VK10.VK_FORMAT_UNDEFINED, false, false, VK10.VK_COMPARE_OP_ALWAYS, GraphicsProgram.Blend.ADD),
 			U, S, T, T, S);
 		this.compositeProgram = new GraphicsProgram("fullscreen.vert", "composite.frag", Map.of(),
-			new GraphicsProgram.State(VkTex.RGBA8, VkTex.D32, true, true, VK10.VK_COMPARE_OP_ALWAYS, GraphicsProgram.Blend.NONE), U, T, T, T, T, T, T, S);
+			new GraphicsProgram.State(VkTex.RGBA8, VkTex.D32, true, true, VK10.VK_COMPARE_OP_ALWAYS, GraphicsProgram.Blend.NONE), U, T, T, T, T, T, T, S, S);
+		this.noRipples = VkBuf.device(16, 0);
+	}
+
+	/** Heightfield ripples for this frame's composite (HfRipples), or null. */
+	void ripples(@Nullable HfRipples ripples) {
+		this.ripples = ripples;
+	}
+
+	/** Composite push constants: material filter, then the ripple field (level, gain, size, window min texel). */
+	private int[] compositePush(float filterMat) {
+		HfRipples r = this.ripples;
+		boolean on = r != null && !Float.isNaN(r.planeY) && WaterSettings.hfRipples > 0.0F;
+		return new int[]{Program.f(filterMat), Program.f(on ? r.planeY - WaterSettings.hfSurfaceDrop : 0.0F),
+			Program.f(WaterSettings.hfRippleNormal), on ? HfRipples.SIZE : 0, on ? r.winX : 0, on ? r.winZ : 0};
 	}
 
 	private static boolean blendable(int format) {
@@ -206,8 +222,9 @@ public final class WaterRenderer implements AutoCloseable {
 				depthTex,
 				Desc.tex(this.foam, this.linear.handle),
 				matTex,
-				view);
-			this.compositeProgram.push(cb, Program.f(0.0F));
+				view,
+				Desc.ssbo(this.ripples != null ? this.ripples.current() : this.noRipples));
+			this.compositeProgram.push(cb, this.compositePush(0.0F));
 			this.compositeProgram.draw(cb, 3, 1);
 		}
 		if (lavaUbo != null) {
@@ -218,8 +235,9 @@ public final class WaterRenderer implements AutoCloseable {
 				depthTex,
 				Desc.tex(this.foam, this.linear.handle),
 				matTex,
-				view);
-			this.compositeProgram.push(cb, Program.f(2.0F));
+				view,
+				Desc.ssbo(this.noRipples));
+			this.compositeProgram.push(cb, Program.f(2.0F), 0, 0, 0, 0, 0);
 			this.compositeProgram.draw(cb, 3, 1);
 		}
 		GraphicsProgram.end(cb);
@@ -230,7 +248,7 @@ public final class WaterRenderer implements AutoCloseable {
 		this.releaseTargets();
 		for (AutoCloseable c : new AutoCloseable[]{
 			this.meshFront, this.dropletFront, this.meshThickness, this.dropletThickness, this.whitewaterProgram, this.compositeProgram,
-			this.nearest, this.linear
+			this.nearest, this.linear, this.noRipples
 		}) {
 			try {
 				c.close();

@@ -20,9 +20,9 @@ layout(std430, binding = 8) writeonly buffer Stats { vec4 stats[]; };
 #define HF_FOAM_WRITE uint(hp.p2.y)
 // Rate (blocks of depth per second) of water falling into a span that makes it fully white; flow speeds (blocks/s) over which
 // fast water turns white; body speeds over which a body stirs up foam.
-const float FOAM_FALL_RATE = 0.8;
-const vec2 FOAM_FAST = vec2(2.5, 6.0);
-const vec2 FOAM_STIR = vec2(0.8, 3.0);
+const float FOAM_FALL_RATE = 1.5;
+const vec2 FOAM_FAST = vec2(4.0, 9.0);
+const vec2 FOAM_STIR = vec2(1.5, 4.0);
 
 shared vec4 reduction[256];
 shared uint borderBits;
@@ -93,11 +93,11 @@ void main() {
         // Foam moves with the water (upwind, like the depth itself), fades, and is renewed where the water is churned.
         float mass = foamA * old + HF_DT * (foamIn - outflow * foamA) / area;
         float f = h > 1.0e-4 ? clamp(mass / h, 0.0, 1.0) * HF_FOAM_KEEP : 0.0;
-        f = max(f, smoothstep(0.0, FOAM_FALL_RATE, falling / area));
-        f = max(f, 0.8 * smoothstep(FOAM_FAST.x, FOAM_FAST.y, speed));
+        f = max(f, 0.9 * smoothstep(0.0, FOAM_FALL_RATE, falling / area));
+        f = max(f, 0.5 * smoothstep(FOAM_FAST.x, FOAM_FAST.y, speed));
         vec3 stir = hfStir(a, floorA, floorA + h);
         if (stir.z > 0.0) {
-            f = max(f, 0.6 * smoothstep(FOAM_STIR.x, FOAM_STIR.y, length(stir.xy)));
+            f = max(f, 0.35 * smoothstep(FOAM_STIR.x, FOAM_STIR.y, length(stir.xy)));
         }
         foam[HF_FOAM_WRITE + hfFoamIndex(a)] = h > 0.0 ? f : 0.0;
         mine = vec4(h * HF_CELL * HF_CELL, h, speed, abs(h - old) / HF_DT);

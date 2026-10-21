@@ -17,6 +17,8 @@ void main() {
         discard;
     }
     outG = vec4(normalize(vNormal), dist);
-    // Aeration rides in the material id below the 0.25 tolerance composite.frag allows (0 for the fluid meshes).
-    outMat = G.matA.x + clamp(vAer, 0.0, 1.0) * 0.2;
+    // Aeration rides in the material id below the 0.25 tolerance composite.frag allows (0 for the fluid meshes):
+    // surfaces 0..0.1, falling sheets (aerated walls) 0.12..0.22.
+    float aer = clamp(vAer, 0.0, 1.0);
+    outMat = G.matA.x + (vWall > 0.5 && aer > 0.005 ? 0.12 + 0.1 * aer : 0.1 * aer);
 }

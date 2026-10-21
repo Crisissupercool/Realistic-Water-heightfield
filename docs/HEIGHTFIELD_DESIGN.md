@@ -398,14 +398,27 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
 * **Foam:** one float per simulated span (0..1), stored on the flux pages twice (binding 15): the depth pass reads one half and
   writes the other, swapping each step, because it reads its neighbors' foam. It is carried with the water (upwind, the same
   fluxes as the depth), fades with `hfFoamLife` (2.5 s), and is renewed where water drops in from a span whose floor is above our
-  surface (full at 0.8 blocks/s of inflow), where it runs faster than 2.5..6 b/s, and where a body stirs it (0.8..3 b/s). Pages
-  are zeroed when a tile gets flux pages, and tiles that are not simulated have none, so sleeping water is clear.
+  surface (up to 0.9 at 1.5 blocks/s of inflow), where it runs faster than 4..9 b/s (up to 0.5), and where a body stirs it
+  (1.5..4 b/s, up to 0.35). Pages are zeroed when a tile gets flux pages, and tiles that are not simulated have none, so sleeping
+  water is clear. (First in-game test: with lower thresholds and a 2.5 s life a whole flood turned white, and the whitewater
+  lace pattern read as a net; foam now shows as soft drifting value-noise patches whose coverage grows with the foam amount.)
 * **Aeration in the mesh:** heightfield vertices now pack a 12 + 12 bit octahedral normal and 6 bits of aeration (OPEN set; the
   particle meshes keep `packNormal`). Tops average the foam of the joined spans at each corner (times `hfFoam`); sheets go from
   the lip's foam (at least 0.1) to 0.3 + 0.25 per block of drop at the bottom. `mesh_front.frag` adds aeration x 0.2 to the
-  material id (inside composite's 0.25 tolerance); `composite.frag` turns it into lace foam on tops and, on near-vertical faces,
-  streaks scrolling down the sheet with a bumped normal. Sheets also skip the thin-film rule that forced their normal up (which
+  material id as 0..0.1 for surfaces and 0.12..0.22 for sheets (aerated wall faces), inside composite's 0.25 tolerance;
+  `composite.frag` turns it into foam patches on surfaces and streaks scrolling down sheets with a bumped normal. Sheets also skip the thin-film rule that forced their normal up (which
   was what made them look like panes of glass).
 * **Sheet shape:** three segments along the arc the water takes leaving the edge at its overflow speed (outflow / (cell x depth)),
   `y = top - drop s^2`, thrown out up to 0.45 blocks, with per-vertex normals along the arc. At the brink the corner height stays at
   70% of the water depth instead of dropping to the floor, so the surface no longer bulges up from the edge.
+
+* **Fine ripples (`HfRipples`, `hf_ripple.comp`):** the first in-game test showed no visible waves: a surface swimmer in a deep lake
+  moves the half-block solver by ~3 cm. Small waves now come from a separate 256 x 256 wave-equation field at 8 texels per block
+  (32 x 32 blocks around the player, 2 x 512 KB), stepped at 60 Hz with waves at 1.5 b/s and 0.995 damping per step. It is
+  anchored to the wrapped world and addressed modulo 256 with a world-texel stamp per texel, so the window follows the player
+  without copies (stale texels read as calm). While the player is at the heightfield surface (from the gameplay sample), the
+  texels under them relax toward a depression of 6 cm x speed/3 b/s, plus a slow bob when nearly still and a dip of up to 15 cm
+  when crossing the surface fast; moving, bobbing and jumping in change it and send waves out (numpy runs: 2 b/s gives ~0.07
+  slope 2 blocks to the side). `composite.frag` bends the normal of water within 0.6 blocks of that level by the field's slope
+  x `hfRippleNormal` (2), fading with distance and toward the field edge. It moves no water and ignores shores (waves run under
+  land and vanish). `hfRipples` scales the source, 0 turns it off.

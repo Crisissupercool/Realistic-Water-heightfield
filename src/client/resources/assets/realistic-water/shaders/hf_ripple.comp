@@ -1,0 +1,54 @@
+#version 450
+// Fine ripples around the player: a small wave-equation field (8 texels per block, 256 x 256 texels = 32 x 32 blocks) that only
+// shades the water (composite.frag bends the normal with its slope). The heightfield solver works in half-block cells and
+// can't carry waves this small. The field is anchored to the (wrapped) world and addressed modulo 256, so the window moves
+// with the player without copying: each texel stores which world texel it holds, and a mismatch reads as calm water.
+// One step: next = (2 cur - prev + c^2 lap(cur)) * damping, written over prev; then the CPU swaps the buffers.
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(std430, binding = 0) readonly buffer Cur { uvec2 cur[]; };   // (height bits, stamp)
+layout(std430, binding = 1) buffer Prev { uvec2 prev[]; };          // previous state in, next state out
+
+layout(push_constant) uniform Push {
+    ivec4 win;   // window min texel (x, z), size (256), 0
+    vec4 wave;   // c^2, damping, source relax rate, 0
+    vec4 src;    // source center (x, z) in texels, radius in texels, target height (blocks; 0 = no source)
+} pc;
+
+const int SIZE = 256;
+
+uint stampOf(ivec2 w) {
+    return uint(w.x & 32767) | (uint(w.y & 32767) << 16);
+}
+
+uint slotOf(ivec2 w) {
+    return uint(w.y & (SIZE - 1)) * uint(SIZE) + uint(w.x & (SIZE - 1));
+}
+
+float height(uvec2 e, ivec2 w) {
+    return e.y == stampOf(w) ? uintBitsToFloat(e.x) : 0.0;
+}
+
+float curAt(ivec2 w) {
+    return height(cur[slotOf(w)], w);
+}
+
+void main() {
+    ivec2 i = ivec2(gl_GlobalInvocationID.xy);
+    if (i.x >= SIZE || i.y >= SIZE) {
+        return;
+    }
+    ivec2 w = pc.win.xy + i;
+    uint slot = slotOf(w);
+    float c = curAt(w);
+    float p = height(prev[slot], w);
+    // Texels at the window edge see calm water beyond it, so waves fade out there instead of wrapping around.
+    float lap = curAt(w + ivec2(1, 0)) + curAt(w - ivec2(1, 0)) + curAt(w + ivec2(0, 1)) + curAt(w - ivec2(0, 1)) - 4.0 * c;
+    float n = (2.0 * c - p + pc.wave.x * lap) * pc.wave.y;
+    if (pc.src.z > 0.0) {
+        // The body holds the water under it near a target depression; moving, bobbing or plunging changes that, which sends waves.
+        float d = length(vec2(w) + 0.5 - pc.src.xy);
+        float f = clamp(1.0 - d / pc.src.z, 0.0, 1.0);
+        n += pc.wave.z * f * f * (pc.src.w - n);
+    }
+    prev[slot] = uvec2(floatBitsToUint(n), stampOf(w));
+}

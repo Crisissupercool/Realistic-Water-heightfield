@@ -588,6 +588,11 @@ final class HfWorld {
 	private float[] playerSample;
 	private long playerSampleNanos;
 
+	/** The latest water sample at the player if it is recent (250 ms), else null. */
+	float[] freshPlayerSample() {
+		return this.playerSample != null && System.nanoTime() - this.playerSampleNanos < 250_000_000L ? this.playerSample : null;
+	}
+
 	/** Call each client tick: water moving around the player pulls it along (horizontal drag toward the water velocity). */
 	void pushPlayer(net.minecraft.client.Minecraft mc) {
 		var player = mc.player;

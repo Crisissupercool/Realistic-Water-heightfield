@@ -32,7 +32,7 @@ const float WALL_INSET = 0.01;
 const float CURTAIN_OUT = 0.06;
 // Falling sheets are drawn as a few segments along the arc water takes when it leaves an edge.
 const int CURTAIN_SEGMENTS = 3;
-const float CURTAIN_MAX_THROW = 0.45;
+const float CURTAIN_MAX_THROW = 0.3;
 const float GRAVITY = 9.81;
 
 // Heightfield vertices (OPEN set): 12 + 12 bit octahedral normal, 6 bit aeration (foam, falling water), wall flag, OPEN.

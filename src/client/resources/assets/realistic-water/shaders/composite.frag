@@ -7,7 +7,10 @@ layout(binding = 4) uniform sampler2D sceneDepth;
 layout(binding = 5) uniform sampler2D foamTex;
 layout(binding = 6) uniform sampler2D materialTex;
 layout(std430, binding = 7) readonly buffer ViewState { vec4 viewState; };
-layout(push_constant) uniform Push { float filterMat; } pc;
+// Material filter, then the heightfield ripple field (HfRipples): the drawn water level it lies on, normal gain, size (0 = off)
+// and its window's min texel (8 per block, wrapped world).
+layout(push_constant) uniform Push { float filterMat; float rippleY; float rippleGain; int rippleSize; ivec2 rippleMin; } pc;
+layout(std430, binding = 8) readonly buffer Ripples { uvec2 ripple[]; };
 layout(location = 0) out vec4 outColor;
 
 const float PI = 3.14159265;
@@ -155,6 +158,40 @@ float foamLace(vec2 p, float coverage, float footprint) {
     return mix(0.55, wall, detail);
 }
 
+float rippleAt(ivec2 w) {
+    ivec2 d = w - pc.rippleMin;
+    if (any(lessThan(d, ivec2(0))) || any(greaterThanEqual(d, ivec2(pc.rippleSize)))) {
+        return 0.0;
+    }
+    uvec2 e = ripple[uint(w.y & 255) * 256u + uint(w.x & 255)];
+    return e.y == (uint(w.x & 32767) | (uint(w.y & 32767) << 16)) ? uintBitsToFloat(e.x) : 0.0;
+}
+
+float rippleHeight(vec2 t) {
+    vec2 b = floor(t - 0.5);
+    vec2 f = t - 0.5 - b;
+    ivec2 i = ivec2(b);
+    return mix(mix(rippleAt(i), rippleAt(i + ivec2(1, 0)), f.x), mix(rippleAt(i + ivec2(0, 1)), rippleAt(i + ivec2(1, 1)), f.x), f.y);
+}
+
+// Slope (d height / dx, dz) of the player's ripples at a water point, faded where a pixel covers several ripple texels and
+// toward the edge of the field.
+vec2 rippleSlope(vec3 world, float footprint) {
+    if (pc.rippleSize == 0 || abs(world.y - pc.rippleY) > 0.6) {
+        return vec2(0.0);
+    }
+    vec2 t = world.xz * 8.0;
+    vec2 center = vec2(pc.rippleMin) + 0.5 * float(pc.rippleSize);
+    vec2 off = abs(t - center);
+    float fade = (1.0 - smoothstep(0.35, 0.5, max(off.x, off.y) / float(pc.rippleSize))) * (1.0 - smoothstep(0.15, 0.5, footprint));
+    if (fade <= 0.0) {
+        return vec2(0.0);
+    }
+    float gx = rippleHeight(t + vec2(1.0, 0.0)) - rippleHeight(t - vec2(1.0, 0.0));
+    float gz = rippleHeight(t + vec2(0.0, 1.0)) - rippleHeight(t - vec2(0.0, 1.0));
+    return vec2(gx, gz) * 4.0 * fade;
+}
+
 float noiseHash(vec2 c) {
     return float(hash(uint(int(c.x)) * 73856093u ^ uint(int(c.y)) * 19349663u)) * (1.0 / 4294967295.0);
 }
@@ -166,16 +203,26 @@ float valueNoise(vec2 p) {
     return mix(mix(noiseHash(i), noiseHash(i + vec2(1.0, 0.0)), f.x), mix(noiseHash(i + vec2(0.0, 1.0)), noiseHash(i + 1.0), f.x), f.y);
 }
 
+// Soft drifting foam patches; coverage grows with aer (more and larger patches), edges soften with distance.
+float foamPatches(vec2 p, float aer, float footprint) {
+    float t = G.simB.z;
+    float detail = 1.0 - smoothstep(0.05, 0.3, footprint);
+    float v = valueNoise(p * 1.3 + vec2(t * 0.11, -t * 0.07)) * 0.55
+        + valueNoise(p * 3.7 - vec2(t * 0.05, t * 0.13)) * 0.3
+        + mix(0.075, valueNoise(p * 9.0 + t * 0.2), detail) * 0.15;
+    float edge = 0.08 + 2.0 * footprint;
+    return smoothstep(1.0 - aer - edge, 1.0 - aer + edge, v);
+}
+
 // Aerated water (heightfield only, aer from the material id): falling sheets get streaks running down them and a bumpy normal
-// instead of the flat glass look; foam on the surface gets the same lace as the whitewater foam.
-vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, float aer) {
+// instead of the flat glass look; foam on the surface shows as soft patches. Ripples around the player bend the surface normal.
+vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, float aer, bool sheet) {
     vec3 P = viewPosAt(uv, fd);
     vec3 V = normalize(-P);
     n = dot(n, V) < 0.0 ? -n : n;
     float footprint = pixelFootprint(fd);
     vec3 nWorld = normalize(mat3(G.invView) * n);
     vec3 world = G.misc.yzw + (G.invView * vec4(P, 0.0)).xyz;
-    bool sheet = aer > 0.0 && abs(nWorld.y) < 0.7;
     float streaks = 0.5;
     if (sheet) {
         vec2 along = normalize(vec2(-nWorld.z, nWorld.x) + vec2(1.0e-4, 0.0));
@@ -194,6 +241,10 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     // Thin films lie flat; a falling sheet is thin too but must keep its own normal.
     float film = sheet ? 0.0 : 1.0 - smoothstep(0.02, max(G.shadeB.z, 0.03), vertical);
     n = normalize(mix(n, upV, film * 0.9));
+    if (!sheet) {
+        vec2 slope = rippleSlope(world, footprint) * pc.rippleGain;
+        n = normalize(n - mat3(G.view) * vec3(slope.x, 0.0, slope.y));
+    }
     vec3 wrinkled = rippleNormal(n, P, footprint);
     n = normalize(mix(n, wrinkled, smoothstep(0.0, 0.15, dot(wrinkled, V))));
 
@@ -221,7 +272,7 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     float F = 0.02 + 0.98 * pow(1.0 - clamp(dot(n, V), 0.0, 1.0), 5.0);
     vec3 color = mix(water, reflection, F) + sunSpecular(n, V, footprint);
     if (aer > 0.0) {
-        float cover = sheet ? aer * (0.35 + 0.9 * smoothstep(0.3, 0.75, streaks)) : aer * 1.2 * foamLace(world.xz, aer, footprint);
+        float cover = sheet ? aer * (0.35 + 0.9 * smoothstep(0.3, 0.75, streaks)) : 0.9 * foamPatches(world.xz, aer, footprint);
         color = mix(color, vec3(0.9, 0.94, 0.96) * mix(0.25, 1.0, ambient), clamp(cover, 0.0, 0.95));
     }
     return color;
@@ -293,8 +344,9 @@ void main() {
         float fog = G.scatter.w * G.misc.x;
         color = color * exp(-G.absorb.rgb * visible * G.misc.x) + deep * (1.0 - exp(-fog * visible));
     } else if (hasFluid) {
-        float aer = matTagged ? clamp(matId / 0.2, 0.0, 1.0) : 0.0;
-        color = lavaPass ? shadeAboveLava(uv, g.xyz, fd, ambient) : shadeAboveWater(uv, g.xyz, fd, sceneDist, ambient, aer);
+        bool sheet = matTagged && matId > 0.115;
+        float aer = matTagged ? clamp(sheet ? (matId - 0.12) / 0.1 : matId / 0.1, 0.0, 1.0) : 0.0;
+        color = lavaPass ? shadeAboveLava(uv, g.xyz, fd, ambient) : shadeAboveWater(uv, g.xyz, fd, sceneDist, ambient, aer, sheet);
         vec4 clip = G.proj * vec4(viewPosAt(uv, fd), 1.0);
         outDepth = clip.z / clip.w;
     }
