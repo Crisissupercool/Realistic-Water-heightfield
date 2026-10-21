@@ -7,6 +7,8 @@ public final class HfCpuTest {
 	static final int C = 2;
 	static final int L = 4;
 	static int failures;
+	/** Mirrors WaterSettings.hfMinFlowDepth: thinner water does not flow out (it stays as a film), so spreading stops. */
+	static float MIN_FLOW = 0.03F;
 
 	interface Solid {
 		boolean at(int x, int y, int z);
@@ -43,7 +45,7 @@ public final class HfCpuTest {
 			for (int s = 0; s < t.spans; s++) {
 				int base = s * 8;
 				float hA = h[s];
-				if (!t.valid(s) || hA <= 0.0F) {
+				if (!t.valid(s) || hA <= MIN_FLOW) {
 					for (int k = 0; k < 8; k++) {
 						flux[base + k] = 0.0F;
 					}
@@ -335,6 +337,151 @@ public final class HfCpuTest {
 			check(stable, "no NaN or blow-up");
 			check(t.valid(tunnel) && t.floor[tunnel] == 55.0F, "tunnel span found under the river");
 			check(sim.h[tunnel] == 0.0F, "tunnel stays dry");
+		}
+
+
+		System.out.println("Tiles: identical to the dense solver (48x48 blocks = 3x3 tiles, room and dam break across tile borders)");
+		{
+			Solid solid = (x, y, z) -> {
+				if (y < 64) {
+					return true;
+				}
+				boolean wallX = (x == 10 || x == 20) && z >= 10 && z <= 20;
+				boolean wallZ = (z == 10 || z == 20) && x >= 10 && x <= 20;
+				boolean roof = y == 68 && x >= 10 && x <= 20 && z >= 10 && z <= 20;
+				boolean door = x == 10 && z == 15 && y <= 65;
+				return y <= 68 && ((wallX || wallZ) && y <= 67 && !door || roof);
+			};
+			HfTopology dense = HfTopology.build(voxels(solid), 0, 0, 48, 48, 40, 96, C, L, 0.25F);
+			float[] h0 = flood(dense, 48, 32, 31, 7, 66.0F, 64.0F);
+			for (int cz = 0; cz < dense.nz; cz++) {
+				for (int cx = 0; cx < 8 * C; cx++) {
+					int s = dense.span(cx, cz, 0);
+					if (dense.valid(s) && dense.floor[s] == 64.0F) {
+						h0[s] = 1.5F;
+					}
+				}
+			}
+			HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 16);
+			HfTiledSim tiled = new HfTiledSim(grid, voxels(solid));
+			tiled.sleepRate = -1.0F;
+			tiled.filmRate = -1.0F;
+			tiled.maxNewTiles = 0;
+			int tn = grid.tn;
+			for (int tz = 0; tz < 3; tz++) {
+				for (int tx = 0; tx < 3; tx++) {
+					int ftx = tx;
+					int ftz = tz;
+					tiled.addTile(tx, tz, i -> {
+						int col = i / L;
+						return h0[dense.span(ftx * tn + col % tn, ftz * tn + col / tn, i % L)];
+					});
+				}
+			}
+			boolean topoSame = true;
+			for (int cz = 0; cz < dense.nz && topoSame; cz++) {
+				for (int cx = 0; cx < dense.nx; cx++) {
+					for (int l = 0; l < L; l++) {
+						int a = dense.span(cx, cz, l);
+						int b = grid.span(grid.slotAt(cx / tn, cz / tn), cx % tn, cz % tn, l);
+						if (dense.floor[a] != tiled.floor[b] || dense.ceil[a] != tiled.ceil[b]) {
+							topoSame = false;
+						}
+						for (int k = 0; k < 8 && dense.valid(a); k++) {
+							int la = dense.links[a * 8 + k];
+							int lb = HfTileGrid.link(tiled.links, b, k);
+							boolean edge = cx + HfTileGrid.DX[k >> 1] < 0 || cz + HfTileGrid.DZ[k >> 1] < 0
+								|| cx + HfTileGrid.DX[k >> 1] >= dense.nx || cz + HfTileGrid.DZ[k >> 1] >= dense.nz;
+							if (edge) {
+								continue;
+							}
+							if ((la == -1) != (lb == HfTileGrid.LINK_NONE) || la != -1 && ((la >>> 3) % L != lb >> 3 || (la & 7) != (lb & 7))) {
+								topoSame = false;
+							}
+						}
+					}
+				}
+			}
+			check(topoSame, "spans and links match the dense build, including across tile borders");
+			Sim sim = new Sim(dense, h0);
+			double v0 = sim.volume();
+			float maxDiff = 0.0F;
+			for (int f = 0; f < 600; f++) {
+				sim.run(1);
+				tiled.frame();
+			}
+			for (int cz = 0; cz < dense.nz; cz++) {
+				for (int cx = 0; cx < dense.nx; cx++) {
+					for (int l = 0; l < L; l++) {
+						int a = dense.span(cx, cz, l);
+						int b = grid.span(grid.slotAt(cx / tn, cz / tn), cx % tn, cz % tn, l);
+						if (dense.valid(a)) {
+							maxDiff = Math.max(maxDiff, Math.abs(sim.h[a] - tiled.h[b]));
+						}
+					}
+				}
+			}
+			check(maxDiff < 1.0e-5F, String.format("after 10 s every depth matches the dense solver (max difference %.2e)", maxDiff));
+			check(Math.abs(tiled.volume() - v0) / v0 < 1.0e-5, String.format("volume %.3f -> %.3f", v0, tiled.volume()));
+			int inside = grid.span(grid.slotAt(0, 0), 15 * C, 15 * C, 1);
+			check(tiled.h[inside] > 0.1F, "water crossed the tile border at x=16 into the room: depth " + tiled.h[inside]);
+		}
+
+		System.out.println("Tiles: water grows into new tiles (starts as 1 tile, column next to its +x border)");
+		{
+			Solid solid = (x, y, z) -> y < 64;
+			HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 64);
+			HfTiledSim tiled = new HfTiledSim(grid, voxels(solid));
+			int tn = grid.tn;
+			tiled.addTile(0, 0, i -> {
+				int col = i / L;
+				double x = (col % tn + 0.5) / C - 12.0;
+				double z = (col / tn + 0.5) / C - 8.0;
+				return i % L == 0 && x * x + z * z < 16.0 ? 2.0 : 0.0;
+			});
+			double v0 = tiled.volume();
+			for (int f = 0; f < 1800; f++) {
+				tiled.frame();
+			}
+			double drift = Math.abs(tiled.volume() - v0) / v0 * 100.0;
+			check(grid.count > 1, "tiles allocated as the water spread: " + grid.count);
+			check(grid.slotAt(1, 0) >= 0 && tiled.h[grid.span(grid.slotAt(1, 0), 4, tn / 2, 0)] > 0.0F, "water flowed into the new +x tile");
+			check(drift < 0.1, String.format("volume drift %.4f%%", drift));
+		}
+
+		System.out.println("Tiles: settled water sleeps tile by tile, volume stays exact (open flat ground, wall at x=20)");
+		{
+			Solid solid = (x, y, z) -> y < 64 || x == 20 && y < 66;
+			HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 64);
+			HfTiledSim tiled = new HfTiledSim(grid, voxels(solid));
+			for (int tz = 0; tz < 3; tz++) {
+				for (int tx = 0; tx < 3; tx++) {
+					int ftx = tx;
+					int ftz = tz;
+					tiled.addTile(tx, tz, i -> {
+						int col = i / L;
+						double x = ftx * 16 + (col % grid.tn + 0.5) / C - 10.0;
+						double z = ftz * 16 + (col / grid.tn + 0.5) / C - 24.0;
+						return i % L == 0 && x * x + z * z < 36.0 ? 3.0 : 0.0;
+					});
+				}
+			}
+			double v0 = tiled.volume();
+			int asleepAt = -1;
+			int minActive = Integer.MAX_VALUE;
+			// On open flat ground the edge keeps creeping outward as a thin film for minutes; film tiles sleep at a relaxed rate.
+			for (int f = 0; f < 400 * 60; f++) {
+				tiled.frame();
+				minActive = Math.min(minActive, grid.activeList.length);
+				if (grid.activeList.length == 0) {
+					asleepAt = f / 60;
+					break;
+				}
+			}
+			double drift = Math.abs(tiled.volume() - v0) / v0 * 100.0;
+			check(asleepAt >= 0, "every tile asleep after " + asleepAt + " s (" + grid.count + " tiles)");
+			check(drift < 0.1, String.format("volume drift %.4f%%", drift));
+			check(tiled.frame() == 0, "no solver steps once asleep");
 		}
 
 		System.out.println(failures == 0 ? "ALL PASSED" : failures + " FAILED");

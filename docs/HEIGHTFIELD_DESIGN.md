@@ -1,7 +1,7 @@
 # Multi-layer heightfield water: design
 
-Status: milestone 1 code written (2026-10-21), not yet run in game. The topology builder and the solver math pass the CPU
-tests in `tools/hf-cpu-test`; the shaders compile with glslang. See "Milestone 1: what exists" at the end.
+Status (2026-10-21): milestone 1 runs in game (sections 10-11). Milestone 3, sparse tiles, is written and passes the CPU tests
+but has not been run in game yet (section 12).
 
 ## Goal
 
@@ -275,3 +275,29 @@ So about 8.5 ms to draw and 6.9 ms to simulate, while the water sat still. Volum
 - **Visuals:** smooth per-corner normals (no facets), and the ripple detail now fades by grazing angle with a stricter footprint, which removed the moire rings.
 
 Not yet done: half-resolution thickness/composite passes, and moving the topology build (236 ms for the radius-60 domain) off the main thread.
+
+## 12. Milestone 3: sparse tiles (as built)
+
+The dense rectangle is gone. Water lives in 16x16-block tiles (32x32 columns x 4 layers = 4,096 spans at the defaults), aligned with
+chunks, in a fixed GPU pool of `hfMaxTiles` slots (256 by default, about 54 MB of solver data plus 31 MB of mesh).
+
+* **`HfTileGrid`** (pure Java, shared with the CPU tests): tile coordinate to slot map, neighbor table, per-tile stats, sleep timers,
+  growth requests and the per-frame dispatch set.
+* **Topology per tile** is built with a one-block halo, so links across a tile border come out exactly as the neighbor computes them.
+  Links are one byte (`targetLayer << 3 | reverseSlot`); the target column follows from the link's direction. This differs from
+  section 3's plan (global span indices): nothing has to be patched when a neighbor tile appears later.
+* **Dispatch set** = awake tiles plus their neighbors. Links into tiles outside the set act as walls, and the fluxes of tiles that leave
+  the set are zeroed, so the volume stays exact while most tiles sleep.
+* **Growth:** the depth pass flags water at a tile border where no tile exists yet; the CPU builds up to `hfMaxNewTilesPerFrame` (2)
+  tiles per frame there. When the pool is full, the border stays a wall.
+* **Minimum flow depth:** water thinner than `hfMinFlowDepth` (0.03 blocks) no longer flows out of a cell. Without it a flood on open
+  flat ground spreads forever as an ever-thinner film and keeps allocating tiles.
+* **Film sleeping:** tiles whose deepest water is under `hfFilmDepth` (0.1) may sleep while the surface still moves up to
+  `hfFilmSleepRate` (0.02 blocks/s), because a creeping film keeps the strict 0.002 limit from ever being met.
+
+CPU tests (`tools/hf-cpu-test`): the tiled solver gives bit-identical depths to the dense solver over 3x3 tiles with a room and a dam
+break across tile borders; water grows from 1 tile into new ones with 0.0000% volume drift; on open flat ground every tile falls
+asleep (after about 4 minutes for that test) with 0.0000% drift.
+
+Not done yet: freeing tiles that dried out, building growth tiles off the main thread, per-tile mesh caching (the whole mesh is rebuilt
+when any tile moves), and coarser far-away tiles for floods larger than the pool.

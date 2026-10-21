@@ -137,7 +137,9 @@ public final class WaterSettings {
 	public static int hfCellsPerBlock = 2;
 	public static int hfLayers = 4;
 	public static float hfMinOpening = 0.25F;
-	public static int hfMaxDomainBlocks = 256;
+	/** Size of the tile pool (16x16 blocks each, about 0.3 MB of GPU memory per tile at the defaults); read when a flood starts. */
+	public static int hfMaxTiles = 256;
+	public static int hfMaxNewTilesPerFrame = 2;
 	public static float hfCfl = 0.3F;
 	public static float hfDamping = 0.995F;
 	public static float hfFriction = 0.2F;
@@ -147,6 +149,11 @@ public final class WaterSettings {
 	/** When the surface everywhere rises or falls slower than this (blocks/s) for {@link #hfSleepSeconds}, the heightfield stops simulating until woken. */
 	public static float hfSleepRate = 0.002F;
 	public static float hfSleepSeconds = 1.0F;
+	/** Tiles whose deepest water is below hfFilmDepth only hold a thin film and may sleep while still creeping slower than this. */
+	public static float hfFilmDepth = 0.1F;
+	public static float hfFilmSleepRate = 0.02F;
+	/** Water thinner than this does not flow out of a cell, so a flood stops spreading once its edge is this thin. */
+	public static float hfMinFlowDepth = 0.03F;
 
 	public static String ffmpeg = "";
 	public static boolean renderFreezeWorld = true;

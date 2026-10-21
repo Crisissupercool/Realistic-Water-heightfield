@@ -9,10 +9,9 @@
 layout(local_size_x = 256) in;
 layout(std430, binding = 1) readonly buffer Geo { vec2 geo[]; };
 layout(std430, binding = 2) readonly buffer Depth { float depth[]; };
-layout(std430, binding = 3) readonly buffer Links { uint links[]; };
-layout(std430, binding = 4) writeonly buffer Verts { vec4 verts[]; };
-layout(std430, binding = 5) writeonly buffer Quads { uvec4 quads[]; };
-layout(std430, binding = 6) buffer MeshCounters { uint meshCounters[]; };
+layout(std430, binding = 9) writeonly buffer Verts { vec4 verts[]; };
+layout(std430, binding = 10) writeonly buffer Quads { uvec4 quads[]; };
+layout(std430, binding = 11) buffer MeshCounters { uint meshCounters[]; };
 
 #define HF_CELL hp.p0.z
 #define HF_ORIGIN_Y hp.p0.w
@@ -34,11 +33,16 @@ float surfaceOf(uint t) {
 uint pick(uint s, int dir) {
     uint fallback = HF_NONE;
     for (int j = 0; j < 2; j++) {
-        uint l = links[s * HF_LINKS + uint(dir * 2 + j)];
-        if (l == HF_NONE) {
+        uint k = uint(dir * 2 + j);
+        uint l = hfLink(s, k);
+        if (l == HF_LINK_NONE) {
             continue;
         }
-        uint t = hfTarget(l);
+        // Sleeping tiles still show their water, so neighbors resolve by existence, not by activity.
+        uint t = hfNeighbor(s, k, l, false);
+        if (t == HF_NONE) {
+            continue;
+        }
         if (wet(t)) {
             return t;
         }
@@ -110,17 +114,18 @@ void emit(uint q, vec3 a, vec3 b, vec3 c, vec3 d, vec3 normal, bool wall) {
 }
 
 void main() {
-    uint s = GID_U;
-    if (s >= uint(HF_SPANS)) {
+    uint s = hfSpanOf(GID_U, false);
+    if (s == HF_NONE) {
         return;
     }
     vec2 g = geo[s];
     if (!hfValid(g) || !wet(s)) {
         return;
     }
-    uint column = s / uint(HF_LAYERS);
-    int cx = int(column % uint(HF_NX));
-    int cz = int(column / uint(HF_NX));
+    ivec2 tile = tileInfo[(s / uint(HF_TILE_SPANS)) * 2u + 1u].xy;
+    ivec2 local = hfColumn(s);
+    int cx = tile.x * HF_TN + local.x;
+    int cz = tile.y * HF_TN + local.y;
     float fl = g.x;
     float ce = g.y;
     float top = surfaceOf(s);

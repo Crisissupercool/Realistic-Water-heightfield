@@ -5,22 +5,23 @@ layout(local_size_x = 256) in;
 layout(std430, binding = 1) readonly buffer Geo { vec2 geo[]; };
 layout(std430, binding = 2) readonly buffer Depth { float depth[]; };
 layout(std430, binding = 3) buffer Flux { float flux[]; };
-layout(std430, binding = 4) readonly buffer Links { uint links[]; };
 
 #define HF_DT hp.p0.x
 #define HF_G hp.p0.y
 #define HF_CELL hp.p0.z
 #define HF_KEEP hp.p0.w
+// Water thinner than this does not flow out: it stays as a film, so floods stop spreading over open ground.
+#define HF_MIN_FLOW hp.p1.z
 
 void main() {
-    uint s = GID_U;
-    if (s >= uint(HF_SPANS)) {
+    uint s = hfSpanOf(GID_U, true);
+    if (s == HF_NONE) {
         return;
     }
     uint base = s * HF_LINKS;
     vec2 a = geo[s];
     float hA = depth[s];
-    if (!hfValid(a) || hA <= 0.0) {
+    if (!hfValid(a) || hA <= HF_MIN_FLOW) {
         for (uint k = 0u; k < HF_LINKS; k++) {
             flux[base + k] = 0.0;
         }
@@ -31,11 +32,14 @@ void main() {
     float total = 0.0;
     for (uint k = 0u; k < HF_LINKS; k++) {
         outflow[k] = 0.0;
-        uint l = links[base + k];
-        if (l == HF_NONE) {
+        uint l = hfLink(s, k);
+        if (l == HF_LINK_NONE) {
             continue;
         }
-        uint t = hfTarget(l);
+        uint t = hfNeighbor(s, k, l, true);
+        if (t == HF_NONE) {
+            continue;
+        }
         vec2 b = geo[t];
         float headB = b.x + depth[t];
         // Only water inside the shared opening can move.

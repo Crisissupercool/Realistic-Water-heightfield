@@ -1,35 +1,68 @@
 #version 450
 // Pass 2 of the virtual-pipe step: apply in- and outflow to each span's depth, and reduce per-group stats
-// (volume, max depth, max speed, max surface rate) for mass checks, the CFL time step and sleeping.
+// (volume, max depth, max speed, max surface rate, border-growth bits) for mass checks, the CFL step, sleeping and tile growth.
 #include "hf_common.glsl"
 layout(local_size_x = 256) in;
 layout(std430, binding = 1) readonly buffer Geo { vec2 geo[]; };
 layout(std430, binding = 2) buffer Depth { float depth[]; };
 layout(std430, binding = 3) readonly buffer Flux { float flux[]; };
-layout(std430, binding = 4) readonly buffer Links { uint links[]; };
-layout(std430, binding = 5) writeonly buffer Stats { vec4 stats[]; };
+// Two vec4 per (slot, group of 256 spans): (volume, max depth, max speed, max rate), (border bits as uint, 0, 0, 0).
+layout(std430, binding = 8) writeonly buffer Stats { vec4 stats[]; };
 
 #define HF_DT hp.p0.x
 #define HF_CELL hp.p0.z
 #define HF_MAX_SPEED hp.p1.x
+// Same as HF_MIN_FLOW in hf_flux.comp: only water that can still flow out asks for a new tile.
+#define HF_GROW_DEPTH hp.p1.z
 
 shared vec4 reduction[256];
+shared uint borderBits;
+
+// Bit d when span s holds water at its tile's border in direction d, has a link that way, and no tile exists there yet.
+uint growthBits(uint s, float h) {
+    if (h <= HF_GROW_DEPTH) {
+        return 0u;
+    }
+    ivec2 c = hfColumn(s);
+    uint slot = s / uint(HF_TILE_SPANS);
+    uint bits = 0u;
+    for (uint d = 0u; d < 4u; d++) {
+        ivec2 n = c + ivec2(HF_DX[d], HF_DZ[d]);
+        bool outside = n.x < 0 || n.y < 0 || n.x >= HF_TN || n.y >= HF_TN;
+        if (!outside || tileInfo[slot * 2u][d] >= 0) {
+            continue;
+        }
+        if (hfLink(s, d * 2u) != HF_LINK_NONE || hfLink(s, d * 2u + 1u) != HF_LINK_NONE) {
+            bits |= 1u << d;
+        }
+    }
+    return bits;
+}
 
 void main() {
-    uint s = GID_U;
+    uint lid = gl_LocalInvocationIndex;
+    if (lid == 0u) {
+        borderBits = 0u;
+    }
+    barrier();
+    uint s = hfSpanOf(GID_U, true);
     vec4 mine = vec4(0.0);
-    if (s < uint(HF_SPANS) && hfValid(geo[s])) {
+    if (s != HF_NONE && hfValid(geo[s])) {
         uint base = s * HF_LINKS;
         float inflow = 0.0;
         float outflow = 0.0;
         float peak = 0.0;
         for (uint k = 0u; k < HF_LINKS; k++) {
-            uint l = links[base + k];
-            if (l == HF_NONE) {
+            uint l = hfLink(s, k);
+            if (l == HF_LINK_NONE) {
+                continue;
+            }
+            uint t = hfNeighbor(s, k, l, true);
+            if (t == HF_NONE) {
                 continue;
             }
             float o = flux[base + k];
-            float i = flux[hfTarget(l) * HF_LINKS + hfRev(l)];
+            float i = flux[t * HF_LINKS + hfRev(l)];
             outflow += o;
             inflow += i;
             peak = max(peak, max(o, i));
@@ -40,8 +73,11 @@ void main() {
         // Thin films give meaningless speeds (flux / tiny depth), so they are left out of the CFL estimate.
         float speed = h > 0.05 ? min(peak / (HF_CELL * h), HF_MAX_SPEED) : 0.0;
         mine = vec4(h * HF_CELL * HF_CELL, h, speed, abs(h - old) / HF_DT);
+        uint bits = growthBits(s, h);
+        if (bits != 0u) {
+            atomicOr(borderBits, bits);
+        }
     }
-    uint lid = gl_LocalInvocationIndex;
     reduction[lid] = mine;
     barrier();
     for (uint stride = 128u; stride > 0u; stride >>= 1) {
@@ -52,7 +88,13 @@ void main() {
         }
         barrier();
     }
-    if (lid == 0u) {
-        stats[GROUP_ID] = reduction[0];
+    // Every group lies inside one tile (tileSpans is a multiple of 256), so stats are kept per slot and survive while it sleeps.
+    uint first = GROUP_ID * 256u;
+    uint idx = first / uint(HF_TILE_SPANS);
+    if (lid == 0u && idx < uint(HF_LIST_COUNT)) {
+        uint perTile = uint(HF_TILE_SPANS) / 256u;
+        uint entry = tileList[idx] * perTile + (first % uint(HF_TILE_SPANS)) / 256u;
+        stats[entry * 2u] = reduction[0];
+        stats[entry * 2u + 1u] = vec4(uintBitsToFloat(borderBits), 0.0, 0.0, 0.0);
     }
 }
