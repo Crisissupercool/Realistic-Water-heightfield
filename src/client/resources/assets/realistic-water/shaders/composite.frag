@@ -40,28 +40,61 @@ vec3 skyColor(vec3 dirWorld) {
     return horizon * mix(0.9, 0.35, smoothstep(0.0, 0.35, -t));
 }
 
+bool projectToScreen(vec3 pos, out vec2 suv) {
+    vec4 clip = G.proj * vec4(pos, 1.0);
+    if (clip.w <= 0.0) {
+        return false;
+    }
+    suv = clip.xy / clip.w * 0.5 + 0.5;
+    return all(greaterThanEqual(suv, vec2(0.0))) && all(lessThanEqual(suv, vec2(1.0)));
+}
+
+// Screen-space reflection. The coarse march finds the first step behind the scene, then a binary search pins the crossing
+// down: without it a ray that overshoots by up to a step "hits" whatever lies there, which drew jagged teeth of the cliff
+// into the water next to it and made reflections jump with every small camera move. A crossing far behind the surface
+// (the ray passed behind an object) is no hit; rays heading back toward the camera and long rays fade out.
 vec3 traceReflection(vec3 origin, vec3 R, out float hit) {
     hit = 0.0;
     vec3 pos = origin;
+    vec3 last = origin;
     float stepLen = 0.15;
+    vec2 suv;
     for (int i = 0; i < 48; i++) {
+        last = pos;
         pos += R * stepLen;
-        stepLen *= 1.1;
-        vec4 clip = G.proj * vec4(pos, 1.0);
-        if (clip.w <= 0.0) {
-            break;
-        }
-        vec2 suv = clip.xy / clip.w * 0.5 + 0.5;
-        if (any(lessThan(suv, vec2(0.0))) || any(greaterThan(suv, vec2(1.0)))) {
+        if (!projectToScreen(pos, suv)) {
             break;
         }
         float sceneDist = linearDepth(texture(sceneDepth, suv).r);
-        float rayDist = -pos.z;
-        if (rayDist > sceneDist && rayDist - sceneDist < stepLen * 2.0 + 0.25) {
+        if (-pos.z > sceneDist) {
+            vec3 a = last;
+            vec3 b = pos;
+            for (int j = 0; j < 6; j++) {
+                vec3 m = 0.5 * (a + b);
+                vec2 muv;
+                if (!projectToScreen(m, muv)) {
+                    break;
+                }
+                if (-m.z > linearDepth(texture(sceneDepth, muv).r)) {
+                    b = m;
+                } else {
+                    a = m;
+                }
+            }
+            if (!projectToScreen(b, suv)) {
+                break;
+            }
+            float behind = -b.z - linearDepth(texture(sceneDepth, suv).r);
+            if (behind > 0.35 + 0.05 * -b.z) {
+                break;
+            }
             vec2 edge = smoothstep(vec2(0.0), vec2(0.08), suv) * (1.0 - smoothstep(vec2(0.92), vec2(1.0), suv));
-            hit = edge.x * edge.y;
+            float travel = 1.0 - smoothstep(0.6, 1.0, float(i) / 48.0);
+            float away = 1.0 - smoothstep(0.1, 0.5, R.z);
+            hit = edge.x * edge.y * travel * away;
             return texture(sceneColor, suv).rgb;
         }
+        stepLen *= 1.1;
     }
     return vec3(0.0);
 }
@@ -251,8 +284,14 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     n = normalize(mix(n, wrinkled, smoothstep(0.0, 0.15, dot(wrinkled, V))));
 
     // The player's ripples bend reflections fully but refraction only a little: at full strength the riverbed would swim.
+    // Refraction shifts the scene behind by how far the normal leans away from vertical. Using the whole view-space normal
+    // shifted flat water too, by an amount that changes with the view angle and the water thickness under each pixel, so up
+    // close the riverbed slid around with every step and every head bob; the shift is also capped on screen.
     vec3 nRefract = normalize(n + 0.7 * tilt);
-    vec2 offset = nRefract.xy * G.waterA.z * clamp(thickness, 0.0, 2.0) / max(fd, 1.0);
+    vec2 bend = (nRefract - upV * dot(nRefract, upV)).xy;
+    vec2 offset = bend * G.waterA.z * clamp(thickness, 0.0, 2.0) / max(fd, 2.0);
+    float shift = length(offset);
+    offset *= shift > 0.03 ? 0.03 / shift : 1.0;
     vec2 ruv = clamp(uv + offset, vec2(0.0), vec2(1.0));
     float refrDist = linearDepth(texture(sceneDepth, ruv).r);
     float path = max(texture(thicknessTex, ruv).r, 0.0);
