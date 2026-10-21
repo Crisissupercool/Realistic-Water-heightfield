@@ -897,8 +897,7 @@ public final class WaterWorld {
 		int[] dirty = grid.takeDirty();
 		int[][] grow = running ? grid.growthRequests(Math.max(0, WaterSettings.hfMaxNewTilesPerFrame)) : new int[0][];
 		if (level != null && (dirty.length > 0 || grow.length > 0)) {
-			SolidCache solids = new SolidCache(grid.cpb, false);
-			HfTopology.Voxels voxels = (bx, by, bz) -> solids.blockVoxels(level, bx, by, bz);
+			HfTopology.Voxels voxels = HfWorld.voxels(level, grid);
 			// All dirty tiles in one frame, so both sides of a tile border always use the same topology.
 			for (int tile : dirty) {
 				// Tiles line up with chunks; an unloaded chunk would read as solid and the remap would have nowhere to put the water.
@@ -909,7 +908,8 @@ public final class WaterWorld {
 				}
 			}
 			for (int[] t : grow) {
-				hf.addTile(t[0], t[1], grid.build(voxels, t[0], t[1]), null);
+				// Built from the blocks: after a reload the neighbor chunk may hold water that was not imported yet.
+				this.hfWorld.addTileFromBlocks(level, hf, t[0], t[1], null);
 			}
 		}
 		if (running) {

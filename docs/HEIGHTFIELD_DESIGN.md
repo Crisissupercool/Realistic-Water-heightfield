@@ -361,3 +361,10 @@ replaceable by vanilla water, swimmable, and saved with the world. The heightfie
 Block writes go through the integrated server (singleplayer or LAN host, operator check on the server side). Other clients only show
 the heightfield. CPU tests: blocks -> spans -> blocks round trip is exact, a pool fills or drains to a fixed edge level, a spring fills
 its basin to its top and stops, inject adds exactly depth x cell area.
+
+**Fixes after the first reload test.** Water shrank or vanished after leaving and rejoining. Two causes: (1) tile growth created dry
+tiles over neighbor chunks before those chunks were scanned, so their water was never imported and the block sync then deleted it;
+growth now builds tiles from the blocks, and never over unloaded chunks. (2) The heightfield treated vanilla water as empty space,
+so captured water leaked into the surrounding sea (invisibly, rendered under the vanilla water). Every fluid that is not realistic
+water now counts as solid for the heightfield; capture opens exactly the cells it converts (and rebuilds tiles that existed before).
+Edge reservoirs are not saved; after a reload the sea boundary is a wall, which holds the captured water at its level.

@@ -96,9 +96,27 @@ final class HfWorld {
 		return y >= g.yMin && y < g.yMax;
 	}
 
-	private static HfTopology.Voxels voxels(ClientLevel level, HfTileGrid g) {
+	static HfTopology.Voxels voxels(ClientLevel level, HfTileGrid g) {
+		return voxels(level, g, null);
+	}
+
+	/**
+	 * Terrain for the heightfield. Any fluid that is not realistic water (vanilla water, waterlogged blocks, kelp, lava) counts as
+	 * solid: it is not the heightfield's water, so the heightfield must neither flow into it nor lose its own water there. Positions
+	 * in {@code open} (vanilla water being captured right now) count as open.
+	 */
+	static HfTopology.Voxels voxels(ClientLevel level, HfTileGrid g, @Nullable Long2IntOpenHashMap open) {
 		SolidCache solids = new SolidCache(g.cpb, false);
-		return (bx, by, bz) -> solids.blockVoxels(level, bx, by, bz);
+		long full = g.cpb * g.cpb * g.cpb >= 64 ? -1L : (1L << (g.cpb * g.cpb * g.cpb)) - 1L;
+		BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
+		return (bx, by, bz) -> {
+			BlockState state = level.getBlockState(p.set(bx, by, bz));
+			if (!state.getFluidState().isEmpty() && state.getBlock() != ModContent.REALISTIC_WATER_BLOCK
+				&& (open == null || !open.containsKey(BlockPos.asLong(bx, by, bz)))) {
+				return full;
+			}
+			return solids.blockVoxels(level, bx, by, bz);
+		};
 	}
 
 	/** Realistic water amount at a block (springs count as full), 0 for anything else. */
@@ -108,9 +126,15 @@ final class HfWorld {
 	}
 
 	/** Adds a tile built from the current terrain, filled from the realistic water blocks in it plus {@code extra}. */
-	private int addTileFromBlocks(ClientLevel level, HfDomain hf, int tx, int tz, @Nullable Long2IntOpenHashMap extra) {
+	int addTileFromBlocks(ClientLevel level, HfDomain hf, int tx, int tz, @Nullable Long2IntOpenHashMap extra) {
 		HfTileGrid g = hf.grid;
-		HfTileGrid.Tile t = g.build(voxels(level, g), tx, tz);
+		int cx = Math.floorDiv(g.originX, 16) + tx;
+		int cz = Math.floorDiv(g.originZ, 16) + tz;
+		if (!level.hasChunk(cx, cz)) {
+			// An unloaded chunk would read as solid and dry; its water would then be overwritten by the block sync.
+			return HfTileGrid.NONE;
+		}
+		HfTileGrid.Tile t = g.build(voxels(level, g, extra), tx, tz);
 		float[] depth = HfBlocks.depthFromBlocks(g, tx, tz, t.geo, t.layersUsed, (x, y, z) -> {
 			if (extra != null) {
 				int e = extra.getOrDefault(BlockPos.asLong(x, y, z), 0);
@@ -400,6 +424,10 @@ final class HfWorld {
 		for (int[] t : tiles.values()) {
 			int tile = g.slotAt(t[0], t[1]);
 			boolean fresh = tile == HfTileGrid.NONE;
+			if (!fresh) {
+				// The tile treated this vanilla water as solid; rebuild it with the captured cells open so the water has room.
+				hf.rebuildTile(tile, g.build(voxels(level, g, water), t[0], t[1]));
+			}
 			if (fresh) {
 				tile = this.addTileFromBlocks(level, hf, t[0], t[1], water);
 				if (tile == HfTileGrid.NONE) {
