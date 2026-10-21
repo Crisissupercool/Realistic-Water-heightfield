@@ -646,7 +646,9 @@ final class HfWorld {
 					double perimeter = 2.0 * Math.PI * (width * 0.5 + 0.2);
 					plunge = (float) Math.clamp(-4.0 * vy * width * width / (perimeter * Math.max(sub, 0.3)), -8.0, 8.0);
 				}
-				if (Math.hypot(vx, vz) > 0.2 || Math.abs(plunge) > 0.1) {
+				// Only real motion wakes the solver: treading water bobs a little all the time, and the small waves that makes are
+				// the ripple layer's job (HfRipples), not worth keeping a whole lake simulated.
+				if (Math.hypot(vx, vz) > 0.5 || Math.abs(plunge) > 1.0) {
 					int[] at = hf.grid.locate(player.getX(), player.getZ());
 					if (at != null) {
 						hf.grid.quiet[at[0]] = 0.0F;

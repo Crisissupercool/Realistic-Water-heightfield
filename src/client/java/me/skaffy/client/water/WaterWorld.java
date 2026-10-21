@@ -17,6 +17,7 @@ import me.skaffy.ModContent;
 import me.skaffy.RealisticWater;
 import me.skaffy.block.RealisticSandBlock;
 import me.skaffy.client.vk.Desc;
+import me.skaffy.client.vk.GpuTimer;
 import me.skaffy.client.vk.Vk;
 import me.skaffy.client.vk.VkBuf;
 import me.skaffy.block.RealisticWaterBlock;
@@ -140,6 +141,7 @@ public final class WaterWorld {
 	private @Nullable SolidCache sandSolids;
 	private @Nullable WaterRenderer renderer;
 	private @Nullable HfRipples ripples;
+	private @Nullable GpuTimer gpuTimer;
 	private @Nullable SandRenderer sandRenderer;
 	private @Nullable VkBuf uboRing;
 	private @Nullable VkBuf frameView;
@@ -733,7 +735,12 @@ public final class WaterWorld {
 			return;
 		}
 		try {
+			long t0 = System.nanoTime();
+			if (this.lastFrameNanos != 0L) {
+				this.frameIntervalMs = ema(this.frameIntervalMs, (t0 - this.lastFrameNanos) / 1.0e6);
+			}
 			this.renderFrameUnsafe(mc, mc.level);
+			this.cpuFrameMs = ema(this.cpuFrameMs, (System.nanoTime() - t0) / 1.0e6);
 		} catch (RuntimeException e) {
 			this.failed = true;
 			RealisticWater.LOGGER.error("Realistic Water frame failed; disabling the simulation", e);
@@ -874,6 +881,10 @@ public final class WaterWorld {
 		VkCommandBuffer cb = Vk.encoder().allocateAndBeginTransientCommandBuffer();
 		Vk.flushTransitions(cb);
 		Vk.barrier(cb);
+		if (this.gpuTimer == null) {
+			this.gpuTimer = new GpuTimer();
+		}
+		this.gpuTimer.begin(cb);
 		this.frameView.fill(cb, 0);
 		Vk.barrier(cb);
 		boolean readFill = !this.paused;
@@ -897,9 +908,12 @@ public final class WaterWorld {
 			r.record(cb, ubo, regionSteps, numSources, this.frameCounter, this.frameView, removals.size());
 			(r.material.isGranular() ? sandBodies : waterBodies).add(new WaterRenderer.Body(r, ubo));
 		}
+		this.gpuTimer.mark(cb, "particles");
 		if (this.heightfield != null) {
 			// Block sync arrivals first: finishing a release closes the heightfield.
+			long t0 = System.nanoTime();
 			this.hfWorld.receive(level, this.heightfield);
+			this.cpuSyncMs = ema(this.cpuSyncMs, (System.nanoTime() - t0) / 1.0e6);
 		}
 		if (this.heightfield != null) {
 			waterBodies.add(this.recordHeightfield(mc, cb, this.heightfield, frameDt, cam, width, height));
@@ -908,9 +922,11 @@ public final class WaterWorld {
 		if (!sandBodies.isEmpty()) {
 			this.sandRenderer.record(cb, sandBodies, width, height, colorView.vkImageView(), depthView.vkImageView());
 			Vk.barrier(cb);
+			this.gpuTimer.mark(cb, "sand");
 		}
 		if (!waterBodies.isEmpty()) {
 			this.renderer.ripples(this.heightfield != null ? this.ripples : null);
+			this.renderer.timer(this.gpuTimer);
 			this.renderer.record(cb, waterBodies, Desc.ssbo(this.frameView), color.vkImage(), colorView.vkImageView(), depth.vkImage(),
 				depthView.vkImageView());
 		}
@@ -972,8 +988,10 @@ public final class WaterWorld {
 		this.hfUbo.flush(o, UBO_SIZE);
 		Desc ubo = Desc.ubo(this.hfUbo, o, UBO_SIZE);
 		hf.record(cb, ubo, act, steps, dt);
+		this.gpuTimer.mark(cb, "hf solver");
 		this.hfWorld.request(cb, ubo, hf, frameDt);
 		this.ripples.record(cb, mc, this.hfWorld.freshPlayerSample(), frameDt, running);
+		this.gpuTimer.mark(cb, "hf sample+ripples");
 		hf.probe(cb, ubo, this.frameView, cam.x, cam.y, cam.z);
 		return new WaterRenderer.Body(null, hf, ubo);
 	}
@@ -991,8 +1009,19 @@ public final class WaterWorld {
 		return this.hfWorld.release();
 	}
 
+	private double frameIntervalMs;
+	private double cpuFrameMs;
+	private double cpuSyncMs;
+
+	private static double ema(double old, double now) {
+		return old == 0.0 ? now : old * 0.95 + now * 0.05;
+	}
+
 	public String heightfieldStats() {
-		return this.heightfield != null ? this.heightfield.statsLine() : "No heightfield water (use /water flood)";
+		String gpu = String.format("\nframe %.1f ms (%.0f fps) | mod CPU %.2f ms (block sync %.2f) | ", this.frameIntervalMs,
+			1000.0 / Math.max(this.frameIntervalMs, 1.0e-3), this.cpuFrameMs, this.cpuSyncMs)
+			+ (this.gpuTimer != null ? this.gpuTimer.summary() : "no GPU timings yet");
+		return (this.heightfield != null ? this.heightfield.statsLine() : "No heightfield water (use /water flood)") + gpu;
 	}
 
 	/** /water hf column: the heightfield spans where the crosshair points (just in front of the block face it hits). */
@@ -1350,6 +1379,10 @@ public final class WaterWorld {
 		if (this.ripples != null) {
 			this.ripples.close();
 			this.ripples = null;
+		}
+		if (this.gpuTimer != null) {
+			this.gpuTimer.close();
+			this.gpuTimer = null;
 		}
 		if (this.uboRing != null) {
 			this.uboRing.close();

@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Map;
 import me.skaffy.client.water.Material;
 import me.skaffy.client.vk.Desc;
+import me.skaffy.client.vk.GpuTimer;
 import me.skaffy.client.vk.GraphicsProgram;
 import me.skaffy.client.vk.Program;
 import me.skaffy.client.vk.Sampler;
@@ -28,6 +29,7 @@ public final class WaterRenderer implements AutoCloseable {
 	private final GraphicsProgram compositeProgram;
 	private final VkBuf noRipples;
 	private @Nullable HfRipples ripples;
+	private @Nullable GpuTimer timer;
 	private final Sampler nearest = new Sampler(false);
 	private final Sampler linear = new Sampler(true);
 
@@ -61,6 +63,17 @@ public final class WaterRenderer implements AutoCloseable {
 		this.compositeProgram = new GraphicsProgram("fullscreen.vert", "composite.frag", Map.of(),
 			new GraphicsProgram.State(VkTex.RGBA8, VkTex.D32, true, true, VK10.VK_COMPARE_OP_ALWAYS, GraphicsProgram.Blend.NONE), U, T, T, T, T, T, T, S, S);
 		this.noRipples = VkBuf.device(16, 0);
+	}
+
+	/** GPU timer to mark this renderer's passes on, or null. */
+	void timer(@Nullable GpuTimer timer) {
+		this.timer = timer;
+	}
+
+	private void mark(VkCommandBuffer cb, String label) {
+		if (this.timer != null) {
+			this.timer.mark(cb, label);
+		}
 	}
 
 	/** Heightfield ripples for this frame's composite (HfRipples), or null. */
@@ -149,12 +162,14 @@ public final class WaterRenderer implements AutoCloseable {
 			r.mesher.build(cb, body.ubo(), r.currentParticles(), r.counters, WaterRegion.C_FLUID + r.cur, r.args, r.staticSolid, r.mesher.fineBox(r.box),
 				WaterSettings.sheetFill);
 		}
+		this.mark(cb, "mesh build");
 
 		VkTex.copy(cb, mainDepthImage, this.sceneDepth.image, VK10.VK_IMAGE_ASPECT_DEPTH_BIT, w, h);
 		VkTex.copy(cb, mainDepthImage, this.fluidZ.image, VK10.VK_IMAGE_ASPECT_DEPTH_BIT, w, h);
 		VkTex.copy(cb, mainColorImage, this.sceneColor.image, VK10.VK_IMAGE_ASPECT_COLOR_BIT, w, h);
 		Vk.barrier(cb);
 		Desc depthTex = Desc.tex(this.sceneDepth, this.nearest.handle);
+		this.mark(cb, "scene copies");
 
 		GraphicsProgram.begin(cb, w, h, this.gbuffer.view, new float[]{0, 0, 0, 0}, this.materialId.view, new float[]{-1, 0, 0, 0}, this.fluidZ.view);
 		for (Body body : bodies) {
@@ -170,6 +185,7 @@ public final class WaterRenderer implements AutoCloseable {
 			this.dropletFront.drawIndirect(cb, r.args, WaterRegion.ARGS_FLUID_DRAW);
 		}
 		GraphicsProgram.end(cb);
+		this.mark(cb, "front pass");
 
 		GraphicsProgram.begin(cb, w, h, this.thickness.view, new float[]{0, 0, 0, 0}, 0L);
 		for (Body body : bodies) {
@@ -186,6 +202,7 @@ public final class WaterRenderer implements AutoCloseable {
 		}
 		GraphicsProgram.end(cb);
 		Vk.barrier(cb);
+		this.mark(cb, "thickness pass");
 
 		GraphicsProgram.begin(cb, w, h, this.foam.view, new float[]{0, 0, 0, 0}, 0L);
 		if (WaterSettings.whitewater) {
@@ -202,6 +219,7 @@ public final class WaterRenderer implements AutoCloseable {
 		}
 		GraphicsProgram.end(cb);
 		Vk.barrier(cb);
+		this.mark(cb, "whitewater");
 
 		Desc waterUbo = null;
 		Desc lavaUbo = null;
@@ -241,6 +259,7 @@ public final class WaterRenderer implements AutoCloseable {
 			this.compositeProgram.draw(cb, 3, 1);
 		}
 		GraphicsProgram.end(cb);
+		this.mark(cb, "composite");
 	}
 
 	@Override
