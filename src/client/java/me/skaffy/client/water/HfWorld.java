@@ -4,6 +4,9 @@ import it.unimi.dsi.fastutil.bytes.ByteArrayList;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -14,6 +17,11 @@ import me.skaffy.net.HfBlocksPayload;
 import me.skaffy.net.WaterSyncPayload;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.ChunkPos;
@@ -637,6 +645,9 @@ final class HfWorld {
 	/** Latest water sample at the player: {u, w, surface, depth, found, floor}, and when it arrived. */
 	private float[] playerSample;
 	private long playerSampleNanos;
+	/** Latest water samples at entities near the player (same layout), by entity id, nearest first, and when they arrived. */
+	private final Map<Integer, float[]> entitySamples = new LinkedHashMap<>();
+	private long entitySamplesNanos;
 
 	/** The latest water sample at the player if it is recent (250 ms), else null. */
 	float[] freshPlayerSample() {
@@ -664,6 +675,176 @@ final class HfWorld {
 		double tx = sm[0] / 20.0;
 		double tz = sm[1] / 20.0;
 		player.setDeltaMovement(v.x + (tx - v.x) * k, v.y, v.z + (tz - v.z) * k);
+	}
+
+	// ---- entities ----
+
+	/** Samples the water at the entities nearest the player (not the player: it has its own sample), at most hfEntitySamples. */
+	private void sampleEntities(VkCommandBuffer cb, me.skaffy.client.vk.Desc ubo, HfDomain hf, Player player) {
+		var level = net.minecraft.client.Minecraft.getInstance().level;
+		int max = Math.min(WaterSettings.hfEntitySamples, HfDomain.MAX_ENTITY_SAMPLES);
+		if (level == null || max <= 0 || !WaterSettings.hfEntityCurrents && WaterSettings.hfEntityStir <= 0) {
+			return;
+		}
+		double r = WaterSettings.hfEntityRange;
+		List<Entity> near = new ArrayList<>(level.getEntities((Entity) null, player.getBoundingBox().inflate(r, r * 0.5, r),
+			e -> e != player && !e.isSpectator() && !e.isPassenger()));
+		if (near.isEmpty()) {
+			return;
+		}
+		near.sort(Comparator.comparingDouble(e -> e.distanceToSqr(player)));
+		int n = Math.min(near.size(), max);
+		int[] ids = new int[n];
+		double[] pos = new double[n * 3];
+		for (int i = 0; i < n; i++) {
+			Entity e = near.get(i);
+			ids[i] = e.getId();
+			pos[i * 3] = e.getX();
+			pos[i * 3 + 1] = e.getY() + 0.1;
+			pos[i * 3 + 2] = e.getZ();
+		}
+		hf.sampleEntities(cb, ubo, ids, pos, n);
+	}
+
+	private boolean entitySamplesFresh() {
+		return !this.entitySamples.isEmpty() && System.nanoTime() - this.entitySamplesNanos < 250_000_000L;
+	}
+
+	/**
+	 * Call each client tick: moving water carries the entities in it. Mobs, items and boats nobody steers are moved by the
+	 * integrated server, so the push is handed to its thread (singleplayer); the boat (or mount) the player steers is moved by
+	 * this client and pushed here, like the player.
+	 */
+	void pushEntities(net.minecraft.client.Minecraft mc) {
+		if (!WaterSettings.hfEntityCurrents || mc.level == null || mc.player == null || this.world.heightfield == null
+			|| !this.entitySamplesFresh()) {
+			return;
+		}
+		Entity vehicle = mc.player.getVehicle();
+		if (vehicle != null && vehicle.getControllingPassenger() == mc.player) {
+			float[] s = this.entitySamples.get(vehicle.getId());
+			if (s != null) {
+				carry(vehicle, s);
+			}
+		}
+		MinecraftServer server = mc.getSingleplayerServer();
+		if (server == null) {
+			return;
+		}
+		var dimension = mc.level.dimension();
+		int[] ids = new int[this.entitySamples.size()];
+		float[][] rows = new float[ids.length][];
+		int n = 0;
+		for (Map.Entry<Integer, float[]> e : this.entitySamples.entrySet()) {
+			ids[n] = e.getKey();
+			rows[n++] = e.getValue();
+		}
+		int count = n;
+		server.execute(() -> {
+			ServerLevel level = server.getLevel(dimension);
+			if (level == null) {
+				return;
+			}
+			for (int i = 0; i < count; i++) {
+				Entity e = level.getEntity(ids[i]);
+				// Players move themselves; a passenger moves with its vehicle; a ridden boat or mount is moved by its rider's client.
+				if (e == null || e instanceof Player || e.isPassenger() || e.getControllingPassenger() instanceof Player) {
+					continue;
+				}
+				carry(e, rows[i]);
+			}
+		});
+	}
+
+	/**
+	 * Pulls an entity's horizontal velocity toward the water's. Mobs by how much of them is under water (hfEntityDrag), plus a
+	 * flood push growing with depth x speed^2 (hfFloodPush), which is what knocks a mob off its feet in fast shallow water where
+	 * ground friction would otherwise cancel a plain drag. Items, boats and other non-living entities float with the surface
+	 * current (hfFloatDrag) as soon as the water reaches them. The pull fades in with the current's speed, so still water adds
+	 * no drag of its own.
+	 */
+	static void carry(Entity e, float[] s) {
+		if (s[4] < 0.5F || s[3] < 0.05F) {
+			return;
+		}
+		double speed = Math.hypot(s[0], s[1]);
+		if (speed < 0.05) {
+			return;
+		}
+		double feet = e.getY();
+		double fade = Math.min(1.0, speed / 0.5);
+		double k;
+		if (e instanceof LivingEntity) {
+			double submerged = Math.clamp((s[2] - feet) / Math.max(0.5, e.getBbHeight()), 0.0, 1.0);
+			if (submerged <= 0.0) {
+				return;
+			}
+			double flood = Math.clamp(s[3] * speed * speed / 8.0, 0.0, 1.0);
+			k = WaterSettings.hfEntityDrag * submerged * fade + WaterSettings.hfFloodPush * flood;
+		} else {
+			if (s[2] < feet - 0.1) {
+				return;
+			}
+			k = WaterSettings.hfFloatDrag * fade;
+		}
+		k = Math.min(1.0, k);
+		Vec3 v = e.getDeltaMovement();
+		e.setDeltaMovement(v.x + (s[0] / 20.0 - v.x) * k, v.y, v.z + (s[1] / 20.0 - v.z) * k);
+	}
+
+	/**
+	 * Stir entries (12 floats, the layout of {@link #stir}) for the entities in water that are moving or crossing the surface,
+	 * nearest first, at most hfEntityStir.
+	 */
+	private void stirEntities(net.minecraft.client.Minecraft mc, HfDomain hf, List<float[]> out) {
+		int max = WaterSettings.hfEntityStir;
+		if (max <= 0 || mc.level == null || !this.entitySamplesFresh()) {
+			return;
+		}
+		int added = 0;
+		for (Map.Entry<Integer, float[]> entry : this.entitySamples.entrySet()) {
+			if (added >= max) {
+				break;
+			}
+			float[] s = entry.getValue();
+			Entity e = mc.level.getEntity(entry.getKey());
+			if (e == null || s[3] < 0.05F) {
+				continue;
+			}
+			var box = e.getBoundingBox();
+			double surface = s[2];
+			double sub = Math.min(box.maxY, surface) - box.minY;
+			if (sub <= 0.0) {
+				continue;
+			}
+			double vx = (e.getX() - e.xo) * 20.0;
+			double vy = (e.getY() - e.yo) * 20.0;
+			double vz = (e.getZ() - e.zo) * 20.0;
+			float plunge = 0.0F;
+			if (box.maxY > surface) {
+				double width = box.maxX - box.minX;
+				double perimeter = 2.0 * Math.PI * (width * 0.5 + 0.2);
+				plunge = (float) Math.clamp(-4.0 * vy * width * width / (perimeter * Math.max(sub, 0.3)), -8.0, 8.0);
+			}
+			// Drifting with the current moves no water relative to it: only motion against the water (or a plunge) stirs.
+			double rx = vx - s[0];
+			double rz = vz - s[1];
+			if (Math.hypot(rx, rz) < 0.3 && Math.abs(plunge) < 0.5) {
+				continue;
+			}
+			if (Math.hypot(rx, rz) > 0.5 || Math.abs(plunge) > 1.0) {
+				int[] at = hf.grid.locate(e.getX(), e.getZ());
+				if (at != null) {
+					hf.grid.quiet[at[0]] = 0.0F;
+				}
+			}
+			out.add(new float[]{
+				(float) (box.minX - hf.originX), (float) box.minY, (float) (box.minZ - hf.originZ), plunge,
+				(float) (box.maxX - hf.originX), (float) box.maxY, (float) (box.maxZ - hf.originZ), WaterSettings.hfStirStrength,
+				(float) vx, (float) vy, (float) vz, 0.0F
+			});
+			added++;
+		}
 	}
 
 	// ---- splashes ----
@@ -785,9 +966,26 @@ final class HfWorld {
 	 * Globals entity entries of 12 floats (see hfStir in hf_common.glsl), and keeps the tile under a player moving in water awake.
 	 */
 	float[] stir(net.minecraft.client.Minecraft mc, HfDomain hf) {
-		var player = mc.player;
-		if (player == null || player.isSpectator() || WaterSettings.hfStirStrength <= 0.0F) {
+		if (WaterSettings.hfStirStrength <= 0.0F) {
 			return NO_STIR;
+		}
+		List<float[]> bodies = new ArrayList<>();
+		float[] own = this.stirPlayer(mc, hf);
+		if (own != null) {
+			bodies.add(own);
+		}
+		this.stirEntities(mc, hf, bodies);
+		float[] out = new float[bodies.size() * 12];
+		for (int i = 0; i < bodies.size(); i++) {
+			System.arraycopy(bodies.get(i), 0, out, i * 12, 12);
+		}
+		return out;
+	}
+
+	private float @Nullable [] stirPlayer(net.minecraft.client.Minecraft mc, HfDomain hf) {
+		var player = mc.player;
+		if (player == null || player.isSpectator()) {
+			return null;
 		}
 		double vx = (player.getX() - player.xo) * 20.0;
 		double vy = (player.getY() - player.yo) * 20.0;
@@ -830,6 +1028,16 @@ final class HfWorld {
 			this.playerSample = sm;
 			this.playerSampleNanos = System.nanoTime();
 		}
+		HfDomain.EntitySamples es = hf.takeEntitySamples();
+		if (es != null) {
+			this.entitySamples.clear();
+			for (int i = 0; i < es.ids().length; i++) {
+				if (es.data()[i * 6 + 4] > 0.5F) {
+					this.entitySamples.put(es.ids()[i], java.util.Arrays.copyOfRange(es.data(), i * 6, i * 6 + 6));
+				}
+			}
+			this.entitySamplesNanos = System.nanoTime();
+		}
 		List<HfDomain.TileDepth> arrived = hf.takeDepths();
 		for (HfDomain.TileDepth td : arrived) {
 			this.writeTile(level, hf, td, this.releasing ? HfBlocksPayload.RELEASE : HfBlocksPayload.WRITE);
@@ -851,6 +1059,7 @@ final class HfWorld {
 		var player = net.minecraft.client.Minecraft.getInstance().player;
 		if (player != null) {
 			hf.sample(cb, ubo, player.getX(), player.getY() + 0.1, player.getZ());
+			this.sampleEntities(cb, ubo, hf, player);
 		}
 		if (!canWrite()) {
 			return;

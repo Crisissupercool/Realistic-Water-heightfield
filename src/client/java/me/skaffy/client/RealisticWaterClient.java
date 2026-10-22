@@ -31,6 +31,9 @@ public class RealisticWaterClient implements ClientModInitializer {
 		ClientChunkEvents.CHUNK_LOAD.register(water::onChunkLoad);
 		ClientChunkEvents.CHUNK_UNLOAD.register(water::onChunkUnload);
 		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> water.clear());
+		// Shaders compile in the background from now on; the programs are built while a world loads.
+		WaterWorld.startShaderWarmup();
+		ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> water.warm());
 		ClientLifecycleEvents.CLIENT_STOPPING.register(client -> water.shutdown());
 	}
 

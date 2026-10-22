@@ -1,0 +1,49 @@
+#version 450
+// Samples the water at many points at once (entities near the player), like hf_sample.comp does for the player: per entry the
+// span whose open space contains that height, its surface, depth and horizontal velocity from the outflows through its faces.
+// Input (aux binding 14): (tile, column, height as float bits, 0) per entry. Output (binding 12): two vec4 per entry,
+// (u, w, surface, depth), (found, floor, 0, 0).
+#include "hf_common.glsl"
+layout(local_size_x = 64) in;
+layout(std430, binding = 2) readonly buffer Depth { float depth[]; };
+layout(std430, binding = 3) readonly buffer Flux { float flux[]; };
+layout(std430, binding = 12) writeonly buffer Out { vec4 result[]; };
+layout(std430, binding = 14) readonly buffer In { ivec4 entries[]; };
+
+#define HF_CELL hp.p0.z
+
+void main() {
+    uint i = GID_U;
+    if (i >= uint(HF_COUNT)) {
+        return;
+    }
+    ivec4 e = entries[i];
+    uint tile = uint(e.x);
+    uint col = uint(e.y);
+    float y = intBitsToFloat(e.z);
+    result[i * 2u] = vec4(0.0);
+    result[i * 2u + 1u] = vec4(0.0);
+    for (uint l = 0u; l < 4u; l++) {
+        int page = tileInfo[tile * 4u + 2u][l];
+        if (page < 0) {
+            continue;
+        }
+        HfSpan a = hfMake(tile, l, col, uint(page));
+        vec2 g = hfGeo(a.span);
+        if (!hfValid(g) || y < g.x - 0.5 || y >= g.y) {
+            continue;
+        }
+        float h = depth[a.span];
+        vec2 vel = vec2(0.0);
+        if (a.flux != HF_NONE && h > 0.02) {
+            float px = flux[a.flux] + flux[a.flux + 1u];
+            float nx = flux[a.flux + 2u] + flux[a.flux + 3u];
+            float pz = flux[a.flux + 4u] + flux[a.flux + 5u];
+            float nz = flux[a.flux + 6u] + flux[a.flux + 7u];
+            vel = vec2(px - nx, pz - nz) / (HF_CELL * max(h, 0.05));
+        }
+        result[i * 2u] = vec4(vel, min(g.x + h, g.y), h);
+        result[i * 2u + 1u] = vec4(1.0, g.x, 0.0, 0.0);
+        return;
+    }
+}

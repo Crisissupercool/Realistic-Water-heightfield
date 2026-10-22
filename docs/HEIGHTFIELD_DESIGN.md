@@ -716,3 +716,31 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   drawn (which also flattered that timing a little). The mesh buffers now grow by half once a mesh uses over 90% of them
   (`HfDomain.growMesh`, up to `MAX_QUADS` = 2M, 96 B per quad). Nothing is copied: the mesh is rebuilt in full the same frame,
   and the old buffers go through `Vk.destroyLater` because earlier dispatches of the frame still bind them.
+
+## 23. First-use freeze, pool warning, entities in the water (as built, milestone 5 part 2)
+
+* **First water froze 2-3 s:** every shader was compiled from GLSL by shaderc on the render thread the first time it was used.
+  The first water frame built the renderer (6 graphics programs, 12 shaders), the sand programs and the 11 heightfield programs,
+  about 30 compiles in one frame. `Shaders.prewarm` now compiles to SPIR-V on two low-priority background threads, starting at
+  client init (`ShaderWarmup`: every water, sand and particle-sim shader with the defines its program uses). `Shaders.module`
+  only creates the module when the SPIR-V is ready; a shader missing from the list is compiled on first use, as before. At
+  world join (`WaterWorld.warm`) the renderers and the heightfield and particle-sim programs are built during the loading screen.
+* **Pools:** growing the tile, span and flux pools live would mean copying depth, flux and both foam halves (their offsets
+  depend on the pool size) and resizing the stats and readback rings in flight. That is left for the radius-replacement step,
+  where far tiles should be evicted instead. For now /water hf stats warns POOL NEARLY FULL above 90%.
+* **Entities sampled in one batch:** `hf_sample_many.comp` samples up to 128 entities a frame, nearest the player within
+  `hfEntityRange` (48 blocks), skipping spectators and passengers. Entries are (tile, column, height) in a host-visible ring
+  (aux binding); results are two vec4 each (as `hf_sample`) on binding 12, copied to a readback ring and read
+  `Vk.FRAME_RING` frames later (`HfDomain.sampleEntities` / `takeEntitySamples`).
+* **Currents carry entities (`HfWorld.carry`):** mobs are pulled toward the water's horizontal velocity by `hfEntityDrag`
+  (0.15/tick) times how much of them is under water, plus `hfFloodPush` (0.35) times min(1, depth x speed^2 / 8). A plain drag in
+  shallow water is cancelled by ground friction (0.546 a tick), so a knee-deep 4 b/s flood would only nudge a mob; with the
+  flood term a 1-block-deep 4 b/s flood carries it at about a third of the water's speed. Items, boats and other non-living
+  entities float with the surface current (`hfFloatDrag` 0.25) once the water reaches them. Mobs, items and unsteered boats are
+  moved by the integrated server, so each client tick the samples go to its thread with `server.execute` and are applied there
+  by entity id (singleplayer only for release 1). Players, passengers and anything a player rides are skipped there. The boat
+  or mount the player steers is moved by this client, so it is pushed client-side like the player.
+* **Entities stir the water:** up to `hfEntityStir` (16) entities, nearest first, that are in water and moving against it by
+  more than 0.3 b/s (or crossing the surface) go into the stir slots next to the player, with the same plunge rule. Drifting with
+  the current moves no water relative to it, so it does not take a slot. The flux pass loops over these bodies per span, so the
+  cap bounds its cost.

@@ -578,6 +578,7 @@ public final class WaterWorld {
 		this.waterEchoes.expire(this.frameCounter);
 		this.hfEchoes.expire(this.millis());
 		this.hfWorld.pushPlayer(mc);
+		this.hfWorld.pushEntities(mc);
 		this.hfWorld.splash(mc);
 		this.sandEchoes.expire(this.frameCounter);
 		this.lavaEchoes.expire(this.frameCounter);
@@ -1371,6 +1372,33 @@ public final class WaterWorld {
 				+ "active %,d cells of %,d allocated  |  frame %.1f ms  water steps %d x %.1f ms  sand steps %d x %.2f ms  sources %d  %s",
 			bodies, fluid, ww, lavaBodies, lavaFluid, piles, sand, cells, windowCells, this.smoothedFrameMs, this.lastSteps, this.lastDt * 1000.0F,
 			this.lastSandSteps, this.lastSandDt * 1000.0F, this.sources.size(), isHost() ? "(syncing blocks)" : "(not host: blocks follow the server)");
+	}
+
+	/**
+	 * Builds the renderers and the heightfield and particle programs while the world is loading, so the first water does not
+	 * stall a frame (their SPIR-V is compiled in the background from game start, see ShaderWarmup).
+	 */
+	public void warm() {
+		try {
+			if (this.renderer == null) {
+				this.renderer = new WaterRenderer();
+			}
+			if (this.ripples == null) {
+				this.ripples = new HfRipples();
+			}
+			if (this.sandRenderer == null) {
+				this.sandRenderer = new SandRenderer();
+			}
+			HfDomain.warmPrograms();
+			WaterRegion.warmPrograms();
+		} catch (RuntimeException e) {
+			// Not fatal: whatever is missing is built on first use, as before.
+			RealisticWater.LOGGER.warn("Realistic Water could not prepare its shaders at world join", e);
+		}
+	}
+
+	static void startShaderWarmup() {
+		ShaderWarmup.start();
 	}
 
 	public void clear() {

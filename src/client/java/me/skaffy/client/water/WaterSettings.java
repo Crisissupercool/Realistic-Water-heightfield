@@ -170,6 +170,19 @@ public final class WaterSettings {
 	public static float hfSurfaceDrop = 0.111F;
 	/** How strongly moving heightfield water pulls the player along (fraction of the velocity difference per tick, when fully submerged). */
 	public static float hfCurrentDrag = 0.15F;
+	/** Moving heightfield water carries mobs, items and boats (applied on the integrated server; your own boat on this client). */
+	public static boolean hfEntityCurrents = true;
+	/** Per-tick pull of a mob toward the water's velocity, times how much of it is under water. */
+	public static float hfEntityDrag = 0.15F;
+	/** Extra pull on mobs growing with depth x speed^2 (blocks^3/s^2 / 8, capped at 1): fast floods knock mobs off their feet. */
+	public static float hfFloodPush = 0.35F;
+	/** Per-tick pull of floating things (items, boats, anything not alive) toward the surface current. */
+	public static float hfFloatDrag = 0.25F;
+	/** Entities sampled per frame (nearest the player first, at most 128) and how far from the player, in blocks. */
+	public static int hfEntitySamples = 128;
+	public static float hfEntityRange = 48.0F;
+	/** Entities in water, moving against it or crossing the surface, that stir it like the player (waves, wakes), nearest first. */
+	public static int hfEntityStir = 16;
 	/** Outflow over an edge (blocks^3/s) above which a falling sheet is drawn. */
 	public static float hfCurtainMinFlow = 0.005F;
 	/** How hard the player pushes heightfield water when moving through it (bow wave, wake, rings when jumping in); 0 turns it off. */

@@ -46,10 +46,15 @@ final class HfDomain implements AutoCloseable {
 				new ComputeProgram("hf_reservoir.comp", layout),
 				new ComputeProgram("hf_sample.comp", layout),
 				new ComputeProgram("hf_spray_update.comp", layout),
-				new ComputeProgram("hf_spray_args.comp", layout)
+				new ComputeProgram("hf_spray_args.comp", layout),
+				new ComputeProgram("hf_sample_many.comp", layout)
 			};
 		}
 		return programs;
+	}
+
+	static void warmPrograms() {
+		programs();
 	}
 
 	static void closePrograms() {
@@ -200,6 +205,17 @@ final class HfDomain implements AutoCloseable {
 	private final VkBuf sampleBuf;
 	private final VkBuf[] sampleReadback = new VkBuf[Vk.FRAME_RING];
 	private final boolean[] samplePending = new boolean[Vk.FRAME_RING];
+	/** Entities sampled at once (hf_sample_many.comp): the nearest to the player in the heightfield. */
+	static final int MAX_ENTITY_SAMPLES = 128;
+	private final VkBuf[] entityIn = new VkBuf[Vk.FRAME_RING];
+	private final VkBuf entityOut;
+	private final VkBuf[] entityReadback = new VkBuf[Vk.FRAME_RING];
+	/** Entity ids of the samples recorded in each ring slot, in order, or null. */
+	private final int[][] entityIds = new int[Vk.FRAME_RING][];
+
+	/** Water at entities: per entry {u, w, surface, depth, found, floor} (6 floats), in the order of {@link #ids}. */
+	record EntitySamples(int[] ids, float[] data) {
+	}
 
 	/** A tile's depth as read back from the GPU, per {@code layer * pageSpans + col}. */
 	record TileDepth(int tile, int version, float[] depth) {
@@ -250,6 +266,11 @@ final class HfDomain implements AutoCloseable {
 		this.sampleBuf = VkBuf.device(32L, 0);
 		for (int i = 0; i < Vk.FRAME_RING; i++) {
 			this.sampleReadback[i] = VkBuf.readback(32L);
+		}
+		this.entityOut = VkBuf.device(MAX_ENTITY_SAMPLES * 32L, 0);
+		for (int i = 0; i < Vk.FRAME_RING; i++) {
+			this.entityIn[i] = VkBuf.upload(MAX_ENTITY_SAMPLES * 16L, VkBuf.STORAGE);
+			this.entityReadback[i] = VkBuf.readback(MAX_ENTITY_SAMPLES * 32L);
 		}
 		this.tilesDirty = true;
 		programs();
@@ -404,6 +425,59 @@ final class HfDomain implements AutoCloseable {
 		rb.invalidate(0, 32L);
 		ByteBuffer b = rb.mapped();
 		return new float[]{b.getFloat(0), b.getFloat(4), b.getFloat(8), b.getFloat(12), b.getFloat(16), b.getFloat(20)};
+	}
+
+	/**
+	 * Samples the water at many entities at once (world positions, 3 per entity: x, the height to sample at, z); entities outside
+	 * the heightfield are skipped. {@link #takeEntitySamples} returns them a few frames later.
+	 */
+	void sampleEntities(VkCommandBuffer cb, Desc ubo, int[] ids, double[] pos, int n) {
+		int ring = Vk.ringSlot();
+		ByteBuffer b = this.entityIn[ring].mapped();
+		int[] kept = new int[Math.min(n, MAX_ENTITY_SAMPLES)];
+		int m = 0;
+		for (int i = 0; i < n && m < MAX_ENTITY_SAMPLES; i++) {
+			int[] at = this.grid.locate(pos[i * 3], pos[i * 3 + 2]);
+			if (at == null) {
+				continue;
+			}
+			int o = m * 16;
+			b.putInt(o, at[0]).putInt(o + 4, at[1]).putFloat(o + 8, (float) pos[i * 3 + 1]).putInt(o + 12, 0);
+			kept[m++] = ids[i];
+		}
+		if (m == 0) {
+			this.entityIds[ring] = null;
+			return;
+		}
+		this.entityIn[ring].flush(0, m * 16L);
+		ComputeProgram[] p = programs();
+		this.bind(p[11], cb, ubo, ring, this.entityOut, this.entityIn[ring]);
+		p[11].push(cb, this.push(m, 0.0F, 0.0F, this.cell, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0, 0, 0, 0));
+		p[11].dispatch(cb, ComputeProgram.groups(m, 64), 1, 1);
+		Vk.barrier(cb);
+		this.entityOut.copyTo(cb, this.entityReadback[ring], 0, 0, m * 32L);
+		Vk.barrier(cb);
+		this.entityIds[ring] = java.util.Arrays.copyOf(kept, m);
+	}
+
+	/** The entity samples recorded {@link Vk#FRAME_RING} frames ago, or null. */
+	EntitySamples takeEntitySamples() {
+		int ring = Vk.ringSlot();
+		int[] ids = this.entityIds[ring];
+		if (ids == null) {
+			return null;
+		}
+		this.entityIds[ring] = null;
+		VkBuf rb = this.entityReadback[ring];
+		rb.invalidate(0, ids.length * 32L);
+		ByteBuffer b = rb.mapped();
+		float[] data = new float[ids.length * 6];
+		for (int i = 0; i < ids.length; i++) {
+			for (int k = 0; k < 6; k++) {
+				data[i * 6 + k] = b.getFloat(i * 32 + k * 4);
+			}
+		}
+		return new EntitySamples(ids, data);
 	}
 
 	/** Copies the depth of up to {@link #MAX_SYNC_TILES} tiles back to the CPU; {@link #takeDepths} returns them a few frames later. */
@@ -1204,10 +1278,13 @@ final class HfDomain implements AutoCloseable {
 		double usedMb = (g.usedSpanPages() * (double) this.ps * SPAN_BYTES + g.usedFluxPages() * (double) this.ps * FLUX_BYTES) / 1.0e6;
 		return String.format(
 			(this.reservoirCount > 0 ? "[" + this.reservoirCount + " reservoir cells add/remove water] " : "") + "heightfield (Y " + g.yMin + " to " + g.yMax + "): %d/%d tiles, pages %d/%d + flux %d/%d (%.1f of %.0f MB), %d deep cave cells past layer " + g.layers + " treated as solid  |  volume %,.1f blocks (solver drift %+.3f%%%s)  |  "
-				+ "max depth %.2f  max speed %.2f b/s  |  %s%s%s%s",
+				+ "max depth %.2f  max speed %.2f b/s  |  %s%s%s%s%s",
 			g.count, g.maxTiles, g.usedSpanPages(), g.maxPages, g.usedFluxPages(), g.maxFluxPages, usedMb, this.bytes() / 1.0e6, g.droppedSpans(),
 			volume, drift, Math.abs(this.reservoirVolume) >= 0.05 ? String.format(", springs/edges %+,.1f", this.reservoirVolume) : "", maxDepth, g.activeMax(g.maxSpeed), motion,
 			this.hiddenTiles() > 0 ? String.format("  |  %d tiles not drawn (past render distance)", this.hiddenTiles()) : "",
+			g.count > 0.9 * g.maxTiles || g.usedSpanPages() > 0.9 * g.maxPages || g.usedFluxPages() > 0.9 * g.maxFluxPages
+				? "  |  POOL NEARLY FULL: the flood stops growing (or tiles cannot wake) when it fills; raise hfMaxTiles / hfMaxPages / "
+					+ "hfMaxFluxPages and /water reload" : "",
 			String.format("  |  quads %,d/%,d%s", this.lastQuads, this.quadCapacity,
 				this.lastQuads > this.quadCapacity ? (this.quadCapacity >= MAX_QUADS ? " FULL at the limit, the rest is not drawn" : " full, growing") : ""),
 			g.foreignKeptOpen > 0 ? String.format("  |  edits kept %,d non-realistic fluid blocks open", g.foreignKeptOpen) : "");
@@ -1232,7 +1309,10 @@ final class HfDomain implements AutoCloseable {
 			this.vertFlow, this.spray, this.sprayCounters, this.tileLookup));
 		all.add(this.reservoirBuf);
 		all.add(this.sampleBuf);
+		all.add(this.entityOut);
 		for (int i = 0; i < Vk.FRAME_RING; i++) {
+			all.add(this.entityIn[i]);
+			all.add(this.entityReadback[i]);
 			all.add(this.injectRing[i]);
 			all.add(this.sampleReadback[i]);
 			all.add(this.syncReadback[i]);

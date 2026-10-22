@@ -77,6 +77,10 @@ public final class WaterRegion implements AutoCloseable {
 
 	private static ComputeProgram[] programs;
 
+	static void warmPrograms() {
+		programs();
+	}
+
 	private static ComputeProgram[] programs() {
 		if (programs == null) {
 			int U = Desc.UBO;
