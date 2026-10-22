@@ -581,3 +581,26 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   at which stage (remap or solver), how many columns changed shape (and where), and the column's spans and depths before, after
   the remap and later. The CPU mirror reproduces neither the log-on-the-shore tower nor any jump through edits on several
   scenes (tile borders and corners, moving water, breaking and placing), so this is how the in-game case gets pinned down.
+
+## 20. Spray (as built, milestone 6 part 1)
+
+* **Upstream check:** sskaffy/realistic-water moved to branch `26.3-1.2.2` (15 commits since our fork base e29763e: a shader-pack
+  system, a GUI toolkit, slime, a reshaped Globals block with shadow and light fields). The whitewater path this builds on
+  (`ww_update.comp`, `whitewater.frag`) is unchanged there; `particle.vert` only moved the droplet culling to a compute pass, which
+  the whitewater draw does not use. Nothing was merged: the Globals changes would collide with the heightfield's entity entries.
+* **Particles:** `HfDomain.spray` holds two halves of 65,536 particles in the regions' whitewater layout (pos relative to the
+  heightfield origin in blocks with life in w, velocity with the type in w: 0 droplet, 3 mist), so `whitewater.frag` /
+  `particle.vert` draw them in the existing whitewater pass (drawIndirect with firstInstance selecting the current half).
+  Mist is a new type: its own radius (`hfMistSize`, 0.35) and faint alpha (`hfMistAlpha`, 0.05) fading with life; regions never
+  emit it. Bindings 17 (particles), 18 (counters and draw args), 19 (tile lookup: 64 x 64 tiles around the origin, uploaded with
+  tileInfo) joined the shared heightfield layout.
+* **Emission (`hf_mesh.comp` emitSpray, per falling sheet edge):** rates grow with the energy the water brings down, outflow x
+  drop (faded in over 0.3..1.5 blocks of drop): splash droplets where it lands (170 per s per unit, thrown up and out over +-75 deg
+  at 10..40% of the impact speed sqrt(2 g drop)), droplets peeling off the sheet (60, at the sheet's own velocity plus a push
+  away from it) and mist at the foot (10, slow, 1.5..3 s). Emission covers the time the water moved this frame (none while
+  paused or asleep), times `hfSpray`. For the 5-wide, 10-high test waterfall (0.09 blocks^3/s per cell): ~1,500 splash, 540
+  sheet and 90 mist particles per second, ~1,300 alive, splash up to 1.3 blocks high and 2.5 out.
+* **Update (`hf_spray_update.comp`):** droplets fly with gravity and 0.5/s drag and are gone when they hit the ground or fall
+  back into the water (found through the tile lookup and the column's spans); mist slows at 2/s, lifts 0.4 b/s^2 and stays just
+  above the water. Mode 1 throws a crown from a player's splash: 150 droplets per block^3 displaced (cap 4,000) from a ring of
+  0.6 x the crater radius at 20..55% of the impact speed (capped at 12 b/s), 6% of them mist.

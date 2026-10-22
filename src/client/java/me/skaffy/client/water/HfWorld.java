@@ -653,6 +653,11 @@ final class HfWorld {
 		double radius = Math.clamp(0.5 + 0.35 * Math.sqrt(volume), 0.6, 4.0);
 		double craterDepth = Math.min(2.0 * volume / (Math.PI * radius * radius), 0.8 * sm[3]);
 		this.crater(hf, player.getX(), player.getZ(), (float) surface, radius, craterDepth);
+		// A crown of droplets: more and faster the harder the hit (about 60 for a 1-block jump, a few thousand from high up).
+		if (WaterSettings.hfSpray > 0.0F) {
+			int count = (int) Math.min(150.0 * volume * WaterSettings.hfSpray, 4000.0);
+			hf.sprayBurst(player.getX(), surface, player.getZ(), (float) Math.min(speed, 12.0), (float) radius * 0.6F, count);
+		}
 		if (this.world.ripples != null) {
 			this.world.ripples.impact(player.getX(), player.getZ(), volume, (float) surface);
 		}

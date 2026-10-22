@@ -216,7 +216,19 @@ public final class WaterRenderer implements AutoCloseable {
 		if (WaterSettings.whitewater) {
 			for (Body body : bodies) {
 				WaterRegion r = body.region();
-				if (r == null || !r.material.usesWhitewater()) {
+				if (r == null) {
+					// Heightfield spray (droplets and mist from falling sheets and splashes), positions relative to its origin.
+					HfDomain hf = body.heightfield();
+					if (WaterSettings.hfSpray > 0.0F) {
+						this.whitewaterProgram.bind(cb, body.ubo(), Desc.ssbo(hf.spray), depthTex, Desc.tex(this.gbuffer, this.nearest.handle), view);
+						this.whitewaterProgram.push(cb, Program.f(WaterSettings.hfSprayRadius), Program.f(0.5F), Program.f(0.3F),
+							Program.f(WaterSettings.wwMaxPixels), Program.f(WaterSettings.foamSize), Program.f(WaterSettings.hfMistSize),
+							Program.f(WaterSettings.hfMistAlpha));
+						this.whitewaterProgram.drawIndirect(cb, hf.sprayCounters, HfDomain.SPRAY_ARGS);
+					}
+					continue;
+				}
+				if (!r.material.usesWhitewater()) {
 					continue;
 				}
 				this.whitewaterProgram.bind(cb, body.ubo(), Desc.ssbo(r.currentWhitewater()), depthTex, Desc.tex(this.gbuffer, this.nearest.handle), view);

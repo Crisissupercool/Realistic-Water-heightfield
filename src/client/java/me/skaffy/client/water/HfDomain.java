@@ -18,7 +18,9 @@ import org.lwjgl.vulkan.VkCommandBuffer;
  *
  * <p>All heightfield shaders share one binding layout: 0 Globals UBO, 1 geo, 2 depth, 3 flux, 4 links, 5 page list, 6 tile info,
  * 7 tile active flags, 8 stats, 9 verts, 10 quads, 11 mesh counters, 12 view state (probe only), 13 page owners, 14 aux
- * (inject or reservoir entries), 15 foam (two halves per flux page span, swapped every solver step), 16 vertex flow (mesh).
+ * (inject or reservoir entries), 15 foam (two halves per flux page span, swapped every solver step), 16 vertex flow (mesh),
+ * 17 spray particles (two halves of {@link #SPRAY_MAX}), 18 spray counters and draw args, 19 tile lookup (slot per tile around
+ * the origin, see {@link #LOOKUP}).
  */
 final class HfDomain implements AutoCloseable {
 	/** Two vec4 per (span page, group of 256 spans): (volume, max depth, max speed, max rate), (border bits, 0, 0, 0). */
@@ -32,7 +34,7 @@ final class HfDomain implements AutoCloseable {
 		if (programs == null) {
 			int U = Desc.UBO;
 			int S = Desc.SSBO;
-			int[] layout = {U, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S};
+			int[] layout = {U, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S};
 			programs = new ComputeProgram[]{
 				new ComputeProgram("hf_flux.comp", layout),
 				new ComputeProgram("hf_depth.comp", layout),
@@ -42,7 +44,9 @@ final class HfDomain implements AutoCloseable {
 				new ComputeProgram("hf_remap.comp", layout),
 				new ComputeProgram("hf_inject.comp", layout),
 				new ComputeProgram("hf_reservoir.comp", layout),
-				new ComputeProgram("hf_sample.comp", layout)
+				new ComputeProgram("hf_sample.comp", layout),
+				new ComputeProgram("hf_spray_update.comp", layout),
+				new ComputeProgram("hf_spray_args.comp", layout)
 			};
 		}
 		return programs;
@@ -126,6 +130,24 @@ final class HfDomain implements AutoCloseable {
 	final VkBuf meshCounters;
 	/** Water velocity per mesh vertex (two halves), for flow-mapped shading. */
 	final VkBuf vertFlow;
+
+	/**
+	 * Spray (see hf_spray_update.comp): whitewater particles in two halves of SPRAY_MAX, in the layout of the particle regions'
+	 * whitewater (pos.xyz relative to the origin in blocks with life in w, vel.xyz with the type in w: 0 droplet, 3 mist), so the
+	 * whitewater pass draws them. Each frame the particles alive in one half move into the other; the sheets emit into it too.
+	 */
+	static final int SPRAY_MAX = 65_536;
+	/** Byte offset of the spray draw arguments (6 vertices, count, 0, first particle) in {@link #sprayCounters}. */
+	static final long SPRAY_ARGS = 16;
+	/** Side of the tile lookup grid (tiles), centered on the origin tile. Must match hf_spray_update.comp. */
+	static final int LOOKUP = 64;
+	final VkBuf spray;
+	final VkBuf sprayCounters;
+	private final VkBuf tileLookup;
+	private int sprayCur;
+	private float sprayDt;
+	/** Player splashes waiting to throw droplets: {x, y, z (relative to the origin), speed, radius, count}. */
+	private final List<float[]> bursts = new ArrayList<>();
 	private final List<Added> added = new ArrayList<>();
 	private final List<Rebuilt> rebuilt = new ArrayList<>();
 	private boolean tilesDirty;
@@ -204,6 +226,9 @@ final class HfDomain implements AutoCloseable {
 		this.quads = VkBuf.device(this.quadCapacity * 16L, 0);
 		this.meshCounters = VkBuf.device(64, VkBuf.INDIRECT);
 		this.vertFlow = VkBuf.device(this.quadCapacity * 4L * 4L, 0);
+		this.spray = VkBuf.device(2L * SPRAY_MAX * 32L, 0);
+		this.sprayCounters = VkBuf.device(64, VkBuf.INDIRECT);
+		this.tileLookup = VkBuf.device((long) LOOKUP * LOOKUP * 4L, 0);
 		for (int i = 0; i < Vk.FRAME_RING; i++) {
 			this.debugReadback[i] = VkBuf.readback(DEBUG_SPANS * 12L);
 			this.injectRing[i] = VkBuf.upload(MAX_INJECT * 8L, VkBuf.STORAGE);
@@ -221,7 +246,7 @@ final class HfDomain implements AutoCloseable {
 	/** Size of the GPU allocation, for /water hf stats. */
 	long bytes() {
 		return (long) this.grid.maxPages * this.ps * SPAN_BYTES + (long) this.grid.maxFluxPages * this.ps * (FLUX_BYTES + 8L)
-			+ this.quadCapacity * 96L;
+			+ this.quadCapacity * 96L + 2L * SPRAY_MAX * 32L;
 	}
 
 	private VkBuf stage(HfTileGrid.Tile t, float[] initialDepth) {
@@ -319,7 +344,7 @@ final class HfDomain implements AutoCloseable {
 		p.bind(cb, ubo, Desc.ssbo(this.geo), Desc.ssbo(this.depth), Desc.ssbo(this.flux), Desc.ssbo(this.links), Desc.ssbo(this.listRing[ring]),
 			Desc.ssbo(this.tileInfo), Desc.ssbo(this.activeRing[ring]), Desc.ssbo(this.stats), Desc.ssbo(this.verts), Desc.ssbo(this.quads),
 			Desc.ssbo(this.meshCounters), Desc.ssbo(view), Desc.ssbo(this.pageOwner), Desc.ssbo(aux), Desc.ssbo(this.foam),
-			Desc.ssbo(this.vertFlow));
+			Desc.ssbo(this.vertFlow), Desc.ssbo(this.spray), Desc.ssbo(this.sprayCounters), Desc.ssbo(this.tileLookup));
 	}
 
 	/**
@@ -547,6 +572,22 @@ final class HfDomain implements AutoCloseable {
 			}
 			staging.copyTo(cb, this.pageOwner, n * 64L, 0, g.maxPages * 4L);
 			Vk.destroyLater(staging);
+			// Tile slot per tile coordinate around the origin, so spray can find the water under it.
+			VkBuf lookup = VkBuf.upload((long) LOOKUP * LOOKUP * 4L, 0);
+			ByteBuffer lb = lookup.mapped();
+			for (int i = 0; i < LOOKUP * LOOKUP; i++) {
+				lb.putInt(i * 4, -1);
+			}
+			for (int s = 0; s < g.count; s++) {
+				int lx = g.tileX[s] + LOOKUP / 2;
+				int lz = g.tileZ[s] + LOOKUP / 2;
+				if (lx >= 0 && lz >= 0 && lx < LOOKUP && lz < LOOKUP) {
+					lb.putInt((lx + LOOKUP * lz) * 4, s);
+				}
+			}
+			lookup.flush(0, (long) LOOKUP * LOOKUP * 4L);
+			lookup.copyTo(cb, this.tileLookup, 0, 0, (long) LOOKUP * LOOKUP * 4L);
+			Vk.destroyLater(lookup);
 		}
 		Vk.barrier(cb);
 	}
@@ -678,12 +719,13 @@ final class HfDomain implements AutoCloseable {
 	 * Uploads new and rebuilt tiles, remaps water, zeroes new flux pages and runs {@code steps} solver steps over the activation's
 	 * pages. Call every frame (with an empty activation and steps = 0 while paused) so uploads and per-frame tables stay current.
 	 */
-	void record(VkCommandBuffer cb, Desc ubo, HfTileGrid.Activation act, int steps, float dt) {
+	void record(VkCommandBuffer cb, Desc ubo, HfTileGrid.Activation act, int steps, float dt, float sprayDt) {
 		ComputeProgram[] p = programs();
 		int ring = Vk.ringSlot();
 		if (!this.statsCleared) {
 			this.stats.fill(cb, 0);
 			this.foam.fill(cb, 0);
+			this.sprayCounters.fill(cb, 0);
 			this.statsCleared = true;
 		}
 		if (act.newFluxPages.length > 0) {
@@ -759,7 +801,45 @@ final class HfDomain implements AutoCloseable {
 			Vk.barrier(cb);
 		}
 		this.lastDt = dt;
+		this.updateSpray(cb, ubo, ring, sprayDt);
 		this.advanceProbes(cb);
+	}
+
+	/** A body hit the water at (x, y, z) (world) at {@code speed}: a crown of {@code count} droplets is thrown from a ring of {@code radius}. */
+	void sprayBurst(double x, double y, double z, float speed, float radius, int count) {
+		if (count > 0 && this.bursts.size() < 8) {
+			this.bursts.add(new float[]{(float) (x - this.originX), (float) (y - this.originY), (float) (z - this.originZ), speed, radius, count});
+		}
+	}
+
+	/** Moves the live spray into the other half (bursts first), so the mesh pass can add this frame's emission to it. */
+	private void updateSpray(VkCommandBuffer cb, Desc ubo, int ring, float frameDt) {
+		ComputeProgram[] p = programs();
+		int src = this.sprayCur;
+		int dst = 1 - src;
+		this.sprayCounters.fill(cb, dst * 4L, 4L, 0);
+		Vk.barrier(cb);
+		this.bind(p[9], cb, ubo, ring, this.stats);
+		for (float[] b : this.bursts) {
+			int n = Math.min((int) b[5], 4096);
+			p[9].push(cb, this.push(n, 0.0F, WaterSettings.gravity, b[3], b[4], b[0], b[1], b[2], 1.0F, src, dst, (int) this.frameNo * 7919 + n, 0));
+			p[9].dispatch(cb, ComputeProgram.groups(n, 256), 1, 1);
+		}
+		this.bursts.clear();
+		p[9].push(cb, this.push(0, frameDt, WaterSettings.gravity, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, src, dst, (int) this.frameNo, 0));
+		p[9].dispatch(cb, SPRAY_MAX / 256, 1, 1);
+		Vk.barrier(cb);
+		this.sprayCur = dst;
+		this.sprayDt = frameDt;
+	}
+
+	/** Draw arguments for the current spray half (after the mesh pass added its emission). */
+	private void sprayArgs(VkCommandBuffer cb, Desc ubo) {
+		ComputeProgram[] p = programs();
+		this.bind(p[10], cb, ubo, Vk.ringSlot(), this.stats);
+		p[10].push(cb, this.push(0, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, this.sprayCur, 0, 0, 0));
+		p[10].dispatch(cb, 1, 1, 1);
+		Vk.barrier(cb);
 	}
 
 	private void copyProbe(VkCommandBuffer cb, EditProbe probe, int[] pages, int region) {
@@ -954,6 +1034,7 @@ final class HfDomain implements AutoCloseable {
 	void buildMesh(VkCommandBuffer cb, Desc ubo) {
 		if (!this.meshDirty && this.meshRenderDepth == WaterSettings.hfRenderDepth && this.meshDebug == WaterSettings.hfDebugMesh
 			&& this.meshFoam == WaterSettings.hfFoam) {
+			this.sprayArgs(cb, ubo);
 			return;
 		}
 		this.meshDirty = false;
@@ -966,15 +1047,18 @@ final class HfDomain implements AutoCloseable {
 		Vk.barrier(cb);
 		int pages = this.grid.maxPages;
 		this.bind(p[2], cb, ubo, ring, this.stats);
+		// Sheets emit spray for the time the water moved this frame (none while paused or asleep).
+		float emit = this.lastSteps * this.lastDt * Math.max(WaterSettings.hfSpray, 0.0F);
 		p[2].push(cb, this.push(pages, WaterSettings.hfSurfaceDrop, WaterSettings.hfCurtainMinFlow, this.cell, this.originY,
-			WaterSettings.hfFoam, WaterSettings.hfRenderDepth, 0.0F, WaterSettings.hfDebugMesh,
-			this.quadCapacity, (int) (this.foamRead * this.foamHalf), 0, 0));
+			WaterSettings.hfFoam, WaterSettings.hfRenderDepth, emit, WaterSettings.hfDebugMesh,
+			this.quadCapacity, (int) (this.foamRead * this.foamHalf), this.sprayCur, (int) this.frameNo));
 		p[2].dispatch(cb, pages * this.groupsPerPage, 1, 1);
 		Vk.barrier(cb);
 		p[4].bind(cb, ubo, Desc.ssbo(this.meshCounters));
 		p[4].push(cb, 0, this.quadCapacity);
 		p[4].dispatch(cb, 1, 1, 1);
 		Vk.barrier(cb);
+		this.sprayArgs(cb, ubo);
 	}
 
 	/** Sets the underwater flag in {@code frameView} when the camera (world coordinates) is inside heightfield water. */
@@ -1032,7 +1116,7 @@ final class HfDomain implements AutoCloseable {
 		this.rebuilt.clear();
 		List<AutoCloseable> all = new ArrayList<>(List.of(
 			this.geo, this.depth, this.flux, this.foam, this.links, this.tileInfo, this.pageOwner, this.stats, this.verts, this.quads, this.meshCounters,
-			this.vertFlow));
+			this.vertFlow, this.spray, this.sprayCounters, this.tileLookup));
 		all.add(this.reservoirBuf);
 		all.add(this.sampleBuf);
 		for (int i = 0; i < Vk.FRAME_RING; i++) {

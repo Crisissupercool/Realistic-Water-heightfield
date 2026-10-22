@@ -43,10 +43,16 @@ void main() {
     if (foam) {
         r *= pc.b.x;
     }
+    // Mist puffs (heightfield spray, type 3): a radius of their own (pc.b.y blocks) and a faint alpha (pc.b.z) that fades out.
+    bool mist = p.vel.w > 2.5;
+    if (mist) {
+        r = pc.b.y;
+    }
 #else
     bool foam = false;
+    bool mist = false;
 #endif
-    float alpha = 1.0;
+    float alpha = mist ? pc.b.z * clamp(p.pos.w, 0.0, 1.0) : 1.0;
     float dist = -center.z;
     if (dist < pc.a.z) {
         gl_Position = vec4(0.0, 0.0, -2.0, 1.0);
@@ -55,9 +61,9 @@ void main() {
     float pixelR = r * G.proj[1][1] * 0.5 * G.screen.y / dist;
     if (pixelR < pc.a.y) {
         float s = pc.a.y / max(pixelR, 1e-4);
-        alpha = 1.0 / (s * s);
+        alpha *= 1.0 / (s * s);
         r *= s;
-    } else if (pc.a.w > 0.0 && pixelR > pc.a.w && !foam) {
+    } else if (pc.a.w > 0.0 && pixelR > pc.a.w && !foam && !mist) {
         r *= pc.a.w / pixelR;
     }
     if (pc.a.w > 0.0) {

@@ -186,6 +186,13 @@ public final class WaterSettings {
 	public static float hfFoam = 1.0F;
 	/** Seconds foam takes to fade to about a third once nothing churns the water any more. */
 	public static float hfFoamLife = 1.5F;
+	/** How much spray falling sheets throw (droplets where they land and peeling off them, mist at their foot); 0 turns it off. */
+	public static float hfSpray = 1.0F;
+	/** Radius of a heightfield spray droplet (blocks). */
+	public static float hfSprayRadius = 0.02F;
+	/** Radius of a mist puff (blocks) and how opaque one is. */
+	public static float hfMistSize = 0.35F;
+	public static float hfMistAlpha = 0.05F;
 	/** Diagnostic: report in chat when a block edit makes heightfield water jump (where, at which stage, how the column changed). */
 	public static boolean hfEditProbe = false;
 	public static int hfMaxStepsPerFrame = 8;

@@ -988,7 +988,7 @@ public final class WaterWorld {
 		this.writeHfGlobals(mc, hf, this.hfUbo.mapped(), o, width, height, stir);
 		this.hfUbo.flush(o, UBO_SIZE);
 		Desc ubo = Desc.ubo(this.hfUbo, o, UBO_SIZE);
-		hf.record(cb, ubo, act, steps, dt);
+		hf.record(cb, ubo, act, steps, dt, running ? frameDt : 0.0F);
 		this.gpuTimer.mark(cb, "hf solver");
 		this.hfWorld.request(cb, ubo, hf, frameDt);
 		this.ripples.record(mc, this.hfWorld.freshPlayerSample(), frameDt, running);

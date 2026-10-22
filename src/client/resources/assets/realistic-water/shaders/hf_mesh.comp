@@ -28,6 +28,12 @@ layout(std430, binding = 16) writeonly buffer VertFlow { uint vertFlow[]; };
 // WaterSettings.hfFoam (how white foam shows) and the half of the foam buffer the last solver step wrote.
 #define HF_FOAM_GAIN hp.p1.x
 #define HF_FOAM_READ uint(hp.p2.y)
+// Seconds of water motion to emit spray for this frame (times WaterSettings.hfSpray; 0: none), the spray half to emit into, a seed.
+#define HF_SPRAY_DT hp.p1.z
+#define HF_SPRAY_INTO uint(hp.p2.z)
+#define HF_SPRAY_SEED uint(hp.p2.w)
+
+#include "hf_spray.glsl"
 
 const uint OPEN = 0x80000000u;
 const float WALL_INSET = 0.01;
@@ -481,6 +487,62 @@ void emitCurtain(uint q, int d, vec2 outward, vec3 e0, vec3 e1, vec4 end0, vec4 
     }
 }
 
+// Spray particles per second per unit of energy a sheet brings down (outflow in blocks^3/s x drop in blocks).
+const float SPRAY_SPLASH_RATE = 170.0;
+const float SPRAY_SHEET_RATE = 60.0;
+const float SPRAY_MIST_RATE = 10.0;
+
+// Spray thrown by a falling sheet: droplets bouncing back up and out where it lands (faster for taller falls), droplets peeling
+// off it as it falls, and mist at its foot. The rates grow with the energy the water brings down (outflow x drop), so trickles
+// and small steps barely spray while a tall fall throws a cloud. Positions as the mesh's (relative to the origin).
+void emitSpray(uint seed, vec2 outward, vec3 e0, vec3 e1, vec4 end0, vec4 end1, float q) {
+    float dt = HF_SPRAY_DT;
+    if (dt <= 0.0) {
+        return;
+    }
+    float drop = max(0.5 * (e0.y + e1.y) - 0.5 * (end0.x + end1.x), 0.0);
+    float energy = q * min(drop, 16.0) * smoothstep(0.3, 1.5, drop);
+    if (energy <= 1.0e-4) {
+        return;
+    }
+    uint s = sprayHash(seed);
+    vec3 dir = vec3(outward.x, 0.0, outward.y);
+    vec3 side = vec3(-outward.y, 0.0, outward.x);
+    vec3 up = vec3(0.0, 1.0, 0.0);
+    float impact = sqrt(2.0 * GRAVITY * drop);
+    int splash = int(min(SPRAY_SPLASH_RATE * energy * dt + sprayRand(s), 24.0));
+    for (int k = 0; k < splash; k++) {
+        float t = sprayRand(s);
+        SheetPoint p = sheetPoint(mix(e0, e1, t), outward, mix(end0, end1, t), 1.0, vec2(0.0), false);
+        float az = (sprayRand(s) - 0.5) * 2.6;
+        float el = mix(0.45, 1.35, sprayRand(s));
+        vec3 h = dir * cos(az) + side * sin(az);
+        vec3 v = (h * cos(el) + up * sin(el)) * impact * mix(0.1, 0.4, sprayRand(s));
+        sprayAdd(HF_SPRAY_INTO, p.top + up * 0.04, v, mix(0.6, 1.5, sprayRand(s)), SPRAY_DROPLET);
+    }
+    int mist = int(min(SPRAY_MIST_RATE * energy * dt + sprayRand(s), 6.0));
+    for (int k = 0; k < mist; k++) {
+        float t = sprayRand(s);
+        SheetPoint p = sheetPoint(mix(e0, e1, t), outward, mix(end0, end1, t), 1.0, vec2(0.0), false);
+        vec3 v = (dir * mix(0.3, 1.0, sprayRand(s)) + side * (sprayRand(s) - 0.5) + up * mix(0.3, 1.0, sprayRand(s)))
+            * min(0.15 * impact, 2.0);
+        sprayAdd(HF_SPRAY_INTO, p.top + up * 0.15, v, mix(1.5, 3.0, sprayRand(s)), SPRAY_MIST);
+    }
+    int sheet = int(min(SPRAY_SHEET_RATE * energy * dt + sprayRand(s), 12.0));
+    for (int k = 0; k < sheet; k++) {
+        float t = sprayRand(s);
+        float f = mix(0.3, 0.95, sprayRand(s));
+        vec3 e = mix(e0, e1, t);
+        vec4 end = mix(end0, end1, t);
+        SheetPoint p = sheetPoint(e, outward, end, f, vec2(0.0), false);
+        // The sheet's own velocity there, plus a push away from it.
+        float fall = sqrt(2.0 * max(e.y - end.x, 0.0) / GRAVITY) * f;
+        float vx = end.y * exp(-end.y * fall / CURTAIN_REACH);
+        vec3 v = dir * (vx + mix(0.3, 1.2, sprayRand(s))) + side * (sprayRand(s) - 0.5) * 0.8 - up * GRAVITY * fall;
+        sprayAdd(HF_SPRAY_INTO, p.top + dir * 0.02, v, mix(0.8, 1.6, sprayRand(s)), SPRAY_DROPLET);
+    }
+}
+
 void main() {
     HfSpan a;
     if (!hfFromPage(GID_U, a)) {
@@ -599,5 +661,6 @@ void main() {
         vec4 end1 = end1s[d] - vec4(oy, 0.0, oy, 0.0);
         emitCurtain(q, d, OUTWARD[d], e0s[d], e1s[d], end0, end1, c0s[d], c1s[d]);
         q += curtainQuads(end0, end1);
+        emitSpray(a.span * 4u + uint(d) + HF_SPRAY_SEED * 2654435761u, OUTWARD[d], e0s[d], e1s[d], end0, end1, curtainFlow[d]);
     }
 }

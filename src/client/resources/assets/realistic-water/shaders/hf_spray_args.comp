@@ -1,0 +1,15 @@
+#version 450
+// Draw arguments for the current half of the heightfield's spray, after the mesh pass added this frame's emission.
+#include "hf_common.glsl"
+layout(local_size_x = 1) in;
+#include "hf_spray.glsl"
+
+void main() {
+    uint cur = uint(hp.p2.x);
+    uint n = min(sprayCount[cur], SPRAY_MAX);
+    sprayCount[cur] = n;
+    sprayCount[4] = 6u;
+    sprayCount[5] = n;
+    sprayCount[6] = 0u;
+    sprayCount[7] = cur * SPRAY_MAX;
+}

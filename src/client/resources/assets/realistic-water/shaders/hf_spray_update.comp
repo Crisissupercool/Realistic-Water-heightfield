@@ -1,0 +1,113 @@
+#version 450
+// Moves the heightfield's spray from one half of the buffer into the other (see hf_spray.glsl). Droplets fly ballistically with
+// a little air drag and are gone when they hit the ground or fall back into the water; mist drifts, slows quickly, lifts a little
+// and stays over the water until it fades. Mode 1 instead throws a crown of droplets from a ring around a body hitting the water.
+#include "hf_common.glsl"
+layout(local_size_x = 256) in;
+layout(std430, binding = 2) readonly buffer Depth { float depth[]; };
+#include "hf_spray.glsl"
+// Tile slot per tile coordinate, LOOKUP x LOOKUP tiles centered on the origin tile (-1: none), see HfDomain.LOOKUP.
+layout(std430, binding = 19) readonly buffer TileLookup { int tileLookup[]; };
+
+#define SPRAY_DT hp.p0.x
+#define SPRAY_G hp.p0.y
+#define BURST_SPEED hp.p0.z
+#define BURST_RADIUS hp.p0.w
+#define BURST_AT hp.p1.xyz
+#define SPRAY_MODE hp.p1.w
+#define SPRAY_SRC uint(hp.p2.x)
+#define SPRAY_DST uint(hp.p2.y)
+#define SPRAY_SEED uint(hp.p2.z)
+
+const int LOOKUP = 64;
+const float TILE_BLOCKS = 16.0;
+const int AT_AIR = 0;
+const int AT_ABOVE_WATER = 1;
+const int AT_UNDER_WATER = 2;
+const int AT_SOLID = 3;
+
+// What is at p (relative to the origin): air over no heightfield tile, air above a span's water (its surface in `surface`,
+// relative), under a water surface, or solid (no open span contains that height).
+int probe(vec3 p, out float surface) {
+    surface = -1.0e9;
+    ivec2 tc = ivec2(floor(p.xz / TILE_BLOCKS));
+    ivec2 lc = tc + LOOKUP / 2;
+    if (any(lessThan(lc, ivec2(0))) || any(greaterThanEqual(lc, ivec2(LOOKUP)))) {
+        return AT_AIR;
+    }
+    int slot = tileLookup[lc.x + LOOKUP * lc.y];
+    if (slot < 0) {
+        return AT_AIR;
+    }
+    ivec2 cc = clamp(ivec2(floor((p.xz - vec2(tc) * TILE_BLOCKS) * float(HF_CPB))), ivec2(0), ivec2(HF_TN - 1));
+    uint col = uint(cc.y * HF_TN + cc.x);
+    float y = p.y + float(HF_YMIN);
+    for (uint l = 0u; l < 4u; l++) {
+        int page = tileInfo[uint(slot) * 4u + 2u][l];
+        if (page < 0) {
+            continue;
+        }
+        uint s = uint(page) * hfPageSpans() + col;
+        vec2 g = hfGeo(s);
+        if (!hfValid(g) || y < g.x || y >= g.y) {
+            continue;
+        }
+        float d = depth[s];
+        float top = min(g.x + d, g.y);
+        surface = top - float(HF_YMIN);
+        return d > 0.02 && y < top ? AT_UNDER_WATER : AT_ABOVE_WATER;
+    }
+    return AT_SOLID;
+}
+
+void main() {
+    uint i = GID_U;
+    if (SPRAY_MODE > 0.5) {
+        // A crown: droplets thrown up and out from a ring around the impact, a few slower mist puffs among them.
+        if (i >= uint(HF_COUNT)) {
+            return;
+        }
+        uint s = sprayHash(i * 747796405u + SPRAY_SEED);
+        float a = sprayRand(s) * 6.2831853;
+        vec2 h = vec2(cos(a), sin(a));
+        vec3 p = BURST_AT + vec3(h.x, 0.0, h.y) * BURST_RADIUS * mix(0.5, 1.1, sprayRand(s)) + vec3(0.0, 0.05, 0.0);
+        float el = mix(0.85, 1.45, sprayRand(s));
+        vec3 v = vec3(h.x * cos(el), sin(el), h.y * cos(el)) * BURST_SPEED * mix(0.2, 0.55, sprayRand(s));
+        if (sprayRand(s) < 0.06) {
+            sprayAdd(SPRAY_DST, p, v * 0.2, mix(1.0, 2.0, sprayRand(s)), SPRAY_MIST);
+        } else {
+            sprayAdd(SPRAY_DST, p, v, mix(0.7, 1.4, sprayRand(s)), SPRAY_DROPLET);
+        }
+        return;
+    }
+    uint n = min(sprayCount[SPRAY_SRC], SPRAY_MAX);
+    if (i >= n) {
+        return;
+    }
+    Particle pt = spray[SPRAY_SRC * SPRAY_MAX + i];
+    vec3 x = pt.pos.xyz;
+    float life = pt.pos.w;
+    vec3 v = pt.vel.xyz;
+    float type = pt.vel.w;
+    float dt = SPRAY_DT;
+    bool mist = type > 2.5;
+    if (mist) {
+        v.y += 0.4 * dt;
+        v *= exp(-2.0 * dt);
+    } else {
+        v.y -= SPRAY_G * dt;
+        v *= exp(-0.5 * dt);
+    }
+    life -= dt;
+    vec3 xn = x + v * dt;
+    float surface;
+    int at = probe(xn, surface);
+    if (life <= 0.0 || at == AT_SOLID || !mist && at == AT_UNDER_WATER) {
+        return;
+    }
+    if (mist && at == AT_UNDER_WATER) {
+        xn.y = surface + 0.05;
+        v.y = max(v.y, 0.0);
+    }
+    sprayAdd(SPRAY_DST, xn, v, life, type);
+}
