@@ -33,7 +33,9 @@ const uint OPEN = 0x80000000u;
 const float WALL_INSET = 0.01;
 const float CURTAIN_OUT = 0.06;
 // Falling sheets are drawn as a few segments along the arc water takes when it leaves an edge.
-const int CURTAIN_SEGMENTS = 3;
+const int CURTAIN_SEGMENTS = 4;
+// A front sheet and a fainter one just behind it: the parallax between the two gives the fall some depth.
+const int CURTAIN_LAYERS = 2;
 const float CURTAIN_MAX_THROW = 0.3;
 const float GRAVITY = 9.81;
 
@@ -356,27 +358,38 @@ vec2 curtainEnd(HfSpan a, int d, int sd, float land, float throwOut) {
 void emitCurtain(uint q, vec2 outward, vec3 e0, vec3 e1, vec2 end0, vec2 end1, float flow, float aerTop) {
     vec3 dir = vec3(outward.x, 0.0, outward.y);
     float body = 0.35 + 0.65 * smoothstep(0.01, 0.25, flow);
-    for (int i = 0; i < CURTAIN_SEGMENTS; i++) {
-        if (q >= HF_QUAD_CAP) {
-            return;
+    for (int layer = 0; layer < CURTAIN_LAYERS; layer++) {
+        // The back sheet hangs a little lower and closer to the wall, more transparent.
+        float depthScale = layer == 0 ? 1.0 : 0.45;
+        float sag = layer == 0 ? 0.0 : 0.06;
+        float aerScale = layer == 0 ? 1.0 : 0.5;
+        for (int i = 0; i < CURTAIN_SEGMENTS; i++) {
+            if (q >= HF_QUAD_CAP) {
+                return;
+            }
+            uint v = q * 4u;
+            for (int j = 0; j < 4; j++) {
+                // Vertex order bottom e0, bottom e1, top e1, top e0, so the face points out like the side walls.
+                float s = float(i + (j < 2 ? 1 : 0)) / float(CURTAIN_SEGMENTS);
+                bool first = j == 0 || j == 3;
+                vec3 e = first ? e0 : e1;
+                vec2 end = first ? end0 : end1;
+                float h = max(e.y - end.x, 0.0);
+                // Starts exactly at the brink, where the top surface ends, and only moves out from the wall as it falls.
+                float away = (CURTAIN_OUT * smoothstep(0.0, 0.25, s) + end.y * s) * depthScale;
+                vec3 p = vec3(e.x, e.y - sag - h * s * s, e.z) + dir * away;
+                // Over the lip the normal turns from the top surface's (up) to the arc's, so the shading flows over the edge.
+                vec3 arc = normalize(dir * max(2.0 * h * s, 0.25) + vec3(0.0, end.y, 0.0));
+                vec3 n = normalize(mix(vec3(0.0, 1.0, 0.0), arc, smoothstep(0.0, 0.3, s)));
+                float aerBottom = clamp(0.3 + 0.25 * h, 0.3, 0.95) * body;
+                float aer = max(mix(aerTop * body, aerBottom, s) * aerScale, 0.1);
+                verts[v + uint(j)] = vec4(p, uintBitsToFloat(hfPack(n, true, aer)));
+                // A sheet's "flow" is its outward direction with the falling speed, so its foam pours down from the brink.
+                vertFlow[v + uint(j)] = packHalf2x16(outward * min(1.5 + 5.0 * s, 8.0));
+            }
+            quads[q] = uvec4(v, v + 1u, v + 2u, v + 3u);
+            q++;
         }
-        uint v = q * 4u;
-        for (int j = 0; j < 4; j++) {
-            // Vertex order bottom e0, bottom e1, top e1, top e0, so the face points out like the side walls.
-            float s = float(i + (j < 2 ? 1 : 0)) / float(CURTAIN_SEGMENTS);
-            bool first = j == 0 || j == 3;
-            vec3 e = first ? e0 : e1;
-            vec2 end = first ? end0 : end1;
-            float h = max(e.y - end.x, 0.0);
-            vec3 p = vec3(e.x, e.y - h * s * s, e.z) + dir * (CURTAIN_OUT + end.y * s);
-            vec3 n = normalize(dir * max(2.0 * h * s, 0.25) + vec3(0.0, end.y, 0.0));
-            float aerBottom = clamp(0.3 + 0.25 * h, 0.3, 0.95) * body;
-            float aer = max(mix(aerTop * body, aerBottom, s), 0.1);
-            verts[v + uint(j)] = vec4(p, uintBitsToFloat(hfPack(n, true, aer)));
-            vertFlow[v + uint(j)] = 0u;
-        }
-        quads[q] = uvec4(v, v + 1u, v + 2u, v + 3u);
-        q++;
     }
 }
 
@@ -434,7 +447,7 @@ void main() {
         wallMask = 0u;
     }
     bool drawTop = HF_DEBUG != 2;
-    uint count = (drawTop ? 1u : 0u) + uint(bitCount(wallMask)) + uint(bitCount(curtainMask) * CURTAIN_SEGMENTS);
+    uint count = (drawTop ? 1u : 0u) + uint(bitCount(wallMask)) + uint(bitCount(curtainMask) * CURTAIN_SEGMENTS * CURTAIN_LAYERS);
     if (count == 0u) {
         return;
     }
@@ -469,7 +482,7 @@ void main() {
         emit(q++, vec3(x0, b, z), vec3(x1, b, z), vec3(x1, h10, z), vec3(x0, h00, z), vec3(0.0, 0.0, -1.0), true);
     }
     float aerTop = foamOf(a);
-    uint seg = uint(CURTAIN_SEGMENTS);
+    uint seg = uint(CURTAIN_SEGMENTS * CURTAIN_LAYERS);
     // Per edge: its two corners and the side direction each corner is shared across (see curtainEnd).
     const int SIDE0[4] = int[](3, 2, 0, 1);
     const int SIDE1[4] = int[](2, 3, 1, 0);

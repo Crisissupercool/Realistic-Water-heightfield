@@ -394,13 +394,19 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     vec3 nWorld = normalize(mat3(G.invView) * n);
     vec3 world = G.misc.yzw + (G.invView * vec4(P, 0.0)).xyz;
     float streaks = 0.5;
+    // Falling sheets get coordinates across the fall and down it (continuing the top surface's along-flow coordinate at the
+    // brink), so the foam that rode the current to the edge keeps pouring down the sheet at falling speed.
+    vec2 sheetP = vec2(0.0);
+    float fallSpeed = 0.0;
     if (sheet) {
-        vec2 along = normalize(vec2(-nWorld.z, nWorld.x) + vec2(1.0e-4, 0.0));
-        float u = dot(world.xz, along);
+        fallSpeed = max(length(flow), 1.5);
+        vec2 outward = length(flow) > 1.0e-3 ? normalize(flow) : normalize(nWorld.xz + vec2(1.0e-4, 0.0));
+        vec2 along = vec2(-outward.y, outward.x);
+        sheetP = vec2(dot(world.xz, along), dot(world.xz, outward) - world.y);
         float t = G.simB.z;
         float detail = smoothstep(1.0, 3.0, 0.14 / max(footprint, 1.0e-5));
-        float s1 = valueNoise(vec2(u * 7.0, (world.y + t * 3.5) * 0.7));
-        float s2 = valueNoise(vec2(u * 15.0 + 3.1, (world.y + t * 4.5) * 1.3));
+        float s1 = valueNoise(vec2(sheetP.x * 7.0, (sheetP.y - t * fallSpeed) * 0.7));
+        float s2 = valueNoise(vec2(sheetP.x * 15.0 + 3.1, (sheetP.y - t * fallSpeed * 1.3) * 1.3));
         streaks = mix(0.5, s1 * 0.65 + s2 * 0.35, detail);
         vec3 side = mat3(G.view) * vec3(along.x, 0.0, along.y);
         n = normalize(n + side * ((s1 - 0.5) * 0.8 * detail));
@@ -468,7 +474,8 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
         color = mix(color, vec3(0.9, 0.94, 0.96) * mix(0.25, 1.0, ambient), churn * 0.75);
     }
     if (aer > 0.0) {
-        float cover = sheet ? aer * (0.35 + 0.9 * smoothstep(0.3, 0.75, streaks)) : 0.7 * flowFoam(world.xz, flow, aer * 0.85, footprint);
+        float cover = sheet ? 0.15 * aer + 0.75 * flowFoam(vec2(-sheetP.x, sheetP.y), vec2(0.0, fallSpeed), aer, footprint)
+                            : 0.7 * flowFoam(world.xz, flow, aer * 0.85, footprint);
         color = mix(color, vec3(0.9, 0.94, 0.96) * mix(0.25, 1.0, ambient), clamp(cover, 0.0, 0.95));
     }
     return color;

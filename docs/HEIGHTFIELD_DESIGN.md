@@ -509,3 +509,10 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   like relief (slopes facing the sun scatter more light up, +-35%), its source is 2.4x stronger (0.12 blocks^3 per (b/s) per s),
   `hfRippleNormal` defaults to 2.5 and the slope is capped at 0.9. Numpy with the shader math: swimming at 2-5.6 b/s, the wake
   covers ~25% of the 17 x 12 blocks behind the player, median tilt 8 deg, 95th percentile ~30 deg, brightness change up to 35%.
+* **Sheets joined to the brink:** a falling sheet now starts exactly at the brink edge (it moves out from the wall only as it
+  falls: CURTAIN_OUT eased in over the first quarter, plus the throw), its normal turns from the top surface's (up) to the arc's
+  over the first 30% of the fall, and it has 4 segments. A second sheet hangs 0.06 lower at 45% of the distance from the wall with
+  half the aeration; the parallax between the two layers gives the fall depth. Sheet vertices store their outward direction with
+  a falling speed (1.5 + 5 s blocks/s) in the flow channel, and composite.frag shades sheets in coordinates across the fall and
+  down it (continuing the top surface's along-flow coordinate at the brink), with the same flow-mapped foam as the surface, so
+  foam that rode the current to the edge keeps pouring down the sheet.
