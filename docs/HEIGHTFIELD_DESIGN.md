@@ -682,3 +682,12 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   each a depth read). It is now skipped where the surface reflects under 3.5% of the light (Fresnel). There the traced scene
   could change the pixel by at most that fraction of (scene - sky), so the sky stands in. The trace fades in up to 7%, so it
   is skipped when the view meets the surface steeper than about 35 degrees below the horizon and fully kept below 27 degrees.
+* **Pools sized up (Oct 22):** a 4070 Ti flood reached 166/256 tiles, 481/512 span pages and 384/384 flux pages. With flux full,
+  a tile that should wake gets no pages and stands as a wall that frame, and with span pages full the flood stops growing. The
+  pools are small (a span page is 12 KB and a flux page 32 KB at 2 cells per block), so the defaults are now 1024 tiles, 2048
+  span pages and 1536 flux pages (about 87 MB). The mesh pass used to dispatch over the whole span pool, so a bigger pool would
+  have cost every frame. Free span pages are now reused lowest first (a min-heap, not a FIFO), so the pages in use stay packed,
+  and the mesh pass covers only up to `HfTileGrid.pageEnd()`, the highest page a tile owns.
+* **Composite breakdown:** skipping the reflection trace barely changed composite per water pixel (1.60 ms at about 60% of a
+  4K screen looking down, against 0.77 ms at about 25% looking along a river), so the trace is not the main cost.
+  `hfCompositeOff` (bitmask: 1 reflection trace, 2 ripples, 4 foam, 8 wake) turns parts off to measure them with /water hf stats.

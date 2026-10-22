@@ -87,7 +87,7 @@ public final class WaterRenderer implements AutoCloseable {
 		boolean on = r != null && !Float.isNaN(r.planeY) && r.count > 0;
 		return new int[]{Program.f(filterMat), Program.f(on ? r.planeY - WaterSettings.hfSurfaceDrop : 0.0F),
 			Program.f(WaterSettings.hfRippleNormal), on ? r.count : 0, Program.f(WaterSettings.hfWakeLife), Program.f(WaterSettings.hfWakeFoam),
-			Program.f(on ? r.centerX : 0.0F), Program.f(on ? r.centerZ : 0.0F), Program.f(48.0F)};
+			Program.f(on ? r.centerX : 0.0F), Program.f(on ? r.centerZ : 0.0F), Program.f(48.0F), WaterSettings.hfCompositeOff};
 	}
 
 	private static boolean blendable(int format) {
@@ -277,7 +277,7 @@ public final class WaterRenderer implements AutoCloseable {
 				matTex,
 				view,
 				Desc.ssbo(this.noRipples));
-			this.compositeProgram.push(cb, Program.f(2.0F), 0, 0, 0, 0, 0, 0, 0, 0);
+			this.compositeProgram.push(cb, Program.f(2.0F), 0, 0, 0, 0, 0, 0, 0, 0, WaterSettings.hfCompositeOff);
 			this.compositeProgram.draw(cb, 3, 1);
 		}
 		GraphicsProgram.end(cb);

@@ -4,6 +4,7 @@ import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
+import java.util.PriorityQueue;
 import java.util.Set;
 
 /**
@@ -89,7 +90,8 @@ final class HfTileGrid {
 	final int[] fluxPage;
 	/** {@code tile << 2 | layer} for every span page in use, else {@link #NONE}. */
 	final int[] pageOwner;
-	private final ArrayDeque<Integer> freeSpan = new ArrayDeque<>();
+	/** Lowest index first, so the pages in use stay packed at the bottom and the mesh pass only covers those ({@link #pageEnd}). */
+	private final PriorityQueue<Integer> freeSpan = new PriorityQueue<>();
 	private final ArrayDeque<Integer> freeFlux = new ArrayDeque<>();
 	int count;
 	/**
@@ -715,6 +717,16 @@ final class HfTileGrid {
 			m = Math.max(m, values[s]);
 		}
 		return m;
+	}
+
+	/** One past the highest span page a tile owns: the mesh pass covers pages below this, not the whole pool. */
+	int pageEnd() {
+		for (int p = this.maxPages - 1; p >= 0; p--) {
+			if (this.pageOwner[p] != NONE) {
+				return p + 1;
+			}
+		}
+		return 0;
 	}
 
 	int usedSpanPages() {

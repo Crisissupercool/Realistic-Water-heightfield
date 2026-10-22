@@ -138,11 +138,11 @@ public final class WaterSettings {
 	public static int hfLayers = 4;
 	public static float hfMinOpening = 0.25F;
 	/** Tiles of 16x16 blocks; with hfMaxPages and hfMaxFluxPages read when a flood starts. */
-	public static int hfMaxTiles = 256;
+	public static int hfMaxTiles = 1024;
 	/** Span pages: one per used layer of a tile, 12 B per span (12 KB per page at 2 cells per block). */
-	public static int hfMaxPages = 512;
+	public static int hfMaxPages = 2048;
 	/** Flux pages, only held by tiles being simulated: 32 B per span (32 KB per page). */
-	public static int hfMaxFluxPages = 384;
+	public static int hfMaxFluxPages = 1536;
 	/** Quads in the shared heightfield surface mesh (80 B each). */
 	public static int hfMaxQuads = 400_000;
 	/** The heightfield owns realistic water: chunk loads, placed water and springs go to it instead of the particle simulation. */
@@ -157,6 +157,8 @@ public final class WaterSettings {
 	public static int hfWindowAbove = 96;
 	/** Debug: 0 normal, 1 draw only water tops (no side walls), 2 draw only side walls. */
 	public static int hfDebugMesh = 0;
+	/** Turns parts of the water shading off to measure their cost (/water hf stats, composite): 1 reflection trace, 2 ripples, 4 foam, 8 wake. Add to combine. */
+	public static int hfCompositeOff = 0;
 	public static int hfMaxNewTilesPerFrame = 2;
 	public static float hfCfl = 0.3F;
 	public static float hfDamping = 0.995F;

@@ -19,6 +19,8 @@ layout(push_constant) uniform Push {
     float wakeFoam;
     vec2 wakeCenter;
     float wakeRadius;
+    // WaterSettings.hfCompositeOff, for measuring what each part costs: 1 no reflection trace, 2 no ripples, 4 no foam, 8 no wake.
+    int debugOff;
 } pc;
 // Points where the player disturbed the surface, two vec4 each: ((x, z) in wrapped world blocks, seconds since, displaced volume
 // in blocks^3), (foam it churned up, 0, 0, 0).
@@ -448,7 +450,7 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     n = normalize(mix(n, upV, film * 0.9));
     vec3 tilt = vec3(0.0);
     vec4 wk = vec4(0.0);
-    if (!sheet) {
+    if (!sheet && (pc.debugOff & 8) == 0) {
         wk = wakeAt(world, footprint);
         vec2 slope = wk.xy * pc.wakeGain;
         float steep = length(slope);
@@ -457,8 +459,10 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
         tilt = mat3(G.view) * vec3(slope.x, 0.0, slope.y);
         n = normalize(n - tilt);
     }
-    vec3 wrinkled = rippleNormal(n, P, footprint, flow);
-    n = normalize(mix(n, wrinkled, lip * smoothstep(0.0, 0.15, dot(wrinkled, V))));
+    if ((pc.debugOff & 2) == 0) {
+        vec3 wrinkled = rippleNormal(n, P, footprint, flow);
+        n = normalize(mix(n, wrinkled, lip * smoothstep(0.0, 0.15, dot(wrinkled, V))));
+    }
 
     // Refraction shifts the scene behind by how far the normal leans away from vertical (flat water does not shift it), capped
     // on screen; the wake bends it half as much as it bends reflections, so the riverbed stays readable behind a swimmer.
@@ -499,7 +503,7 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     float hit = 0.0;
     vec3 ssr = vec3(0.0);
     float ssrWeight = smoothstep(SSR_MIN_F, 2.0 * SSR_MIN_F, F);
-    if (ssrWeight > 0.0) {
+    if (ssrWeight > 0.0 && (pc.debugOff & 1) == 0) {
         ssr = traceReflection(P + n * 0.05, Rv, hit);
         hit *= ssrWeight;
     }
@@ -507,11 +511,11 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     vec3 color = mix(water, reflection, F) + sunSpecular(n, V, footprint);
     // Wave crests are thinner, so light scattered in the water shows through them a little brighter.
     color += G.scatter.rgb * ambient * clamp(wk.z * 2.5, 0.0, 0.2);
-    if (wk.w > 0.01) {
+    if (wk.w > 0.01 && (pc.debugOff & 4) == 0) {
         float churn = foamTexture(world.xz * 1.4, wk.w * 0.85, footprint);
         color = mix(color, vec3(0.9, 0.94, 0.96) * mix(0.25, 1.0, ambient), churn * 0.75);
     }
-    if (aer > 0.0) {
+    if (aer > 0.0 && (pc.debugOff & 4) == 0) {
         float cover;
         if (sheet) {
             // A sheet starts with exactly the top surface's foam and over its first half block turns into falling water's: foam

@@ -1124,7 +1124,8 @@ final class HfDomain implements AutoCloseable {
 		int ring = Vk.ringSlot();
 		this.meshCounters.fill(cb, 0);
 		Vk.barrier(cb);
-		int pages = this.grid.maxPages;
+		// Only up to the highest page in use (free pages are reused lowest first), so a big pool costs nothing until it fills.
+		int pages = Math.max(this.grid.pageEnd(), 1);
 		this.bind(p[2], cb, ubo, ring, this.stats);
 		// Sheets emit spray for the time the water moved this frame (none while paused or asleep).
 		float emit = this.lastSteps * this.lastDt * Math.max(WaterSettings.hfSpray, 0.0F);
