@@ -105,7 +105,7 @@ final class HfDomain implements AutoCloseable {
 	final int originY;
 	final int cellsPerBlock;
 	final float cell;
-	final int quadCapacity;
+	int quadCapacity;
 	double initialVolume;
 	/** Water springs added minus water open edges drained, in blocks^3, since the heightfield started (counted on the GPU). */
 	double reservoirVolume;
@@ -130,11 +130,11 @@ final class HfDomain implements AutoCloseable {
 	private final int[][] statsPages = new int[Vk.FRAME_RING][];
 	private final VkBuf[] listRing = new VkBuf[Vk.FRAME_RING];
 	private final VkBuf[] activeRing = new VkBuf[Vk.FRAME_RING];
-	final VkBuf verts;
-	final VkBuf quads;
+	VkBuf verts;
+	VkBuf quads;
 	final VkBuf meshCounters;
 	/** Water velocity per mesh vertex (two halves), for flow-mapped shading. */
-	final VkBuf vertFlow;
+	VkBuf vertFlow;
 
 	/**
 	 * Spray (see hf_spray_update.comp): whitewater particles in two halves of SPRAY_MAX, in the layout of the particle regions'
@@ -1114,7 +1114,30 @@ final class HfDomain implements AutoCloseable {
 	}
 
 	/** Rebuilds the surface mesh only when the water moved, tiles changed or the render threshold changed. */
+	/** The most the surface mesh grows to (96 B per quad: 192 MB). */
+	static final int MAX_QUADS = 2_000_000;
+
+	/**
+	 * Grows the mesh buffers by half when the last mesh used over 90% of them (a flood of 470 tiles asked for 434k quads with room
+	 * for 400k, and the rest was simply not drawn). The mesh is rebuilt in full the same frame, so nothing needs copying.
+	 */
+	private void growMesh() {
+		if (this.lastQuads <= this.quadCapacity * 0.9 || this.quadCapacity >= MAX_QUADS) {
+			return;
+		}
+		int cap = (int) Math.min(MAX_QUADS, Math.max(this.lastQuads * 1.5, this.quadCapacity * 1.5));
+		Vk.destroyLater(this.verts);
+		Vk.destroyLater(this.quads);
+		Vk.destroyLater(this.vertFlow);
+		this.quadCapacity = cap;
+		this.verts = VkBuf.device(cap * 4L * 16L, 0);
+		this.quads = VkBuf.device(cap * 16L, 0);
+		this.vertFlow = VkBuf.device(cap * 4L * 4L, 0);
+		this.meshDirty = true;
+	}
+
 	void buildMesh(VkCommandBuffer cb, Desc ubo) {
+		this.growMesh();
 		if (!this.meshDirty && this.meshRenderDepth == WaterSettings.hfRenderDepth && this.meshDebug == WaterSettings.hfDebugMesh
 			&& this.meshFoam == WaterSettings.hfFoam) {
 			this.sprayArgs(cb, ubo);
@@ -1186,7 +1209,7 @@ final class HfDomain implements AutoCloseable {
 			volume, drift, Math.abs(this.reservoirVolume) >= 0.05 ? String.format(", springs/edges %+,.1f", this.reservoirVolume) : "", maxDepth, g.activeMax(g.maxSpeed), motion,
 			this.hiddenTiles() > 0 ? String.format("  |  %d tiles not drawn (past render distance)", this.hiddenTiles()) : "",
 			String.format("  |  quads %,d/%,d%s", this.lastQuads, this.quadCapacity,
-				this.lastQuads > this.quadCapacity ? " FULL: raise hfMaxQuads, the rest is not drawn" : ""),
+				this.lastQuads > this.quadCapacity ? (this.quadCapacity >= MAX_QUADS ? " FULL at the limit, the rest is not drawn" : " full, growing") : ""),
 			g.foreignKeptOpen > 0 ? String.format("  |  edits kept %,d non-realistic fluid blocks open", g.foreignKeptOpen) : "");
 	}
 

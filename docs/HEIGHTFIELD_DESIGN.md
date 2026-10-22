@@ -711,3 +711,8 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   each span's surface, wet flag, velocity and foam once. Today every corner re-derives them from geo, depth, pageOwner, 8 flux
   values and foam, for up to 4 neighbors, 4 times per span. The stats also summarize the particle-sim regions (water it still
   owns, lava, sand), which the GPU timer's "particles" section covers.
+* **Measured after the subgroup allocation:** mesh build 1.54 ms at 469 tiles (from 3.0-3.25 ms at 345-474) and 1.49 ms at 665
+  simulated. The new quad readout then showed 434k and 494k quads against the 400k capacity, so 8-19% of the surface was not
+  drawn (which also flattered that timing a little). The mesh buffers now grow by half once a mesh uses over 90% of them
+  (`HfDomain.growMesh`, up to `MAX_QUADS` = 2M, 96 B per quad). Nothing is copied: the mesh is rebuilt in full the same frame,
+  and the old buffers go through `Vk.destroyLater` because earlier dispatches of the frame still bind them.
