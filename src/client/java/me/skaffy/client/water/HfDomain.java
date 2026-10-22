@@ -107,6 +107,9 @@ final class HfDomain implements AutoCloseable {
 	final float cell;
 	final int quadCapacity;
 	double initialVolume;
+	/** Water springs added minus water open edges drained, in blocks^3, since the heightfield started (counted on the GPU). */
+	double reservoirVolume;
+	private long statsTail;
 
 	private final int ps;
 	private final int groupsPerPage;
@@ -220,7 +223,9 @@ final class HfDomain implements AutoCloseable {
 		this.foam = VkBuf.device(this.foamHalf * 8L, 0);
 		this.tileInfo = VkBuf.device((long) grid.maxTiles * 64L, 0);
 		this.pageOwner = VkBuf.device((long) grid.maxPages * 4L, 0);
-		long statsBytes = (long) grid.maxPages * this.groupsPerPage * STATS_BYTES;
+		this.statsTail = (long) grid.maxPages * this.groupsPerPage * STATS_BYTES;
+		// Plus one slot for the water reservoirs added or removed (hf_reservoir.comp).
+		long statsBytes = this.statsTail + 16L;
 		this.stats = VkBuf.device(statsBytes, 0);
 		for (int i = 0; i < Vk.FRAME_RING; i++) {
 			this.statsReadback[i] = VkBuf.readback(statsBytes);
@@ -607,8 +612,11 @@ final class HfDomain implements AutoCloseable {
 		}
 		this.statsPages[ring] = null;
 		VkBuf rb = this.statsReadback[ring];
-		rb.invalidate(0, (long) this.grid.maxPages * this.groupsPerPage * STATS_BYTES);
+		rb.invalidate(0, this.statsTail + 16L);
 		ByteBuffer b = rb.mapped();
+		double fromReservoirs = b.getInt((int) this.statsTail) / 65536.0;
+		this.reservoirVolume += fromReservoirs;
+		this.initialVolume += fromReservoirs;
 		HfTileGrid g = this.grid;
 		// entries = {tile, page} pairs simulated in that frame; only those tiles get fresh numbers.
 		for (int i = 0; i < entries.length; i += 2) {
@@ -817,12 +825,15 @@ final class HfDomain implements AutoCloseable {
 				Vk.barrier(cb);
 				if (this.reservoirCount > 0) {
 					this.bind(p[7], cb, ubo, ring, this.stats, this.reservoirBuf);
-					p[7].push(cb, this.push(this.reservoirCount, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0, 0, 0, 0));
+					p[7].push(cb, this.push(this.reservoirCount, this.cell, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F,
+						(int) (this.statsTail / 4L), 0, 0, 0));
 					p[7].dispatch(cb, ComputeProgram.groups(this.reservoirCount, 64), 1, 1);
 					Vk.barrier(cb);
 				}
 			}
-			this.stats.copyTo(cb, this.statsReadback[ring], 0, 0, (long) this.grid.maxPages * this.groupsPerPage * STATS_BYTES);
+			this.stats.copyTo(cb, this.statsReadback[ring], 0, 0, this.statsTail + 16L);
+			Vk.barrier(cb);
+			this.stats.fill(cb, this.statsTail, 16L, 0);
 			int[] entries = new int[n * 2];
 			for (int i = 0; i < n; i++) {
 				int tile = list[i] >> 2;
@@ -1161,10 +1172,10 @@ final class HfDomain implements AutoCloseable {
 			: String.format("%d awake, %d simulated, %d steps x %.1f ms", awake, g.activeList.length, this.lastSteps, this.lastDt * 1000.0F);
 		double usedMb = (g.usedSpanPages() * (double) this.ps * SPAN_BYTES + g.usedFluxPages() * (double) this.ps * FLUX_BYTES) / 1.0e6;
 		return String.format(
-			(this.reservoirCount > 0 ? "[" + this.reservoirCount + " reservoir cells add/remove water] " : "") + "heightfield (Y " + g.yMin + " to " + g.yMax + "): %d/%d tiles, pages %d/%d + flux %d/%d (%.1f of %.0f MB), %d spans dropped  |  volume %,.1f blocks (%+.3f%% since start)  |  "
+			(this.reservoirCount > 0 ? "[" + this.reservoirCount + " reservoir cells add/remove water] " : "") + "heightfield (Y " + g.yMin + " to " + g.yMax + "): %d/%d tiles, pages %d/%d + flux %d/%d (%.1f of %.0f MB), %d deep cave cells past layer " + g.layers + " treated as solid  |  volume %,.1f blocks (solver drift %+.3f%%%s)  |  "
 				+ "max depth %.2f  max speed %.2f b/s  |  %s%s%s",
-			g.count, g.maxTiles, g.usedSpanPages(), g.maxPages, g.usedFluxPages(), g.maxFluxPages, usedMb, this.bytes() / 1.0e6, g.droppedSpans,
-			volume, drift, maxDepth, g.activeMax(g.maxSpeed), motion,
+			g.count, g.maxTiles, g.usedSpanPages(), g.maxPages, g.usedFluxPages(), g.maxFluxPages, usedMb, this.bytes() / 1.0e6, g.droppedSpans(),
+			volume, drift, Math.abs(this.reservoirVolume) >= 0.05 ? String.format(", springs/edges %+,.1f", this.reservoirVolume) : "", maxDepth, g.activeMax(g.maxSpeed), motion,
 			this.hiddenTiles() > 0 ? String.format("  |  %d tiles not drawn (past render distance)", this.hiddenTiles()) : "",
 			g.foreignKeptOpen > 0 ? String.format("  |  edits kept %,d non-realistic fluid blocks open", g.foreignKeptOpen) : "");
 	}

@@ -6,6 +6,12 @@
 layout(local_size_x = 64) in;
 layout(std430, binding = 2) buffer Depth { float depth[]; };
 layout(std430, binding = 14) readonly buffer Aux { ivec4 entries[]; };
+// The water reservoirs add (springs) or remove (open edges) is summed into one int past the per-page stats, in 1/65536 blocks^3,
+// so /water hf stats can tell water that came from a spring from water the solver lost or made (HfDomain.readStats).
+layout(std430, binding = 8) buffer Stats { int statsInt[]; };
+#define HF_CELL hp.p0.x
+#define HF_VOLUME_SLOT uint(hp.p2.x)
+const float VOLUME_UNIT = 65536.0;
 
 void main() {
     uint i = GID_U;
@@ -29,7 +35,13 @@ void main() {
             continue;
         }
         float target = level - g.x;
-        depth[s] = e.w == 0 ? target : max(depth[s], target);
+        float old = depth[s];
+        float now = e.w == 0 ? target : max(old, target);
+        depth[s] = now;
+        int dv = int(round((now - old) * HF_CELL * HF_CELL * VOLUME_UNIT));
+        if (dv != 0) {
+            atomicAdd(statsInt[HF_VOLUME_SLOT], dv);
+        }
         return;
     }
 }

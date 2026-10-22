@@ -405,6 +405,8 @@ float flowFoam(vec2 p, vec2 flow, float coverage, float footprint) {
 const float SHEET_NEAR = 0.5;
 // How fast the pattern on falling sheets moves down (blocks/s).
 const float SHEET_SCROLL = 5.0;
+// Reflectance (Fresnel) below which the screen-space reflection is not traced (see shadeAboveWater).
+const float SSR_MIN_F = 0.035;
 const vec2 SHEET_OUTWARD[4] = vec2[](vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, -1.0));
 
 vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, float aer, bool sheet, vec2 flow, float sheetDrop) {
@@ -489,10 +491,19 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
 
     vec3 Rv = reflect(-V, n);
     vec3 Rw = (G.invView * vec4(Rv, 0.0)).xyz;
-    float hit;
-    vec3 ssr = traceReflection(P + n * 0.05, Rv, hit);
-    vec3 reflection = mix(skyColor(Rw), ssr, hit);
     float F = 0.02 + 0.98 * pow(1.0 - clamp(dot(n, V), 0.0, 1.0), 5.0);
+    // The reflection trace (up to 54 depth reads) is most of this pass. Seen from above, water reflects only 2-5% of the light,
+    // so the traced scene could change the pixel by at most that fraction of (scene - sky): there it is skipped and the sky
+    // stands in, fading in between SSR_MIN_F and twice that so no edge shows: traced when the view meets the surface less than
+    // about 27 degrees below the horizon, skipped steeper than about 35 degrees.
+    float hit = 0.0;
+    vec3 ssr = vec3(0.0);
+    float ssrWeight = smoothstep(SSR_MIN_F, 2.0 * SSR_MIN_F, F);
+    if (ssrWeight > 0.0) {
+        ssr = traceReflection(P + n * 0.05, Rv, hit);
+        hit *= ssrWeight;
+    }
+    vec3 reflection = mix(skyColor(Rw), ssr, hit);
     vec3 color = mix(water, reflection, F) + sunSpecular(n, V, footprint);
     // Wave crests are thinner, so light scattered in the water shows through them a little brighter.
     color += G.scatter.rgb * ambient * clamp(wk.z * 2.5, 0.0, 0.2);

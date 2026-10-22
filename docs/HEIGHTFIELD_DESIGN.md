@@ -668,3 +668,17 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   test, one chunk of slack) or is not loaded on the client. The hidden flag lives in the spare `tileInfo[tile*4+1].w` slot, and
   `hf_mesh` skips those tiles, so they emit no spray either. Hidden tiles keep simulating; only drawing stops. The flags are
   recomputed every frame (one test per tile), and the mesh rebuilds only when one changes. `/water hf stats` reports the count.
+* **Stats readout fixed (Oct 22):** a 4070 Ti test reported "+1,685,497% since start". Bucket water and new tiles already moved
+  the baseline, but reservoirs (springs, open edges) add and remove water on the GPU every step and were counted as drift. Now
+  `hf_reservoir.comp` sums its change into one int past the per-page stats, in fixed point (1/65536 block^3, rounded). The CPU
+  reads it back with the stats, adds it to the baseline and clears it after each copy. The line now reads "solver drift X%,
+  springs/edges +N". "Spans dropped" was also misleading: it only grew as tiles were added. It is now kept per tile, replaced on
+  rebuilds and labelled as what it is. These are deep cave pockets below a column's 4 uppermost air gaps, treated as solid
+  (HfTopology keeps the top ones). They are dry, so no water is lost, but water flooding down that far would meet a wall.
+  Raising the cap past 4 needs the 2-bit layer field in the links and the 4-per-tile `tileInfo` layout widened in every shader.
+* **Measured cost (4070 Ti, 4K, 48 tiles):** frame 3.1 ms, of which the mod's GPU time is 2.04 ms. composite 0.98, scene copies
+  0.29, mesh build 0.28, front pass 0.24, solver 0.10, thickness 0.09, whitewater 0.05. The solver is cheap. Composite scales
+  with how much of the screen is water. Its main cost is the screen-space reflection trace (48 march steps + 6 refinement steps,
+  each a depth read). It is now skipped where the surface reflects under 3.5% of the light (Fresnel). There the traced scene
+  could change the pixel by at most that fraction of (scene - sky), so the sky stands in. The trace fades in up to 7%, so it
+  is skipped when the view meets the surface steeper than about 35 degrees below the horizon and fully kept below 27 degrees.

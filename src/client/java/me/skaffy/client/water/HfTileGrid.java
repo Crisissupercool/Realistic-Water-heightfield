@@ -92,7 +92,11 @@ final class HfTileGrid {
 	private final ArrayDeque<Integer> freeSpan = new ArrayDeque<>();
 	private final ArrayDeque<Integer> freeFlux = new ArrayDeque<>();
 	int count;
-	int droppedSpans;
+	/**
+	 * Per tile: air pockets below a column's {@link #layers} uppermost ones, treated as solid (HfTopology keeps the top ones). These
+	 * are dry deep cave pockets, not lost water; water reaching one would meet a wall there.
+	 */
+	private final int[] tileDropped;
 	private final Set<Integer> dirty = new LinkedHashSet<>();
 	/** CPU copy of each tile's packed geometry ({@code layer * pageSpans + col}), for block sync and placing water. */
 	final int[][] tileGeo;
@@ -146,6 +150,7 @@ final class HfTileGrid {
 		this.tileZ = new int[maxTiles];
 		this.nbr = new int[maxTiles * 4];
 		this.layersUsed = new int[maxTiles];
+		this.tileDropped = new int[maxTiles];
 		this.spanPage = new int[maxTiles * 4];
 		this.fluxPage = new int[maxTiles * 4];
 		this.pageOwner = new int[maxPages];
@@ -355,7 +360,7 @@ final class HfTileGrid {
 			}
 		}
 		this.quiet[s] = 0.0F;
-		this.droppedSpans += t.dropped;
+		this.tileDropped[s] = t.dropped;
 		return s;
 	}
 
@@ -383,6 +388,7 @@ final class HfTileGrid {
 		int[] pages = this.takeSpanPages(tile, t.layersUsed);
 		System.arraycopy(pages, 0, this.spanPage, tile * 4, MAX_LAYERS);
 		this.layersUsed[tile] = t.layersUsed;
+		this.tileDropped[tile] = t.dropped;
 		this.tileGeo[tile] = t.geo;
 		this.version[tile]++;
 		// A simulated tile keeps its flux pages through the rebuild (the remap moves each column's flow along with its water), so
@@ -681,6 +687,15 @@ final class HfTileGrid {
 			if (this.quiet[s] < sleepSeconds) {
 				n++;
 			}
+		}
+		return n;
+	}
+
+	/** Air pockets treated as solid in the current tiles (see {@link #tileDropped}). */
+	int droppedSpans() {
+		int n = 0;
+		for (int s = 0; s < this.count; s++) {
+			n += this.tileDropped[s];
 		}
 		return n;
 	}
