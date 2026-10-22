@@ -330,68 +330,54 @@ vec4 wakeAt(vec3 world, float footprint) {
 }
 
 
-// The foam pattern before its threshold: value noise octaves, the finer ones only where a pixel resolves them. Foam on running
-// water is stretched into streaks by averaging the two coarse octaves along the flow (smear: half the streak, in blocks),
-// never by rotating the coordinates: rotating world coordinates (thousands of blocks) by a direction that varies across the
-// surface scrambled the pattern into scratchy lines wherever the flow turned.
-float foamField(vec2 p, vec2 smear, float footprint) {
+// The foam pattern before its threshold, and the coordinates it was sampled at (x: pattern, yz: warped coordinates, for the
+// bubbles). Value noise octaves on coordinates warped by slow noise, so patches are organic rather than round blobs; the finer
+// octaves only where a pixel resolves them. Foam on running water is stretched into streaks by averaging the two coarse
+// octaves along the flow (smear: half the streak, in blocks), never by rotating the coordinates (rotating world coordinates by a
+// direction that varies across the surface scrambled the pattern into scratchy lines wherever the flow turned).
+vec3 foamField(vec2 p, vec2 smear, float footprint) {
     float t = G.simB.z;
-    vec2 drift = vec2(t * 0.07, -t * 0.05);
-    float d1 = 1.0 - smoothstep(0.03, 0.12, footprint);
-    float d2 = 1.0 - smoothstep(0.006, 0.025, footprint);
-    vec2 a = p * 1.1 + drift;
-    vec2 b = p * 2.9 + vec2(3.1, 0.0) - drift;
+    vec2 w = vec2(valueNoise(p * 0.6 + vec2(7.3, 0.0)), valueNoise(p * 0.6 + vec2(0.0, 3.1))) - 0.5;
+    vec2 q = p + w * 0.9 + vec2(t * 0.07, -t * 0.05);
+    float d1 = 1.0 - smoothstep(0.04, 0.15, footprint);
+    vec2 a = q * 1.1;
+    vec2 b = q * 2.3 + vec2(5.2, 0.0);
     float n1 = valueNoise(a);
     float n2 = valueNoise(b);
     float len = length(smear);
     if (len > 0.01) {
         // Averaging flattens the noise; its contrast is restored so the foam keeps its coverage.
         n1 = 0.5 + ((n1 + valueNoise(a + smear * 1.1) + valueNoise(a - smear * 1.1)) / 3.0 - 0.5) * (1.0 + 0.6 * min(len * 1.1, 1.0));
-        n2 = 0.5 + ((n2 + valueNoise(b + smear * 2.9) + valueNoise(b - smear * 2.9)) / 3.0 - 0.5) * (1.0 + 0.6 * min(len * 2.9, 1.0));
+        n2 = 0.5 + ((n2 + valueNoise(b + smear * 2.3) + valueNoise(b - smear * 2.3)) / 3.0 - 0.5) * (1.0 + 0.6 * min(len * 2.3, 1.0));
     }
-    float n3 = d1 > 0.0 ? valueNoise(p * 9.0 + vec2(0.0, 7.7) + drift * 2.0) : 0.5;
-    float n4 = d2 > 0.0 ? valueNoise(p * 23.0 + vec2(1.3, 0.0) - drift * 3.0) : 0.5;
-    return n1 * 0.45 + n2 * 0.3 + mix(0.5, n3, d1) * 0.17 + mix(0.5, n4, d2) * 0.08;
+    float n3 = d1 > 0.0 ? valueNoise(q * 4.7 + vec2(0.0, 9.1)) : 0.5;
+    float n4 = d1 > 0.0 ? valueNoise(q * 9.6 + vec2(1.7, 0.0)) : 0.5;
+    return vec3(n1 * 0.5 + n2 * 0.27 + mix(0.5, n3, d1) * 0.15 + mix(0.5, n4, d1) * 0.08, q);
 }
 
-// Foam: patches of the field whose coverage grows with the foam amount. Up close a patch is a lace, as real foam is: white walls
-// between bubbles (the edges of a jittered cell pattern, F2 - F1) over clearer water inside them, thin at a patch's edge and
-// filling in toward its middle and with more foam. Round bubble dots used to sit on flat white here, which read as a printed
-// texture. Detail fades to its average where a pixel would cover it, so it never aliases.
-float foamShape(float v, vec2 p, float coverage, float footprint) {
-    float edge = 0.025 + 1.5 * footprint;
-    float cover = smoothstep(1.0 - coverage - edge, 1.0 - coverage + edge, v);
+// Foam: patches of the field whose coverage grows with the foam amount, with a feathered edge (wider inward) so they fade into
+// the water, and up close bubbly holes of varied size, more and bigger toward a patch's thin edge, filling in toward its middle.
+// (A cell pattern here read as cracked tiles, round dots on flat white as a printed texture; see scratchpad preview/foam2.py.)
+float foamShape(vec3 f, float coverage, float footprint) {
+    float edge = 0.02 + 1.5 * footprint;
+    float cover = smoothstep(1.0 - coverage - edge, 1.0 - coverage + 0.12 + edge, f.x);
     if (cover <= 0.0) {
         return 0.0;
     }
-    float inside = smoothstep(1.0 - coverage, 1.0 - coverage + 0.3, v);
-    float detail = 1.0 - smoothstep(0.012, 0.05, footprint);
+    float inside = smoothstep(1.0 - coverage + 0.05, 1.0 - coverage + 0.35, f.x);
+    float base = mix(0.7, 1.0, inside);
+    float detail = 1.0 - smoothstep(0.015, 0.06, footprint);
     if (detail <= 0.0) {
-        return cover * mix(0.75, 1.0, inside * inside);
+        return cover * base;
     }
-    float t = G.simB.z;
-    vec2 q = (p + vec2(t * 0.07, -t * 0.05)) * 7.0;
-    vec2 c = floor(q);
-    float f1 = 9.0;
-    float f2 = 9.0;
-    for (int k = 0; k < 9; k++) {
-        vec2 cell = c + vec2(float(k % 3 - 1), float(k / 3 - 1));
-        vec2 feature = cell + 0.1 + 0.8 * vec2(noiseHash(cell), noiseHash(cell + vec2(17.0, 31.0)));
-        float d = distance(q, feature);
-        if (d < f1) {
-            f2 = f1;
-            f1 = d;
-        } else if (d < f2) {
-            f2 = d;
-        }
-    }
-    float wall = 1.0 - smoothstep(0.0, 0.07 + 0.45 * inside, f2 - f1);
-    float lace = mix(mix(0.3, 1.0, wall), 1.0, inside * inside * 0.6);
-    return cover * mix(mix(0.75, 1.0, inside * inside), lace, detail);
+    float h = valueNoise(f.yz * 13.0 + vec2(3.3, 0.0)) * 0.6 + valueNoise(f.yz * 29.0 + vec2(0.0, 8.8)) * 0.4;
+    float holes = smoothstep(0.62 - 0.35 * inside, 0.72 - 0.3 * inside, h);
+    float lace = mix(holes, 1.0, inside * inside) * mix(0.75, 1.0, inside);
+    return cover * mix(base, lace, detail);
 }
 
 float foamTexture(vec2 p, float coverage, float footprint) {
-    return foamShape(foamField(p, vec2(0.0), footprint), p, coverage, footprint);
+    return foamShape(foamField(p, vec2(0.0), footprint), coverage, footprint);
 }
 
 // Foam carried by the current: flow-mapped like the ripples (two phases, see flowPhases) and stretched into streaks along
@@ -408,8 +394,8 @@ float flowFoam(vec2 p, vec2 flow, float coverage, float footprint) {
     vec2 smear = flow * (0.12 * min(speed, 6.0) / speed);
     vec2 a = p - off0;
     vec2 b = p - off1 + vec2(13.7, 5.1);
-    float fa = foamShape(foamField(a, smear, footprint), a, coverage, footprint);
-    float fb = foamShape(foamField(b, smear, footprint), b, coverage, footprint);
+    float fa = foamShape(foamField(a, smear, footprint), coverage, footprint);
+    float fb = foamShape(foamField(b, smear, footprint), coverage, footprint);
     return mix(fb, fa, w0);
 }
 
@@ -417,6 +403,8 @@ float flowFoam(vec2 p, vec2 flow, float coverage, float footprint) {
 // instead of the flat glass look; foam on the surface shows as soft patches. Ripples around the player bend the surface normal.
 // A falling sheet's drop (blocks fallen from its edge) is known up to this; below it the sheet uses its own coordinates.
 const float SHEET_NEAR = 0.5;
+// How fast the pattern on falling sheets moves down (blocks/s).
+const float SHEET_SCROLL = 5.0;
 const vec2 SHEET_OUTWARD[4] = vec2[](vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, -1.0));
 
 vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, float aer, bool sheet, vec2 flow, float sheetDrop) {
@@ -432,23 +420,21 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     // bumpy normal.
     float lip = 1.0;
     vec2 nearP = world.xz;
-    vec2 farP = world.xz;
-    float streak = 0.5;
+    float sheetAcross = 0.0;
+    float sheetDown = 0.0;
     if (sheet) {
         vec2 outward = length(flow) > 1.0e-3 ? normalize(flow) : vec2(1.0, 0.0);
         float fallSpeed = max(length(flow), 1.0);
         vec2 along = vec2(-outward.y, outward.x);
         lip = 1.0 - smoothstep(0.0, 0.3, sheetDrop);
         nearP = world.xz + outward * sheetDrop;
-        farP = world.xz - outward * world.y;
-        float down = dot(farP, outward);
-        float across = dot(world.xz, along);
-        float t = G.simB.z;
-        // Streaks down the fall, a few per block across it: they bend the surface a little and gap the white (below).
+        // Coordinates across the fall and down it, scrolling down at one speed for every sheet (a speed varying down the sheet
+        // would shear the pattern more and more over time).
+        sheetAcross = dot(world.xz, along);
+        sheetDown = dot(world.xz, outward) - world.y - G.simB.z * SHEET_SCROLL;
+        // Streaks a few per block across bend the surface a little.
         float detail = smoothstep(1.0, 3.0, 0.3 / max(footprint, 1.0e-5)) * (1.0 - lip);
-        float s1 = valueNoise(vec2(across * 3.5, (down - t * fallSpeed) * 0.6));
-        float s2 = valueNoise(vec2(across * 1.3 + 5.7, (down - t * fallSpeed * 0.8) * 0.25));
-        streak = mix(0.5, s1 * 0.6 + s2 * 0.4, 1.0 - lip);
+        float s1 = valueNoise(vec2(sheetAcross * 3.5, sheetDown * 0.6));
         vec3 side = mat3(G.view) * vec3(along.x, 0.0, along.y);
         n = normalize(n + side * ((s1 - 0.5) * 0.45 * detail));
     }
@@ -515,22 +501,47 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
         color = mix(color, vec3(0.9, 0.94, 0.96) * mix(0.25, 1.0, ambient), churn * 0.75);
     }
     if (aer > 0.0) {
-        // A sheet starts with exactly the top surface's foam and turns into its own (whiter, streaked down the fall).
-        float fall = 1.0 - lip;
-        float coverage = aer * (0.85 + 0.15 * fall);
-        float near = sheet ? 1.0 - smoothstep(0.32, 0.48, sheetDrop) : 1.0;
-        float f = near > 0.0 ? near * flowFoam(nearP, flow, coverage, footprint) : 0.0;
-        if (near < 1.0) {
-            f += (1.0 - near) * flowFoam(farP, flow, coverage, footprint);
+        float cover;
+        if (sheet) {
+            // A sheet starts with exactly the top surface's foam and over its first half block turns into falling water's: foam
+            // torn into streaks, patches stretched four times down the fall plus thin strands (two scales, wiggling a little)
+            // whose density follows the aeration, so it whitens in strands with clearer water between them (preview/sheet2.py).
+            float w = smoothstep(0.1, 0.45, sheetDrop);
+            float top = w < 1.0 ? 0.7 * flowFoam(nearP, flow, aer * 0.85, footprint) : 0.0;
+            float low = 0.0;
+            if (w > 0.0) {
+                float wig = (valueNoise(vec2(sheetAcross * 0.8, sheetDown * 0.4)) - 0.5) * 0.3;
+                float fine = 1.0 - smoothstep(0.02, 0.08, footprint);
+                float sv = valueNoise(vec2((sheetAcross + wig) * 7.0, sheetDown * 0.3)) * 0.6
+                    + mix(0.5, valueNoise(vec2((sheetAcross + wig) * 16.1 + 3.1, sheetDown * 0.5)), fine) * 0.4;
+                float thr = 1.0 - aer * 0.9;
+                float strands = smoothstep(thr - 0.12, thr + 0.12, sv);
+                low = 0.5 * foamTexture(vec2(sheetAcross, sheetDown * 0.25), aer, footprint) + 0.5 * strands;
+            }
+            cover = min(mix(top, low, w), 0.88);
+        } else {
+            cover = 0.7 * flowFoam(world.xz, flow, aer * 0.85, footprint);
         }
-        // A falling sheet is white in streaks with clearer gaps, never one opaque band.
-        float cover = sheet ? min((0.6 + 0.15 * fall) * f * mix(0.35, 1.25, smoothstep(0.25, 0.75, streak)) + 0.05 * aer * fall, 0.82)
-                            : 0.7 * f;
         color = mix(color, vec3(0.9, 0.94, 0.96) * mix(0.25, 1.0, ambient), clamp(cover, 0.0, 0.95));
     }
     return color;
 }
 
+
+// A splash's water drop (heightfield spray, see hf_spray.glsl). Drops are small, so the scene behind shows almost straight
+// through one; what makes it visible is the light it catches: the sky reflected around its rim, the sun's glint and the air
+// whipped into splash water (a little white). Shaded like the lake (refraction offset, wet darkening, absorption) drops looked
+// like dark pebbles.
+vec3 shadeDrop(vec2 uv, vec3 n, float fd, float ambient) {
+    vec3 V = toEyeAt(uv);
+    n = dot(n, V) < 0.0 ? -n : n;
+    vec3 behind = texture(sceneColor, clamp(uv + n.xy * 0.004, vec2(0.0), vec2(1.0))).rgb;
+    vec3 Rw = (G.invView * vec4(reflect(-V, n), 0.0)).xyz;
+    float F = 0.08 + 0.92 * pow(1.0 - clamp(dot(n, V), 0.0, 1.0), 4.0);
+    vec3 c = mix(behind, skyColor(Rw), F);
+    c = mix(c, vec3(0.9, 0.94, 0.96) * mix(0.3, 1.0, ambient), 0.25);
+    return c + sunSpecular(n, V, pixelFootprint(fd));
+}
 
 vec3 shadeSurfaceFromBelow(vec2 uv, vec3 n, float fd, vec3 deep) {
     vec3 P = viewPosAt(uv, fd);
@@ -614,8 +625,11 @@ void main() {
                 flow = vec2(cos(angle), sin(angle)) * (float((code >> 15) & 255u) / 255.0 * 8.0);
             }
         }
+        // Heightfield splash drops write -0.2 (droplet_front.frag with HF_DROPS).
+        bool drop = matTagged && matId < -0.125;
         color = lavaPass ? shadeAboveLava(uv, g.xyz, fd, ambient)
-                         : shadeAboveWater(uv, g.xyz, fd, sceneDist, ambient, aer, sheet, flow, sheetDrop);
+            : drop ? shadeDrop(uv, g.xyz, fd, ambient)
+            : shadeAboveWater(uv, g.xyz, fd, sceneDist, ambient, aer, sheet, flow, sheetDrop);
         vec4 clip = G.proj * vec4(viewPosAt(uv, fd), 1.0);
         outDepth = clip.z / clip.w;
     }

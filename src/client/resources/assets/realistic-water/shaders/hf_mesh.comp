@@ -408,7 +408,7 @@ SheetPoint sheetPoint(vec3 e, vec2 outward, vec4 end, float s, vec2 inward, bool
 float sheetAer(float aerTop, SheetPoint p, vec3 e, vec4 end, bool free) {
     float body = 0.35 + 0.65 * smoothstep(0.02, 0.4, end.y * max(e.y - end.z, 0.0));
     float w = 1.0 - exp(-p.drop / 2.5);
-    return clamp(mix(aerTop, 0.7 * body, w) + (free ? 0.2 * w : 0.0), 0.0, 1.0);
+    return clamp(mix(aerTop, 0.65 * body, w) + (free ? 0.2 * w : 0.0), 0.0, 1.0);
 }
 
 // A sheet vertex. Its flow word carries what composite.frag needs to texture it continuously from the top surface: the
@@ -492,7 +492,8 @@ void emitCurtain(uint q, int d, vec2 outward, vec3 e0, vec3 e1, vec4 end0, vec4 
 // Spray particles per second per unit of energy a sheet brings down (outflow in blocks^3/s x drop in blocks).
 const float SPRAY_SPLASH_RATE = 170.0;
 const float SPRAY_SHEET_RATE = 60.0;
-const float SPRAY_MIST_RATE = 6.0;
+// Mist is off until it looks like more than bright puffs (the type and its rendering stay).
+const float SPRAY_MIST_RATE = 0.0;
 const float SPRAY_DROP_RATE = 12.0;
 
 // Spray thrown by a falling sheet: droplets bouncing back up and out where it lands (faster for taller falls), droplets peeling

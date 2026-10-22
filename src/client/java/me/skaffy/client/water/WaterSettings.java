@@ -194,7 +194,7 @@ public final class WaterSettings {
 	public static float hfMistSize = 0.5F;
 	public static float hfMistAlpha = 0.02F;
 	/** Radius of a splash's water drops (blocks; each drop 0.5..1.4 times this), drawn as water. */
-	public static float hfDropRadius = 0.07F;
+	public static float hfDropRadius = 0.045F;
 	/** Diagnostic: report in chat when a block edit makes heightfield water jump (where, at which stage, how the column changed). */
 	public static boolean hfEditProbe = false;
 	public static int hfMaxStepsPerFrame = 8;

@@ -627,3 +627,21 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   0.82); the streak bump is half as strong and coarser (the fine 7-per-block stripes looked like a comb).
 * **Thin films:** foam fades out under 0.15 blocks of depth (`foamOf`): cascades over steps put white patches with holes on the
   terrain. **Mist:** fainter and softer (alpha 0.02, radius 0.5, exp(-4 r^2), 6 per s per unit of energy).
+
+## 22. Foam and splash look, checked offline first (as built)
+
+* **Preview tooling:** `scratchpad/preview/` ports composite.frag's hash, value noise, foam and sheet functions bit for bit to
+  numpy and renders them to images, so a texture is judged before it ships (the lace of section 21 rendered there exactly as
+  the cracked-tile pattern seen in game). Mirror any change to these functions there.
+* **Foam:** organic patches of value-noise octaves on coordinates warped by slow noise (0.6 per block, +-0.45 blocks), feathered
+  edges (wider inward), and up close bubbly holes of varied size (two noise scales, 13 and 29 per block) that are more and bigger
+  at a patch's thin edge and fill in toward its middle. No cells, no dots. `foamField` returns the pattern and its warped
+  coordinates; flow smearing still averages the two coarse octaves along the current.
+* **Falling sheets:** below the first half block, foam torn into streaks: patches stretched four times down the fall plus thin
+  strands (7 and 16 per block across, wiggling +-0.15 blocks) whose density follows the aeration (threshold 1 - 0.9 aer, aer up
+  to 0.65 x body), half each, capped at 0.88. The pattern scrolls down at one speed for every sheet (5 b/s): a speed varying
+  down the sheet would shear it more and more over time.
+* **Drops:** shaded on their own (`shadeDrop`, material -0.2 from droplet_front.frag with HF_DROPS): the scene behind almost
+  straight through, sky reflected toward the rim (Fresnel), the sun's glint and 25% white. Shaded like the lake they refracted
+  the dirt behind them and got the wet-bed darkening: dark pebbles. Radius 0.045 (was 0.07); crown 150 per block^3 (60..1200),
+  jet 50 (15..400). Mist emission is off (it read as bright puffs); its type and rendering stay.

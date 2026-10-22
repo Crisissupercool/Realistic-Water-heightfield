@@ -17,5 +17,10 @@ void main() {
     vec4 clip = G.proj * vec4(pos, 1.0);
     gl_FragDepth = clip.z / clip.w;
     outG = vec4(n, -pos.z);
+#ifdef HF_DROPS
+    // Heightfield splash drops: their own shading in composite.frag (shadeDrop).
+    outMat = -0.2;
+#else
     outMat = G.matA.x;
+#endif
 }

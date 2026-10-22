@@ -74,15 +74,11 @@ void main() {
         float a = sprayRand(s) * 6.2831853;
         vec2 h = vec2(cos(a), sin(a));
         if (mode == 1) {
-            // White droplets from a ring around the impact, a few slower mist puffs among them.
+            // White droplets from a ring around the impact.
             vec3 p = BURST_AT + vec3(h.x, 0.0, h.y) * BURST_RADIUS * mix(0.5, 1.1, sprayRand(s)) + vec3(0.0, 0.05, 0.0);
             float el = mix(0.85, 1.45, sprayRand(s));
             vec3 v = vec3(h.x * cos(el), sin(el), h.y * cos(el)) * BURST_SPEED * mix(0.2, 0.55, sprayRand(s));
-            if (sprayRand(s) < 0.06) {
-                sprayAdd(SPRAY_DST, p, v * 0.2, mix(1.0, 2.0, sprayRand(s)), SPRAY_MIST);
-            } else {
-                sprayAdd(SPRAY_DST, p, v, mix(0.7, 1.4, sprayRand(s)), SPRAY_DROPLET);
-            }
+            sprayAdd(SPRAY_DST, p, v, mix(0.7, 1.4, sprayRand(s)), SPRAY_DROPLET);
         } else if (mode == 2) {
             // The crown: water thrown up and out from the rim of the cavity as a sheet that breaks into drops. Steep (55..80 deg)
             // and fastest at the rim's top, so the drops trace a widening cylinder; bigger drops lower down.
