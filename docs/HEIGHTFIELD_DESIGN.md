@@ -484,3 +484,10 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
 * **Detail ripples:** 12 waves (frequencies x1.31 apart) instead of 5, directions stepped by the golden angle within a spread
   widening for short waves, deep-water speeds, a static crest warp and two slow noise fields varying their strength, so the
   surface no longer shows the regular stripes of the old pattern (rms slope 0.24 vs 0.35 at the same `detailStrength`).
+* **Foam, second pass:** churned-water foam came from every wake point, including bobbing, so treading water stacked a solid
+  white disk; and the foam texture (soft value noise) looked blurry. Now each point carries its own foam amount: only horizontal
+  speed churns (smoothstep 1.5..4.5 b/s, so wading and normal swimming stay nearly clear, sprint-swimming leaves a trail a few
+  blocks long) plus splashes (half the displaced volume, up to 1.5, spread wider). Bobbing counts only as vertical motion around a
+  1 s running average, so sinking slowly makes no waves. `foamTexture` (also used for aerated water) has crisp patch edges and
+  round bubbles of random size from a jittered grid, with detail fading by pixel footprint. Crests only brighten (troughs no
+  longer darken, which drew a dark ring around a bobbing player).

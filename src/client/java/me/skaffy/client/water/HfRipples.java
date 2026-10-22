@@ -27,6 +27,9 @@ final class HfRipples implements AutoCloseable {
 	private final float[] ez = new float[MAX];
 	private final float[] et = new float[MAX];
 	private final float[] ev = new float[MAX];
+	private final float[] ef = new float[MAX];
+	/** Slowly following average of the vertical speed: bobbing counts only as motion around it (sinking slowly makes no waves). */
+	private float vyAverage;
 	private int head;
 	private int size;
 	private float time;
@@ -41,7 +44,7 @@ final class HfRipples implements AutoCloseable {
 
 	HfRipples() {
 		for (int i = 0; i < Vk.FRAME_RING; i++) {
-			this.upload[i] = VkBuf.upload(MAX * 16L, VkBuf.STORAGE);
+			this.upload[i] = VkBuf.upload(MAX * 32L, VkBuf.STORAGE);
 		}
 	}
 
@@ -55,7 +58,7 @@ final class HfRipples implements AutoCloseable {
 		return v - Math.floor(v / WORLD_WRAP) * WORLD_WRAP;
 	}
 
-	private void add(double x, double z, float volume) {
+	private void add(double x, double z, float volume, float foam) {
 		int i = (this.head + this.size) % MAX;
 		if (this.size == MAX) {
 			this.head = (this.head + 1) % MAX;
@@ -66,11 +69,12 @@ final class HfRipples implements AutoCloseable {
 		this.ez[i] = (float) wrap(z);
 		this.et[i] = this.time;
 		this.ev[i] = volume;
+		this.ef[i] = foam;
 	}
 
 	/** A body hit the surface at (x, z), displacing {@code volume} blocks^3 (see HfWorld.splash): a ring train spreads from it. */
 	void impact(double x, double z, double volume, float surface) {
-		this.add(x, z, (float) -Math.min(volume * SPLASH_SHARE, SPLASH_MAX) * WaterSettings.hfRipples);
+		this.add(x, z, (float) -Math.min(volume * SPLASH_SHARE, SPLASH_MAX) * WaterSettings.hfRipples, (float) Math.min(volume * 0.5, 1.5));
 		this.planeY = surface;
 	}
 
@@ -108,11 +112,15 @@ final class HfRipples implements AutoCloseable {
 			double vy = (player.getY() - player.yo) * 20.0;
 			double vz = (player.getZ() - player.zo) * 20.0;
 			float speed = (float) Math.min(Math.hypot(vx, vz), 6.0);
-			float down = (float) Math.clamp(-vy, -6.0, 6.0);
+			this.vyAverage += ((float) vy - this.vyAverage) * STEP;
+			float down = (float) Math.clamp(-(vy - this.vyAverage), -6.0, 6.0);
 			// Moving pushes water aside (a moving depression); going down pushes it away, coming up draws it back in.
 			float volume = -STEP * (MOVE_VOLUME * speed + BOB_VOLUME * down) * WaterSettings.hfRipples;
-			if (Math.abs(volume) > 1.0e-5F) {
-				this.add(player.getX(), player.getZ(), volume);
+			// Only fast swimming churns the water white; wading and treading water leave it clear.
+			float t = Math.clamp((speed - 1.5F) / 3.0F, 0.0F, 1.0F);
+			float foam = STEP * t * t * (3.0F - 2.0F * t);
+			if (Math.abs(volume) > 1.0e-5F || foam > 0.0F) {
+				this.add(player.getX(), player.getZ(), volume, foam);
 			}
 		}
 		// Drop points whose waves have faded (after ~2 lifetimes they are below 15%).
@@ -125,9 +133,10 @@ final class HfRipples implements AutoCloseable {
 		ByteBuffer b = this.upload[this.slot].mapped();
 		for (int n = 0; n < this.size; n++) {
 			int i = (this.head + n) % MAX;
-			b.putFloat(n * 16, this.ex[i]).putFloat(n * 16 + 4, this.ez[i]).putFloat(n * 16 + 8, this.time - this.et[i]).putFloat(n * 16 + 12, this.ev[i]);
+			b.putFloat(n * 32, this.ex[i]).putFloat(n * 32 + 4, this.ez[i]).putFloat(n * 32 + 8, this.time - this.et[i]).putFloat(n * 32 + 12, this.ev[i]);
+			b.putFloat(n * 32 + 16, this.ef[i]).putFloat(n * 32 + 20, 0.0F).putFloat(n * 32 + 24, 0.0F).putFloat(n * 32 + 28, 0.0F);
 		}
-		this.upload[this.slot].flush(0, Math.max(16L, this.size * 16L));
+		this.upload[this.slot].flush(0, Math.max(32L, this.size * 32L));
 		this.count = this.size;
 	}
 

@@ -20,7 +20,8 @@ layout(push_constant) uniform Push {
     vec2 wakeCenter;
     float wakeRadius;
 } pc;
-// Points where the player disturbed the surface: (x, z) in wrapped world blocks, seconds since, displaced volume (blocks^3).
+// Points where the player disturbed the surface, two vec4 each: ((x, z) in wrapped world blocks, seconds since, displaced volume
+// in blocks^3), (foam it churned up, 0, 0, 0).
 layout(std430, binding = 8) readonly buffer Wake { vec4 wake[]; };
 layout(location = 0) out vec4 outColor;
 
@@ -260,12 +261,13 @@ vec4 wakeAt(vec3 world, float footprint) {
     }
     float trail = 0.0;
     for (int i = 0; i < pc.wakeCount; i++) {
-        vec4 e = wake[i];
+        vec4 e = wake[i * 2];
+        float churned = wake[i * 2 + 1].x;
         vec2 d = world.xz - e.xy;
         float d2 = dot(d, d);
         float tau = e.z;
-        if (d2 < 1.5) {
-            trail += abs(e.w) * exp(-d2 / 0.3) * exp(-tau / 1.2);
+        if (churned > 0.0 && d2 < 2.5) {
+            trail += churned * exp(-d2 / (0.25 + 0.5 * churned)) * exp(-tau / 0.9);
         }
         // Nothing has arrived yet beyond the first wave (theta < 0.5), so skip before the expensive part.
         float reach = WAKE_G * tau * tau * 0.5;
@@ -291,20 +293,43 @@ vec4 wakeAt(vec3 world, float footprint) {
         r.z += amp * cos(th);
         r.xy += (amp * k * sin(th) / rr) * d;
     }
-    r.w = 1.0 - exp(-trail * 25.0 * pc.wakeFoam);
+    r.w = 1.0 - exp(-trail * 6.0 * pc.wakeFoam);
     return r;
 }
 
 
 // Soft drifting foam patches; coverage grows with aer (more and larger patches), edges soften with distance.
-float foamPatches(vec2 p, float aer, float footprint) {
+// Foam: crisp-edged patches whose coverage grows with the foam amount, made of fine round bubbles (the nearest point of a
+// jittered grid), drifting slowly. Detail fades out where a pixel would cover it, so it never aliases or turns to mush.
+float foamTexture(vec2 p, float coverage, float footprint) {
     float t = G.simB.z;
-    float detail = 1.0 - smoothstep(0.05, 0.3, footprint);
-    float v = valueNoise(p * 1.3 + vec2(t * 0.11, -t * 0.07)) * 0.55
-        + valueNoise(p * 3.7 - vec2(t * 0.05, t * 0.13)) * 0.3
-        + mix(0.075, valueNoise(p * 9.0 + t * 0.2), detail) * 0.15;
-    float edge = 0.08 + 2.0 * footprint;
-    return smoothstep(1.0 - aer - edge, 1.0 - aer + edge, v);
+    vec2 drift = vec2(t * 0.07, -t * 0.05);
+    float d1 = 1.0 - smoothstep(0.03, 0.12, footprint);
+    float d2 = 1.0 - smoothstep(0.012, 0.05, footprint);
+    float v = valueNoise(p * 1.1 + drift) * 0.45 + valueNoise(p * 2.9 + vec2(3.1, 0.0) - drift) * 0.3
+        + mix(0.5, valueNoise(p * 9.0 + vec2(0.0, 7.7) + drift * 2.0), d1) * 0.17
+        + mix(0.5, valueNoise(p * 23.0 + vec2(1.3, 0.0) - drift * 3.0), d2) * 0.08;
+    float edge = 0.025 + 1.5 * footprint;
+    float cover = smoothstep(1.0 - coverage - edge, 1.0 - coverage + edge, v);
+    if (cover <= 0.0 || d2 <= 0.0) {
+        return cover;
+    }
+    vec2 q = (p + drift) * 12.0;
+    vec2 c = floor(q);
+    float best = 9.0;
+    float radius = 0.0;
+    for (int k = 0; k < 9; k++) {
+        vec2 cell = c + vec2(float(k % 3 - 1), float(k / 3 - 1));
+        vec2 feature = cell + 0.15 + 0.7 * vec2(noiseHash(cell), noiseHash(cell + vec2(17.0, 31.0)));
+        float d = distance(q, feature);
+        if (d < best) {
+            best = d;
+            float hr = noiseHash(cell + vec2(5.0, 11.0));
+            radius = hr < 0.4 ? 0.0 : 0.12 + 0.3 * (hr - 0.4);
+        }
+    }
+    float pore = radius > 0.0 ? 1.0 - smoothstep(radius - 0.06, radius + 0.06, best) : 0.0;
+    return cover * (1.0 - 0.4 * d2 * pore);
 }
 
 // Aerated water (heightfield only, aer from the material id): falling sheets get streaks running down them and a bumpy normal
@@ -375,13 +400,13 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     float F = 0.02 + 0.98 * pow(1.0 - clamp(dot(n, V), 0.0, 1.0), 5.0);
     vec3 color = mix(water, reflection, F) + sunSpecular(n, V, footprint);
     // Wave crests are thinner, so light scattered in the water shows through them a little brighter.
-    color += G.scatter.rgb * ambient * clamp(wk.z * 2.5, -0.1, 0.25);
-    if (wk.w > 0.0) {
-        float churn = wk.w * foamPatches(world.xz * 1.7, wk.w, footprint);
-        color = mix(color, vec3(0.9, 0.94, 0.96) * mix(0.25, 1.0, ambient), clamp(churn * 0.8, 0.0, 0.8));
+    color += G.scatter.rgb * ambient * clamp(wk.z * 2.5, 0.0, 0.2);
+    if (wk.w > 0.01) {
+        float churn = foamTexture(world.xz * 1.4, wk.w * 0.85, footprint);
+        color = mix(color, vec3(0.9, 0.94, 0.96) * mix(0.25, 1.0, ambient), churn * 0.75);
     }
     if (aer > 0.0) {
-        float cover = sheet ? aer * (0.35 + 0.9 * smoothstep(0.3, 0.75, streaks)) : 0.9 * foamPatches(world.xz, aer, footprint);
+        float cover = sheet ? aer * (0.35 + 0.9 * smoothstep(0.3, 0.75, streaks)) : 0.9 * foamTexture(world.xz, aer, footprint);
         color = mix(color, vec3(0.9, 0.94, 0.96) * mix(0.25, 1.0, ambient), clamp(cover, 0.0, 0.95));
     }
     return color;
