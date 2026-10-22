@@ -187,7 +187,7 @@ public final class WaterSettings {
 	/** Seconds foam takes to fade to about a third once nothing churns the water any more. */
 	public static float hfFoamLife = 1.5F;
 	/** Diagnostic: report in chat when a block edit makes heightfield water jump (where, at which stage, how the column changed). */
-	public static boolean hfEditProbe = true;
+	public static boolean hfEditProbe = false;
 	public static int hfMaxStepsPerFrame = 8;
 	/** When the surface everywhere rises or falls slower than this (blocks/s) for {@link #hfSleepSeconds}, the heightfield stops simulating until woken. */
 	public static float hfSleepRate = 0.002F;

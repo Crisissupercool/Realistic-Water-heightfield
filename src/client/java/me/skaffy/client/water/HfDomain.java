@@ -908,8 +908,9 @@ final class HfDomain implements AutoCloseable {
 				}
 			}
 		}
-		boolean volumeJump = Math.abs(volNew - volOld) > 0.5 || later && Math.abs(volLater - volOld) > 2.0;
-		if (worstRemap < 0.4F && worstLater < 0.4F && !volumeJump) {
+		// Only surface jumps are reported: the volume changes with the edit (a placed block takes its cell's water) and, later, with
+		// the water flowing in and out of the tile, which is normal.
+		if (worstRemap < 0.4F && worstLater < 0.4F) {
 			return null;
 		}
 		int ox = this.originX + this.grid.tileX[r.tile()] * HfTileGrid.TILE_BLOCKS;

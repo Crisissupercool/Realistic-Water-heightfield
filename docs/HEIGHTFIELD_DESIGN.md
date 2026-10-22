@@ -575,8 +575,9 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   depth, so the surface dips there and fills in from around. Tests: a block placed at the bed, mid-water and at the surface of a
   5.8-deep lake leaves its surface at 64.80 and removes exactly the water in its cell (1.0, 1.0, 0.8); a 4x4x2 patch removes
   the 25.56 in its cells and stands nothing up on top.
-* **Edit probe (`hfEditProbe`, on for now):** for each rebuilt tile the depth is read back just before the remap, just after it and
-  12 frames later; when the surface anywhere in the tile rises by more than 0.4 blocks, or its volume changes, chat shows where,
+* **Edit probe (`hfEditProbe`, off by default; in game it showed no surface jump through edits once the remap kept water in place,
+  only normal volume changes from flow into and out of the tile, which it no longer reports):** for each rebuilt tile the depth is read back just before the remap, just after it and
+  12 frames later; when the surface anywhere in the tile rises by more than 0.4 blocks, chat shows where,
   at which stage (remap or solver), how many columns changed shape (and where), and the column's spans and depths before, after
   the remap and later. The CPU mirror reproduces neither the log-on-the-shore tower nor any jump through edits on several
   scenes (tile borders and corners, moving water, breaking and placing), so this is how the in-game case gets pinned down.
