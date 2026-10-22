@@ -65,7 +65,7 @@ final class HfDomain implements AutoCloseable {
 	 * A rebuilt tile: new pages (geo, links) to upload, then water to remap from the old pages, which are freed afterwards.
 	 * fluxPages: the flux pages the tile kept through the rebuild (NONE where it has none), whose flow the remap moves too.
 	 */
-	private record Rebuilt(int[] oldPages, int[] newPages, int[] fluxPages, VkBuf staging) {
+	private record Rebuilt(int[] oldPages, int[] newPages, int[] fluxPages, int[] freshFlux, VkBuf staging) {
 	}
 
 	final HfTileGrid grid;
@@ -254,7 +254,7 @@ final class HfDomain implements AutoCloseable {
 		System.arraycopy(this.grid.spanPage, tile * 4, pages, 0, HfTileGrid.MAX_LAYERS);
 		int[] fluxPages = new int[HfTileGrid.MAX_LAYERS];
 		System.arraycopy(this.grid.fluxPage, tile * 4, fluxPages, 0, HfTileGrid.MAX_LAYERS);
-		this.rebuilt.add(new Rebuilt(old, pages, fluxPages, this.stage(t, null)));
+		this.rebuilt.add(new Rebuilt(old, pages, fluxPages, this.grid.lastFreshFlux, this.stage(t, null)));
 		this.tilesDirty = true;
 		this.meshDirty = true;
 		return true;
@@ -447,6 +447,12 @@ final class HfDomain implements AutoCloseable {
 					n++;
 				}
 				this.copyPages(cb, r.staging(), r.newPages(), n, false);
+				// New layers' flux pages start at rest (they may hold another tile's flow) before the remap fills them.
+				for (int fp : r.freshFlux()) {
+					this.flux.fill(cb, (long) fp * this.ps * FLUX_BYTES, (long) this.ps * FLUX_BYTES, 0);
+					this.foam.fill(cb, (long) fp * this.ps * 4L, (long) this.ps * 4L, 0);
+					this.foam.fill(cb, (this.foamHalf + (long) fp * this.ps) * 4L, (long) this.ps * 4L, 0);
+				}
 			}
 			Vk.barrier(cb);
 			for (Rebuilt r : this.rebuilt) {

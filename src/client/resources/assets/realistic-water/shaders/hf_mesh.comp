@@ -31,12 +31,12 @@ layout(std430, binding = 16) writeonly buffer VertFlow { uint vertFlow[]; };
 
 const uint OPEN = 0x80000000u;
 const float WALL_INSET = 0.01;
-const float CURTAIN_OUT = 0.06;
-// Falling sheets are drawn as a few segments along the arc water takes when it leaves an edge.
-const int CURTAIN_SEGMENTS = 4;
-// A front sheet and a fainter one just behind it: the parallax between the two gives the fall some depth.
-const int CURTAIN_LAYERS = 2;
-const float CURTAIN_MAX_THROW = 0.3;
+// Falling sheets are drawn as segments along the path water takes when it leaves an edge. Segment ends as fractions of the fall
+// time: dense at the lip, where the water curls over the edge, sparse lower down where it falls almost straight.
+const int CURTAIN_SEGMENTS = 6;
+const float CURTAIN_T[7] = float[](0.0, 0.05, 0.13, 0.26, 0.45, 0.7, 1.0);
+// The farthest a sheet gets from its edge: it lands in the next cell, which is where the solver puts its water.
+const float CURTAIN_REACH = 0.42;
 const float GRAVITY = 9.81;
 
 // Heightfield vertices (OPEN set): 12 + 12 bit octahedral normal, 6 bit aeration (foam, falling water), wall flag, OPEN.
@@ -316,11 +316,11 @@ void emit(uint q, vec3 a, vec3 b, vec3 c, vec3 d, vec3 normal, bool wall) {
 }
 
 // Whether span t pours over its edge in direction d as a falling sheet: the water it flows into lies below its floor and the
-// outflow is above HF_CURTAIN_MIN. land: where it lands (world y); throwOut: how far it flies out leaving the edge at its
-// overflow speed; q: the outflow (blocks^3/s).
-bool curtainOf(HfSpan t, int d, out float land, out float throwOut, out float q) {
+// outflow is above HF_CURTAIN_MIN. land: where it lands (world y); v0: the speed it leaves the edge at; q: the outflow
+// (blocks^3/s).
+bool curtainOf(HfSpan t, int d, out float land, out float v0, out float q) {
     land = 0.0;
-    throwOut = 0.0;
+    v0 = 0.0;
     q = 0.0;
     HfSpan n;
     if (t.flux == HF_NONE || !pick(t, d, n) || linked(t, d, n)) {
@@ -328,68 +328,156 @@ bool curtainOf(HfSpan t, int d, out float land, out float throwOut, out float q)
     }
     float fl = hfGeo(t.span).x;
     land = wet(n.span) ? surfaceOf(n.span) : hfGeo(n.span).x;
-    q = flux[t.flux + uint(d * 2)] + flux[t.flux + uint(d * 2 + 1)];
+    q = outflowTo(t, d);
     if (land >= fl - 0.05 || q <= HF_CURTAIN_MIN) {
         return false;
     }
-    float top = surfaceOf(t.span);
-    float speed = min(q / (HF_CELL * max(top - fl, 0.03)), 4.0);
-    throwOut = min(speed * sqrt(2.0 * (top - land) / GRAVITY), CURTAIN_MAX_THROW);
+    v0 = clamp(q / (HF_CELL * max(surfaceOf(t.span) - fl, 0.03)), 0.2, 4.0);
     return true;
 }
 
-// End of a sheet at a corner shared with the neighbor across side direction sd: when that neighbor's water joins ours and pours
-// over the same edge, both sheets use the average landing and throw there, so side by side sheets meet as one curtain instead
-// of a row of separate arches.
-vec2 curtainEnd(HfSpan a, int d, int sd, float land, float throwOut) {
+// One end of a sheet, at the corner shared with the neighbor across side direction sd: (landing height, speed off the edge,
+// floor at the edge, 1 when shared). When that neighbor's water joins ours and pours over the same edge, both sheets use the
+// averages there (symmetric, so both compute the very same vertices) and meet as one curtain; otherwise the end is free.
+vec4 curtainEnd(HfSpan a, int d, int sd, float land, float v0) {
     HfSpan n;
     float nl;
-    float nt;
+    float nv;
     float nq;
-    if (pick(a, sd, n) && linked(a, sd, n) && curtainOf(n, d, nl, nt, nq)) {
-        return vec2(0.5 * (land + nl), 0.5 * (throwOut + nt));
+    float fl = hfGeo(a.span).x;
+    if (pick(a, sd, n) && linked(a, sd, n) && curtainOf(n, d, nl, nv, nq)) {
+        return vec4(0.5 * (land + nl), 0.5 * (v0 + nv), 0.5 * (fl + hfGeo(n.span).x), 1.0);
     }
-    return vec2(land, throwOut);
+    return vec4(land, v0, fl, 0.0);
 }
 
-// A falling sheet from the brink e0..e1 (xz at the edge, y = water height there; ends: landing height, throw) thrown outward.
-// Each segment is one quad; vertices follow y = top - (top - land) s^2, distance out = CURTAIN_OUT + throw s, with the arc's
-// normal. Thin trickles stay clearer than full sheets.
-void emitCurtain(uint q, vec2 outward, vec3 e0, vec3 e1, vec2 end0, vec2 end1, float flow, float aerTop) {
+struct SheetPoint {
+    vec3 top;     // the sheet's outer surface (continues the water surface over the edge)
+    vec3 bottom;  // its inner surface (continues the floor), facing the cliff
+    vec3 n;       // outer normal
+    float speed;
+    float drop;   // how far it has fallen from the edge
+};
+
+// Where water leaving the edge point e (xz on the edge, y = the water surface there) is after a fraction s of its fall. It
+// leaves horizontally at the speed v0 and falls freely, so the lip curls over with the radius real water has (about v0^2 / g)
+// instead of a hard corner; its outward travel eases off toward CURTAIN_REACH. The inner surface takes the same path from the
+// floor at the edge and lands at the same place, so it starts the water's depth below the outer one and closes in on it as
+// both steepen: the sheet thins as it falls (offsetting along the turning normal instead folded deep, slow pours).
+SheetPoint sheetPoint(vec3 e, vec2 outward, vec4 end, float s, vec2 inward, bool free) {
+    SheetPoint r;
+    float v0 = end.y;
     vec3 dir = vec3(outward.x, 0.0, outward.y);
-    float body = 0.35 + 0.65 * smoothstep(0.01, 0.25, flow);
-    for (int layer = 0; layer < CURTAIN_LAYERS; layer++) {
-        // The back sheet hangs a little lower and closer to the wall, more transparent.
-        float depthScale = layer == 0 ? 1.0 : 0.45;
-        float sag = layer == 0 ? 0.0 : 0.06;
-        float aerScale = layer == 0 ? 1.0 : 0.5;
-        for (int i = 0; i < CURTAIN_SEGMENTS; i++) {
+    float h = max(e.y - end.x, 0.0);
+    float t = sqrt(2.0 * h / GRAVITY) * s;
+    float k = exp(-v0 * t / CURTAIN_REACH);
+    float vx = v0 * k;
+    float vy = GRAVITY * t;
+    r.drop = h * s * s;
+    r.speed = sqrt(vx * vx + vy * vy);
+    r.n = normalize(dir * vy + vec3(0.0, vx, 0.0));
+    r.top = vec3(e.x, e.y - r.drop, e.z) + dir * (CURTAIN_REACH * (1.0 - k));
+    float floorY = min(end.z, e.y);
+    float hl = max(floorY - end.x, 0.0);
+    float tl = sqrt(2.0 * hl / GRAVITY) * s;
+    r.bottom = vec3(e.x, floorY - hl * s * s, e.z) + dir * (CURTAIN_REACH * (1.0 - exp(-v0 * tl / CURTAIN_REACH)));
+    // At least a thin film thick, never into the cliff under the edge or below where it lands.
+    r.bottom -= r.n * max(0.012 - dot(r.top - r.bottom, r.n), 0.0);
+    float outTop = dot(r.top.xz - e.xz, outward);
+    r.bottom.xz += outward * max(min(0.004, outTop) - dot(r.bottom.xz - e.xz, outward), 0.0);
+    r.bottom.y = max(r.bottom.y, end.x);
+    if (free) {
+        // A free end narrows as it falls: the water at a sheet's side is pulled in and breaks up first.
+        vec2 c = inward * (0.1 * (1.0 - exp(-r.drop / 0.6)));
+        r.top.xz += c;
+        r.bottom.xz += c;
+    }
+    return r;
+}
+
+// Foam of a falling sheet: the top surface's foam where it leaves the edge, whitening as it falls (thin trickles less), and
+// more at a free end. Uses only values both sheets at a shared end agree on, so the curtain has no seams.
+float sheetAer(float aerTop, SheetPoint p, vec3 e, vec4 end, bool free) {
+    float body = 0.35 + 0.65 * smoothstep(0.02, 0.4, end.y * max(e.y - end.z, 0.0));
+    float w = 1.0 - exp(-p.drop / 1.4);
+    return clamp(mix(aerTop, 0.9 * body, w) + (free ? 0.3 * w : 0.0), 0.0, 1.0);
+}
+
+// A sheet vertex. Its flow word carries what composite.frag needs to texture it continuously from the top surface: the
+// sheet's direction (d) and speed packed as 16 (d + 1) + speed, and how far it has fallen (see mesh_front.frag).
+void sheetVertex(uint v, vec3 p, vec3 n, float aer, int d, SheetPoint s) {
+    verts[v] = vec4(p, uintBitsToFloat(hfPack(n, true, aer)));
+    vertFlow[v] = packHalf2x16(vec2(16.0 * float(d + 1) + clamp(s.speed, 0.0, 8.0), s.drop));
+}
+
+// Quads a sheet takes: an outer and an inner surface per segment, plus a cap per segment at each free end.
+uint curtainQuads(vec4 end0, vec4 end1) {
+    return uint(CURTAIN_SEGMENTS) * (2u + (end0.w < 0.5 ? 1u : 0u) + (end1.w < 0.5 ? 1u : 0u));
+}
+
+// A falling sheet from the edge e0..e1, poured over in direction d (outward), drawn as a closed thin ribbon: the outer surface
+// continues the top surface (same corner heights, normals and foam on its first row), the inner one continues the floor, and
+// caps close its free ends. Closed, the thickness pass measures the sheet itself, not the air between it and the cliff (a
+// single open face was closed by the terrain behind, which made the sheet a tinted slab). c0, c1: the top surface's corners.
+void emitCurtain(uint q, int d, vec2 outward, vec3 e0, vec3 e1, vec4 end0, vec4 end1, vec4 c0, vec4 c1) {
+    vec2 in0 = normalize(e1.xz - e0.xz);
+    bool free0 = end0.w < 0.5;
+    bool free1 = end1.w < 0.5;
+    vec3 cap0 = vec3(-in0.x, 0.0, -in0.y);
+    vec3 cap1 = -cap0;
+    SheetPoint a0 = sheetPoint(e0, outward, end0, 0.0, in0, free0);
+    SheetPoint a1 = sheetPoint(e1, outward, end1, 0.0, -in0, free1);
+    float aa0 = sheetAer(c0.w, a0, e0, end0, free0);
+    float aa1 = sheetAer(c1.w, a1, e1, end1, free1);
+    // Where the sheet leaves the edge it takes the top surface's normals, so the shading flows over the lip.
+    vec3 na0 = cornerNormal(c0);
+    vec3 na1 = cornerNormal(c1);
+    for (int i = 0; i < CURTAIN_SEGMENTS; i++) {
+        float s = CURTAIN_T[i + 1];
+        SheetPoint b0 = sheetPoint(e0, outward, end0, s, in0, free0);
+        SheetPoint b1 = sheetPoint(e1, outward, end1, s, -in0, free1);
+        float ab0 = sheetAer(c0.w, b0, e0, end0, free0);
+        float ab1 = sheetAer(c1.w, b1, e1, end1, free1);
+        for (int face = 0; face < 4; face++) {
+            if ((face == 2 && !free0) || (face == 3 && !free1)) {
+                continue;
+            }
             if (q >= HF_QUAD_CAP) {
                 return;
             }
             uint v = q * 4u;
-            for (int j = 0; j < 4; j++) {
-                // Vertex order bottom e0, bottom e1, top e1, top e0, so the face points out like the side walls.
-                float s = float(i + (j < 2 ? 1 : 0)) / float(CURTAIN_SEGMENTS);
-                bool first = j == 0 || j == 3;
-                vec3 e = first ? e0 : e1;
-                vec2 end = first ? end0 : end1;
-                float h = max(e.y - end.x, 0.0);
-                // Starts exactly at the brink, where the top surface ends, and only moves out from the wall as it falls.
-                float away = (CURTAIN_OUT * smoothstep(0.0, 0.25, s) + end.y * s) * depthScale;
-                vec3 p = vec3(e.x, e.y - sag - h * s * s, e.z) + dir * away;
-                // Over the lip the normal turns from the top surface's (up) to the arc's, so the shading flows over the edge.
-                vec3 arc = normalize(dir * max(2.0 * h * s, 0.25) + vec3(0.0, end.y, 0.0));
-                vec3 n = normalize(mix(vec3(0.0, 1.0, 0.0), arc, smoothstep(0.0, 0.3, s)));
-                float aerBottom = clamp(0.3 + 0.25 * h, 0.3, 0.95) * body;
-                float aer = max(mix(aerTop * body, aerBottom, s) * aerScale, 0.1);
-                verts[v + uint(j)] = vec4(p, uintBitsToFloat(hfPack(n, true, aer)));
-                // A sheet's "flow" is its outward direction with the falling speed, so its foam pours down from the brink.
-                vertFlow[v + uint(j)] = packHalf2x16(outward * min(1.5 + 5.0 * s, 8.0));
+            if (face == 0) {
+                // Outer surface; vertex order lower e0, lower e1, upper e1, upper e0 like the side walls.
+                sheetVertex(v, b0.top, b0.n, ab0, d, b0);
+                sheetVertex(v + 1u, b1.top, b1.n, ab1, d, b1);
+                sheetVertex(v + 2u, a1.top, na1, aa1, d, a1);
+                sheetVertex(v + 3u, a0.top, na0, aa0, d, a0);
+            } else if (face == 1) {
+                sheetVertex(v, b0.bottom, -b0.n, ab0, d, b0);
+                sheetVertex(v + 1u, b1.bottom, -b1.n, ab1, d, b1);
+                sheetVertex(v + 2u, a1.bottom, -a1.n, aa1, d, a1);
+                sheetVertex(v + 3u, a0.bottom, -a0.n, aa0, d, a0);
+            } else {
+                bool first = face == 2;
+                SheetPoint lo = first ? b0 : b1;
+                SheetPoint hi = first ? a0 : a1;
+                vec3 cn = first ? cap0 : cap1;
+                float al = first ? ab0 : ab1;
+                float ah = first ? aa0 : aa1;
+                sheetVertex(v, lo.bottom, cn, al, d, lo);
+                sheetVertex(v + 1u, lo.top, cn, al, d, lo);
+                sheetVertex(v + 2u, hi.top, cn, ah, d, hi);
+                sheetVertex(v + 3u, hi.bottom, cn, ah, d, hi);
             }
             quads[q] = uvec4(v, v + 1u, v + 2u, v + 3u);
             q++;
         }
+        a0 = b0;
+        a1 = b1;
+        aa0 = ab0;
+        aa1 = ab1;
+        na0 = b0.n;
+        na1 = b1.n;
     }
 }
 
@@ -429,7 +517,7 @@ void main() {
     uint curtainMask = 0u;
     float inset[4];
     float curtainLand[4];
-    float curtainThrow[4];
+    float curtainSpeed[4];
     float curtainFlow[4];
     for (int d = 0; d < 4; d++) {
         HfSpan t;
@@ -439,15 +527,31 @@ void main() {
             wallMask |= 1u << d;
         }
         // Water pouring over an edge onto lower ground or into lower water: a falling sheet down to where it lands.
-        if (curtainOf(a, d, curtainLand[d], curtainThrow[d], curtainFlow[d])) {
+        if (curtainOf(a, d, curtainLand[d], curtainSpeed[d], curtainFlow[d])) {
             curtainMask |= 1u << d;
         }
     }
+    // A sheet replaces the side wall at its edge: the water body goes on into it (its outer surface continues the top, its
+    // inner one the floor), so there is no flat face of water behind it.
+    wallMask &= ~curtainMask;
     if (HF_DEBUG == 1) {
         wallMask = 0u;
     }
+    // Per edge: its two corners and the side direction each corner is shared across (see curtainEnd).
+    const int SIDE0[4] = int[](3, 2, 0, 1);
+    const int SIDE1[4] = int[](2, 3, 1, 0);
+    vec4 end0s[4];
+    vec4 end1s[4];
+    uint curtainCount = 0u;
+    for (int d = 0; d < 4; d++) {
+        if ((curtainMask & (1u << d)) != 0u) {
+            end0s[d] = curtainEnd(a, d, SIDE0[d], curtainLand[d], curtainSpeed[d]);
+            end1s[d] = curtainEnd(a, d, SIDE1[d], curtainLand[d], curtainSpeed[d]);
+            curtainCount += curtainQuads(end0s[d], end1s[d]);
+        }
+    }
     bool drawTop = HF_DEBUG != 2;
-    uint count = (drawTop ? 1u : 0u) + uint(bitCount(wallMask)) + uint(bitCount(curtainMask) * CURTAIN_SEGMENTS * CURTAIN_LAYERS);
+    uint count = (drawTop ? 1u : 0u) + uint(bitCount(wallMask)) + curtainCount;
     if (count == 0u) {
         return;
     }
@@ -481,23 +585,19 @@ void main() {
         float z = z0 + inset[3];
         emit(q++, vec3(x0, b, z), vec3(x1, b, z), vec3(x1, h10, z), vec3(x0, h00, z), vec3(0.0, 0.0, -1.0), true);
     }
-    float aerTop = foamOf(a);
-    uint seg = uint(CURTAIN_SEGMENTS * CURTAIN_LAYERS);
-    // Per edge: its two corners and the side direction each corner is shared across (see curtainEnd).
-    const int SIDE0[4] = int[](3, 2, 0, 1);
-    const int SIDE1[4] = int[](2, 3, 1, 0);
     vec3 e0s[4] = vec3[](vec3(x1, h10, z0), vec3(x0, h01, z1), vec3(x1, h11, z1), vec3(x0, h00, z0));
     vec3 e1s[4] = vec3[](vec3(x1, h11, z1), vec3(x0, h00, z0), vec3(x0, h01, z1), vec3(x1, h10, z0));
+    vec4 c0s[4] = vec4[](c10, c01, c11, c00);
+    vec4 c1s[4] = vec4[](c11, c00, c01, c10);
     const vec2 OUTWARD[4] = vec2[](vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, -1.0));
     for (int d = 0; d < 4; d++) {
         if ((curtainMask & (1u << d)) == 0u) {
             continue;
         }
-        vec2 end0 = curtainEnd(a, d, SIDE0[d], curtainLand[d], curtainThrow[d]);
-        vec2 end1 = curtainEnd(a, d, SIDE1[d], curtainLand[d], curtainThrow[d]);
-        end0.x -= oy;
-        end1.x -= oy;
-        emitCurtain(q, OUTWARD[d], e0s[d], e1s[d], end0, end1, curtainFlow[d], aerTop);
-        q += seg;
+        // Heights relative to the mesh origin, like the corners.
+        vec4 end0 = end0s[d] - vec4(oy, 0.0, oy, 0.0);
+        vec4 end1 = end1s[d] - vec4(oy, 0.0, oy, 0.0);
+        emitCurtain(q, d, OUTWARD[d], e0s[d], e1s[d], end0, end1, c0s[d], c1s[d]);
+        q += curtainQuads(end0, end1);
     }
 }

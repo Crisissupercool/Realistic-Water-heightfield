@@ -36,13 +36,23 @@ void main() {
     if (vBilinear > 0.5) {
         // Heightfield water: aeration, the falling-sheet flag and the water velocity are packed into the mantissa of a value in
         // [0.125, 0.25), inside the 0.25 tolerance composite.frag allows for water (the fluid meshes write exactly 0):
-        // bits 0-5 aeration, 6 sheet, 7-14 flow direction, 15-22 flow speed (0..8 blocks/s).
+        // bits 0-5 aeration, 6 sheet, then for the surface 7-14 flow direction, 15-22 flow speed (0..8 blocks/s); for a falling
+        // sheet 7-8 the edge direction it pours over, 9-14 its speed (0..8 blocks/s), 15-22 how far it has fallen (0..0.5
+        // blocks, so its texture continues the top surface's over the lip). Sheet vertices carry 16 (d + 1) + speed and the
+        // drop in their flow word (hf_mesh.comp sheetVertex); side walls carry zero.
         aer = clamp(aer, 0.0, 1.0);
-        bool sheet = vWall > 0.5 && aer > 0.005;
-        float speed = min(length(vFlow), 8.0);
-        float angle = speed > 1.0e-3 ? atan(vFlow.y, vFlow.x) : 0.0;
-        uint code = uint(aer * 63.0 + 0.5) | (sheet ? 64u : 0u) | (uint(fract(angle / 6.2831853 + 1.0) * 255.0 + 0.5) << 7)
-            | (uint(speed / 8.0 * 255.0 + 0.5) << 15);
+        uint code;
+        if (vWall > 0.5 && vFlow.x > 8.0) {
+            float d = clamp(floor(vFlow.x / 16.0) - 1.0, 0.0, 3.0);
+            float speed = clamp(vFlow.x - 16.0 * (d + 1.0), 0.0, 8.0);
+            code = uint(aer * 63.0 + 0.5) | 64u | (uint(d) << 7) | (uint(speed / 8.0 * 63.0 + 0.5) << 9)
+                | (uint(clamp(vFlow.y / 0.5, 0.0, 1.0) * 255.0 + 0.5) << 15);
+        } else {
+            float speed = min(length(vFlow), 8.0);
+            float angle = speed > 1.0e-3 ? atan(vFlow.y, vFlow.x) : 0.0;
+            code = uint(aer * 63.0 + 0.5) | (uint(fract(angle / 6.2831853 + 1.0) * 255.0 + 0.5) << 7)
+                | (uint(speed / 8.0 * 255.0 + 0.5) << 15);
+        }
         outMat = uintBitsToFloat((124u << 23) | code);
     } else {
         outMat = G.matA.x;

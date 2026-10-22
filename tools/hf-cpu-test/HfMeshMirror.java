@@ -128,6 +128,122 @@ final class HfMeshMirror {
 		return ok;
 	}
 
+	// ---- Falling sheets (hf_mesh.comp curtainOf, curtainEnd, sheetPoint) ----
+	static final float CURTAIN_MIN = 0.005F, REACH = 0.42F, GRAV = 9.81F;
+	static final float[] CURTAIN_T = {0.0F, 0.05F, 0.13F, 0.26F, 0.45F, 0.7F, 1.0F};
+	static final int[] SIDE0 = {3, 2, 0, 1}, SIDE1 = {2, 3, 1, 0};
+	/** Corner signs (sx, sz) of each edge's two ends, as in hf_mesh.comp's e0s / e1s. */
+	static final int[][] END0 = {{1, -1}, {-1, 1}, {1, 1}, {-1, -1}}, END1 = {{1, 1}, {-1, -1}, {-1, 1}, {1, -1}};
+	static final float[][] OUT = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+
+	static float[] curtainOf(S t, int d) {
+		if (t.flux() < 0) return null;
+		S n = pick(t, d);
+		if (n == null || linked(t, d, n)) return null;
+		float fl = floorOf(t);
+		float land = wet(n) ? surface(n) : floorOf(n);
+		float q = outTo(t, d);
+		if (land >= fl - 0.05F || q <= CURTAIN_MIN) return null;
+		return new float[]{land, Math.clamp(q / (0.5F * Math.max(surface(t) - fl, 0.03F)), 0.2F, 4.0F)};
+	}
+
+	static float[] curtainEnd(S a, int d, int sd, float[] c) {
+		S n = pick(a, sd);
+		if (n != null && linked(a, sd, n)) {
+			float[] nc = curtainOf(n, d);
+			if (nc != null) return new float[]{0.5F * (c[0] + nc[0]), 0.5F * (c[1] + nc[1]), 0.5F * (floorOf(a) + floorOf(n)), 1};
+		}
+		return new float[]{c[0], c[1], floorOf(a), 0};
+	}
+
+	/** Corner point of span a (world xz, corner height) at signs (sx, sz). */
+	static float[] cornerPoint(S a, int sx, int sz) {
+		int tn = g.tn, cx = g.tileX[a.tile] * tn + a.col % tn, cz = g.tileZ[a.tile] * tn + a.col / tn;
+		return new float[]{(cx + (sx > 0 ? 1 : 0)) * 0.5F, corner(a, sx, sz), (cz + (sz > 0 ? 1 : 0)) * 0.5F};
+	}
+
+	/** {top xyz, bottom xyz, n xyz} like sheetPoint (no free-end narrowing). */
+	static float[] sheetPoint(float[] e, float[] o, float[] end, float s) {
+		float v0 = end[1], h = Math.max(e[1] - end[0], 0), t = (float) Math.sqrt(2 * h / GRAV) * s;
+		float k = (float) Math.exp(-v0 * t / REACH), vx = v0 * k, vy = GRAV * t, sp = (float) Math.hypot(vx, vy);
+		float[] n = {o[0] * vy / sp, vx / sp, o[1] * vy / sp};
+		float x = REACH * (1 - k);
+		float[] top = {e[0] + o[0] * x, e[1] - h * s * s, e[2] + o[1] * x};
+		float floorY = Math.min(end[2], e[1]), hl = Math.max(floorY - end[0], 0), tl = (float) Math.sqrt(2 * hl / GRAV) * s;
+		float xl = REACH * (1 - (float) Math.exp(-v0 * tl / REACH));
+		float[] b = {e[0] + o[0] * xl, floorY - hl * s * s, e[2] + o[1] * xl};
+		float gap = (top[0] - b[0]) * n[0] + (top[1] - b[1]) * n[1] + (top[2] - b[2]) * n[2];
+		float push = Math.max(0.012F - gap, 0);
+		for (int i = 0; i < 3; i++) b[i] -= n[i] * push;
+		float outTop = (top[0] - e[0]) * o[0] + (top[2] - e[2]) * o[1];
+		float outB = (b[0] - e[0]) * o[0] + (b[2] - e[2]) * o[1];
+		float fix = Math.max(Math.min(0.004F, outTop) - outB, 0);
+		b[0] += o[0] * fix;
+		b[2] += o[1] * fix;
+		b[1] = Math.max(b[1], end[0]);
+		return new float[]{top[0], top[1], top[2], b[0], b[1], b[2], n[0], n[1], n[2]};
+	}
+
+	static void checkCurtains() {
+		int C = 2;
+		g = new HfTileGrid(0, 0, 40, 96, C, 4, 0.25F, 8, 32, 32);
+		// A channel (z 6..10) at y 76 that drops 10 blocks at x = 12 onto a lower channel.
+		sim = new HfTiledSim(g, HfCpuTest.voxels((x, y, z) -> (z < 6 || z > 10 || x < 2) ? y < 80 : y < (x < 12 ? 76 : 66)));
+		sim.maxNewTiles = 4;
+		int tile = sim.addTile(0, 0, null);
+		sim.addTile(1, 0, null);
+		for (int z = 6; z <= 10; z++) {
+			g.setReservoir(tile, (z * C) * g.tn + 2 * C, 76.4F, HfTileGrid.RESERVOIR_FIXED);
+		}
+		for (int f = 0; f < 600; f++) sim.frame();
+		int sheets = 0, sharedEnds = 0, freeEnds = 0, bad = 0;
+		float worstShared = 0, thinnest = 9, worstInside = 0;
+		for (int t = 0; t < g.count; t++) for (int l = 0; l < g.layersUsed[t]; l++) for (int col = 0; col < g.pageSpans; col++) {
+			S a = new S(t, l, col);
+			if (!HfTileGrid.validGeo(sim.geo[a.span()]) || !wet(a)) continue;
+			for (int d = 0; d < 4; d++) {
+				float[] c = curtainOf(a, d);
+				if (c == null) continue;
+				sheets++;
+				for (int end = 0; end < 2; end++) {
+					int sd = end == 0 ? SIDE0[d] : SIDE1[d];
+					int[] sg = end == 0 ? END0[d] : END1[d];
+					float[] en = curtainEnd(a, d, sd, c);
+					float[] e = cornerPoint(a, sg[0], sg[1]);
+					if (en[3] > 0.5F) {
+						// The neighbor computes this same corner as its other end; every vertex there must be identical.
+						sharedEnds++;
+						S n = pick(a, sd);
+						float[] nc = curtainOf(n, d);
+						int[] nsg = end == 0 ? END1[d] : END0[d];
+						float[] nen = curtainEnd(n, d, sd ^ 1, nc);
+						float[] ne = cornerPoint(n, nsg[0], nsg[1]);
+						for (float s : CURTAIN_T) {
+							float[] p = sheetPoint(e, OUT[d], en, s), q = sheetPoint(ne, OUT[d], nen, s);
+							for (int i = 0; i < 6; i++) worstShared = Math.max(worstShared, Math.abs(p[i] - q[i]));
+						}
+					} else {
+						freeEnds++;
+					}
+					float prevBottom = Float.MAX_VALUE;
+					for (float s : CURTAIN_T) {
+						float[] p = sheetPoint(e, OUT[d], en, s);
+						float gap = (p[0] - p[3]) * p[6] + (p[1] - p[4]) * p[7] + (p[2] - p[5]) * p[8];
+						thinnest = Math.min(thinnest, gap);
+						float outB = (p[3] - e[0]) * OUT[d][0] + (p[5] - e[2]) * OUT[d][1];
+						worstInside = Math.max(worstInside, -outB);
+						if (p[4] > prevBottom + 1e-5F || gap < 0.0119F) bad++;
+						prevBottom = p[4];
+					}
+				}
+			}
+		}
+		// Five block wide stream = 10 cells pouring over the cliff: one curtain, free only at its two sides.
+		boolean ok = sheets == 10 && freeEnds == 2 && sharedEnds == 18 && worstShared < 1e-5F && worstInside <= 0 && bad == 0;
+		HfCpuTest.check(ok, String.format("waterfall: %d cells pour over the cliff, %d shared ends (worst mismatch %.6f), %d free ends; ribbon at least %.3f thick, never inside the cliff (%.4f), inner surface only falls (%d bad)",
+			sheets, sharedEnds, worstShared, freeEnds, thinnest, worstInside, bad));
+	}
+
 	static int hash(int x, int z) {
 		int h = x * 374761393 + z * 668265263;
 		h = (h ^ (h >>> 13)) * 1274126177;
@@ -140,6 +256,7 @@ final class HfMeshMirror {
 			(8 * 2) * tn + 2 * 2 + 1, 76.4F, 600);
 		check("bumpy slope", (x, y, z) -> y < 74 - x / 3 + (Math.floorMod(hash(x, z), 3) - 1) || x < 1 && y < 80,
 			(8 * 2) * tn + 2 * 2 + 1, 76.5F, 900);
+		checkCurtains();
 		check("lake with shore", (x, y, z) -> y < 64 + Math.max(0, Math.abs(x - 12) + Math.abs(z - 12) - 8) / 2,
 			(12 * 2) * tn + 12 * 2, 65.3F, 900);
 	}

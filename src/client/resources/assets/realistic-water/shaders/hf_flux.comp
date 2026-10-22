@@ -59,7 +59,10 @@ void main() {
         }
         float wetB = clamp(headB, lo, hi) - lo;
         float area = HF_CELL * max(wetA, wetB);
-        float q = flux[base + k] * HF_KEEP + HF_DT * HF_G * area * (headA - headB) / HF_CELL;
+        // Water pouring over an edge onto lower water (a free overfall, like a weir) is driven only by the water above the
+        // edge, not by how far it then falls: the full drop as head pulled the edge cell empty every step, so the water at
+        // the brink was a near-dry film and the stream's surface ended before the waterfall began.
+        float q = flux[base + k] * HF_KEEP + HF_DT * HF_G * area * (headA - max(headB, ga.x)) / HF_CELL;
         if (stir.z > 0.0) {
             uint d = k >> 1;
             float target = dot(stir.xy, vec2(HF_DX[d], HF_DZ[d])) * HF_CELL * min(stir.z, wetA);

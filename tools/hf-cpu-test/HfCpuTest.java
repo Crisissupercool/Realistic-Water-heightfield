@@ -843,6 +843,38 @@ public final class HfCpuTest {
 			check(before > 0.1 && after > 0.8 * before, String.format("a steady channel flow keeps going through the rebuild: flux %.3f -> %.3f", before, after));
 		}
 
+		System.out.println("Edits: breaking a block that opens a new layer (a pocket in the bank) keeps the channel's flow");
+		{
+			boolean[] broken = {false};
+			// The banks are solid up to y 70; breaking (8, 66, 2) opens a pocket inside the bank, so that column gets a second layer.
+			Solid solid = (x, y, z) -> !(broken[0] && x == 8 && y == 66 && z == 2) && (y < 64 || (z < 4 || z > 11) && y < 70);
+			HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 4, 16, 16);
+			HfTiledSim tiled = new HfTiledSim(grid, voxels(solid));
+			tiled.maxNewTiles = 0;
+			int tn = grid.tn;
+			int tile = tiled.addTile(0, 0, null);
+			int layersBefore = grid.layersUsed[tile];
+			for (int z = 4; z < 12; z++) {
+				grid.setReservoir(tile, (z * C) * tn + 1, 65.0F, HfTileGrid.RESERVOIR_FIXED);
+				grid.setReservoir(tile, (z * C) * tn + tn - 2, 64.3F, HfTileGrid.RESERVOIR_FIXED);
+			}
+			for (int f = 0; f < 900; f++) {
+				tiled.frame();
+			}
+			double before = totalFlux(tiled, grid, tile);
+			broken[0] = true;
+			grid.markDirtyBlock(8, 66, 2);
+			tiled.frame();
+			double after = totalFlux(tiled, grid, tile);
+			check(grid.layersUsed[tile] > layersBefore, "the pocket adds a layer (" + layersBefore + " -> " + grid.layersUsed[tile] + ")");
+			check(before > 0.1 && after > 0.8 * before, String.format("the flow keeps going through the new layer: flux %.3f -> %.3f", before, after));
+			for (int f = 0; f < 60; f++) {
+				tiled.frame();
+			}
+			double later = totalFlux(tiled, grid, tile);
+			check(later > 0.8 * before && later < 1.25 * before, String.format("and settles back without a surge: flux %.3f a second later", later));
+		}
+
 		System.out.println("Splashes: an impact's crater and ring scale with its speed, volume exact");
 		{
 			Solid solid = (x, y, z) -> y < 60 || (x == 0 || x == 15 || z == 0 || z == 15) && y < 70;

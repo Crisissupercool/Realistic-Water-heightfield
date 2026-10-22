@@ -516,3 +516,44 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   a falling speed (1.5 + 5 s blocks/s) in the flow channel, and composite.frag shades sheets in coordinates across the fall and
   down it (continuing the top surface's along-flow coordinate at the brink), with the same flow-mapped foam as the surface, so
   foam that rode the current to the edge keeps pouring down the sheet.
+
+## 19. Falling sheets as closed ribbons, weir flow at the brink, edits that add a layer (as built)
+
+* **Why sheets looked like flat cards:** the thickness pass treats every heightfield face as open (an entry face without a matching
+  exit is closed by the terrain behind it). A single-faced sheet therefore counted all the air between itself and the cliff (or
+  the pool below) as water, so it shaded as a tinted slab. Sheets are now closed thin ribbons: an outer surface, an inner surface
+  facing the cliff and, at each free end, a cap; entry and exit cancel and the thickness is the sheet's own (0.012 blocks at
+  least), so glassy water is see-through and foam reads as foam.
+* **Sheet shape:** the outer surface leaves the water surface at the brink horizontally at the overflow speed v0
+  (outflow / (cell x depth), 0.2..4 b/s) and falls freely, so the lip curls over with the radius real water has (~v0^2 / g)
+  instead of a hard corner; its outward travel eases toward 0.42 blocks (x = R (1 - exp(-v0 t / R)), it lands in the next cell,
+  where the solver puts the water). The inner surface takes the same path from the floor at the brink and lands at the same place,
+  so the sheet starts as thick as the water at the edge and thins as it steepens. Six segments at fall-time fractions
+  0, .05, .13, .26, .45, .7, 1 (dense at the lip). Offsetting the inner surface along the turning normal was tried and rejected:
+  it folded for deep, slow pours (numpy-style check of both models).
+* **Joined to the top surface:** the sheet replaces the side wall at its edge (the body continues into the ribbon: outer = top,
+  inner = floor), its first row takes the top surface's corner heights, normals and foam, and free ends narrow by up to 0.1 as they
+  fall and whiten first. Sheet foam whitens with the drop (1 - exp(-drop / 1.4)) toward 0.9 x body, where body comes from the
+  outflow per width (v0 x depth at the edge), values both sheets at a shared end agree on.
+* **Seamless texture over the lip:** sheet vertices carry 16 (d + 1) + speed and the drop in their flow word; `mesh_front.frag`
+  packs the sheet's edge direction (2 bits), speed (6) and the drop up to 0.5 blocks (8) instead of the surface's flow angle and
+  speed. `composite.frag` gives a sheet the top surface's foam coordinates unrolled over the edge (world xz + outward x drop)
+  near the lip and its own coordinates (world xz - outward x y) lower down, crossfaded at 0.32..0.48 blocks; ripples and the
+  streak bump fade in over the first 0.3 blocks of drop. At the lip the sheet is shaded exactly like the surface it continues.
+* **Foam streaks without scrambling:** `flowFoam` used to rotate absolute world coordinates (thousands of blocks) into the flow
+  direction, so any change of direction across the surface reshuffled the pattern into scratchy lines. Streaks now come from
+  averaging the two coarse noise octaves over +-0.12 x speed blocks along the flow (contrast restored), split into `foamField`
+  (pattern) and `foamShape` (threshold and bubbles); still-water foam is unchanged.
+* **Weir flow at a brink (solver):** the flux pass drove water over an edge with the head difference down to the water below, so
+  a 10-block drop pulled the edge cell empty every step: it held under 0.01 blocks, counted as dry, the stream's surface ended a
+  cell early and the sheet flickered. Over a free overfall (the neighbor's surface below our floor) only the water above the edge
+  drives the flow now (`headA - max(headB, floor)`), like a weir. In the waterfall test the edge holds a steady 0.065 blocks at
+  0.086 blocks^3/s instead.
+* **Block edits that add a layer:** breaking a block into a bank or hillside can open a pocket above or below the water, so the
+  rebuilt tile needs a layer it had no flux page for; `HfTileGrid.replace` then dropped the whole tile's flow (flux 151 -> 1.25
+  in the test: the surge again). It now takes fresh flux pages for the new layers (zeroed with their foam before the remap) and
+  keeps the rest; it only starts over when no free pages are left.
+* **Tests:** a tile that gains a layer keeps its flow (151.26 -> 151.26, still 150.9 a second later). `HfMeshMirror` mirrors
+  curtainOf / curtainEnd / sheetPoint on a 5-block stream over a 10-block cliff: 10 cells form one curtain, 18 shared ends
+  with identical vertices, free ends only at its 2 sides, the ribbon at least 0.012 thick, never inside the cliff, its inner
+  surface only going down.

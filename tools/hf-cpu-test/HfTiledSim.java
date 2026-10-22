@@ -282,7 +282,8 @@ final class HfTiledSim {
 					}
 					float wetB = Math.clamp(headB, lo, hi) - lo;
 					float area = cell * Math.max(wetA, wetB);
-					float q = this.flux[base + k] * keep + dt * 9.81F * area * (headA - headB) / cell;
+					// Over an edge onto lower water (a free overfall) only the water above the edge drives the flow (see hf_flux.comp).
+					float q = this.flux[base + k] * keep + dt * 9.81F * area * (headA - Math.max(headB, fa)) / cell;
 					if (st[2] > 0.0F) {
 						int d = k >> 1;
 						float target = (st[0] * HfTileGrid.DX[d] + st[1] * HfTileGrid.DZ[d]) * cell * Math.min(st[2], wetA);
@@ -471,6 +472,11 @@ final class HfTiledSim {
 				continue;
 			}
 			this.writePages(tile, t);
+			for (int p : this.g.lastFreshFlux) {
+				Arrays.fill(this.flux, p * this.ps * 8, (p + 1) * this.ps * 8, 0.0F);
+				Arrays.fill(this.foam, p * this.ps, (p + 1) * this.ps, 0.0F);
+				Arrays.fill(this.foam, this.foamHalf + p * this.ps, this.foamHalf + (p + 1) * this.ps, 0.0F);
+			}
 			this.remap(old, Arrays.copyOfRange(this.g.spanPage, tile * 4, tile * 4 + 4), Arrays.copyOfRange(this.g.fluxPage, tile * 4, tile * 4 + 4));
 			this.g.releaseSpanPages(old);
 		}

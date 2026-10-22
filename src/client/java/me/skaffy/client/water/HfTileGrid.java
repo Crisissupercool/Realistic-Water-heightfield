@@ -321,6 +321,9 @@ final class HfTileGrid {
 	 *
 	 * @return the old span pages, or null if there are not enough free pages (the tile then keeps its old topology)
 	 */
+	/** Flux pages the last {@link #replace} gave a still-simulated tile for layers it did not have; they must be zeroed. */
+	int[] lastFreshFlux = new int[0];
+
 	int[] replace(int tile, Tile t) {
 		if (this.freeSpan.size() < t.layersUsed) {
 			return null;
@@ -339,12 +342,27 @@ final class HfTileGrid {
 		this.version[tile]++;
 		// A simulated tile keeps its flux pages through the rebuild (the remap moves each column's flow along with its water), so
 		// breaking a block does not stop the flow of the whole tile while its neighbors keep pushing, which made the water
-		// surge. Only when the tile now needs a layer it holds no flux page for does it start over (fluxes zeroed).
-		boolean keep = this.active[tile];
-		for (int l = 0; l < t.layersUsed && keep; l++) {
-			keep = this.fluxPage[tile * 4 + l] != NONE;
+		// surge. A layer the tile did not have before (a block broken into a hillside opens a pocket above or below the water)
+		// gets a fresh, zeroed flux page; only when none are free does the tile start over.
+		this.lastFreshFlux = new int[0];
+		int missing = 0;
+		for (int l = 0; l < t.layersUsed; l++) {
+			if (this.fluxPage[tile * 4 + l] == NONE) {
+				missing++;
+			}
 		}
+		boolean keep = this.active[tile] && this.freeFlux.size() >= missing;
 		if (keep) {
+			int[] fresh = new int[missing];
+			int n = 0;
+			for (int l = 0; l < t.layersUsed; l++) {
+				if (this.fluxPage[tile * 4 + l] == NONE) {
+					int p = this.freeFlux.poll();
+					this.fluxPage[tile * 4 + l] = p;
+					fresh[n++] = p;
+				}
+			}
+			this.lastFreshFlux = fresh;
 			for (int l = t.layersUsed; l < MAX_LAYERS; l++) {
 				int p = this.fluxPage[tile * 4 + l];
 				if (p != NONE) {
