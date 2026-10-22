@@ -25,9 +25,6 @@ public final class WaterRenderer implements AutoCloseable {
 	private final GraphicsProgram dropletFront;
 	private final GraphicsProgram meshThickness;
 	private final GraphicsProgram dropletThickness;
-	/** Heightfield water drops (splashes), drawn like the regions' droplets but without their density culling. */
-	private final GraphicsProgram hfDropFront;
-	private final GraphicsProgram hfDropThickness;
 	private final GraphicsProgram whitewaterProgram;
 	private final GraphicsProgram compositeProgram;
 	private final VkBuf noRipples;
@@ -60,9 +57,6 @@ public final class WaterRenderer implements AutoCloseable {
 		this.dropletFront = new GraphicsProgram("particle.vert", "droplet_front.frag", droplets, front, U, S, S, S);
 		this.meshThickness = new GraphicsProgram("mesh.vert", "mesh_thickness.frag", Map.of(), add, U, S, S, S, T);
 		this.dropletThickness = new GraphicsProgram("particle.vert", "droplet_thickness.frag", droplets, add, U, S, S, S, T);
-		Map<String, String> hfDrops = Map.of("DROPLETS", "1", "VIEW_BINDING", "3", "HF_DROPS", "1");
-		this.hfDropFront = new GraphicsProgram("particle.vert", "droplet_front.frag", hfDrops, front, U, S, S, S);
-		this.hfDropThickness = new GraphicsProgram("particle.vert", "droplet_thickness.frag", hfDrops, add, U, S, S, S, T);
 		this.whitewaterProgram = new GraphicsProgram("particle.vert", "whitewater.frag", Map.of("VIEW_BINDING", "4"),
 			new GraphicsProgram.State(VkTex.RGBA16F, VK10.VK_FORMAT_UNDEFINED, false, false, VK10.VK_COMPARE_OP_ALWAYS, GraphicsProgram.Blend.ADD),
 			U, S, T, T, S);
@@ -191,12 +185,6 @@ public final class WaterRenderer implements AutoCloseable {
 			this.meshFront.drawIndirect(cb, body.meshCounters(), SurfaceMesher.DRAW_ARGS_OFFSET);
 			WaterRegion r = body.region();
 			if (r == null) {
-				if (WaterSettings.hfSpray > 0.0F) {
-					HfDomain hf = body.heightfield();
-					this.hfDropFront.bind(cb, body.ubo(), Desc.ssbo(hf.spray), Desc.ssbo(this.noRipples), view);
-					this.hfDropFront.push(cb, Program.f(WaterSettings.hfDropRadius), Program.f(0.0F), Program.f(0.15F));
-					this.hfDropFront.drawIndirect(cb, hf.sprayCounters, HfDomain.DROP_ARGS);
-				}
 				continue;
 			}
 			float radius = WaterSettings.particleRadius / r.res;
@@ -213,12 +201,6 @@ public final class WaterRenderer implements AutoCloseable {
 			this.meshThickness.drawIndirect(cb, body.meshCounters(), SurfaceMesher.DRAW_ARGS_OFFSET);
 			WaterRegion r = body.region();
 			if (r == null) {
-				if (WaterSettings.hfSpray > 0.0F) {
-					HfDomain hf = body.heightfield();
-					this.hfDropThickness.bind(cb, body.ubo(), Desc.ssbo(hf.spray), Desc.ssbo(this.noRipples), view, depthTex);
-					this.hfDropThickness.push(cb, Program.f(WaterSettings.hfDropRadius), Program.f(0.0F), Program.f(0.15F));
-					this.hfDropThickness.drawIndirect(cb, hf.sprayCounters, HfDomain.DROP_ARGS);
-				}
 				continue;
 			}
 			float radius = WaterSettings.particleRadius / r.res;
@@ -235,14 +217,15 @@ public final class WaterRenderer implements AutoCloseable {
 			for (Body body : bodies) {
 				WaterRegion r = body.region();
 				if (r == null) {
-					// Heightfield spray (droplets and mist from falling sheets and splashes), positions relative to its origin.
+					// Heightfield spray and splash drops (positions relative to its origin), both motion-blurred (pc.b.w > 0).
 					HfDomain hf = body.heightfield();
 					if (WaterSettings.hfSpray > 0.0F) {
 						this.whitewaterProgram.bind(cb, body.ubo(), Desc.ssbo(hf.spray), depthTex, Desc.tex(this.gbuffer, this.nearest.handle), view);
 						this.whitewaterProgram.push(cb, Program.f(WaterSettings.hfSprayRadius), Program.f(0.5F), Program.f(0.3F),
 							Program.f(WaterSettings.wwMaxPixels), Program.f(WaterSettings.foamSize), Program.f(WaterSettings.hfMistSize),
-							Program.f(WaterSettings.hfMistAlpha));
+							Program.f(WaterSettings.hfMistAlpha), Program.f(Math.max(WaterSettings.hfDropRadius, 1.0e-4F)));
 						this.whitewaterProgram.drawIndirect(cb, hf.sprayCounters, HfDomain.SPRAY_ARGS);
+						this.whitewaterProgram.drawIndirect(cb, hf.sprayCounters, HfDomain.DROP_ARGS);
 					}
 					continue;
 				}
@@ -250,8 +233,9 @@ public final class WaterRenderer implements AutoCloseable {
 					continue;
 				}
 				this.whitewaterProgram.bind(cb, body.ubo(), Desc.ssbo(r.currentWhitewater()), depthTex, Desc.tex(this.gbuffer, this.nearest.handle), view);
+				// All 8 values: push constants persist, and the heightfield's mist size and motion blur (b.yzw) must not carry over.
 				this.whitewaterProgram.push(cb, Program.f(WaterSettings.wwRadius), Program.f(0.5F), Program.f(0.3F), Program.f(WaterSettings.wwMaxPixels),
-					Program.f(WaterSettings.foamSize));
+					Program.f(WaterSettings.foamSize), Program.f(0.0F), Program.f(0.0F), Program.f(0.0F));
 				this.whitewaterProgram.drawIndirect(cb, r.args, WaterRegion.ARGS_WW_DRAW);
 			}
 		}
@@ -304,8 +288,7 @@ public final class WaterRenderer implements AutoCloseable {
 	public void close() {
 		this.releaseTargets();
 		for (AutoCloseable c : new AutoCloseable[]{
-			this.meshFront, this.dropletFront, this.meshThickness, this.dropletThickness, this.hfDropFront, this.hfDropThickness,
-			this.whitewaterProgram, this.compositeProgram,
+			this.meshFront, this.dropletFront, this.meshThickness, this.dropletThickness, this.whitewaterProgram, this.compositeProgram,
 			this.nearest, this.linear, this.noRipples
 		}) {
 			try {

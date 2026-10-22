@@ -528,21 +528,6 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
 }
 
 
-// A splash's water drop (heightfield spray, see hf_spray.glsl). Drops are small, so the scene behind shows almost straight
-// through one; what makes it visible is the light it catches: the sky reflected around its rim, the sun's glint and the air
-// whipped into splash water (a little white). Shaded like the lake (refraction offset, wet darkening, absorption) drops looked
-// like dark pebbles.
-vec3 shadeDrop(vec2 uv, vec3 n, float fd, float ambient) {
-    vec3 V = toEyeAt(uv);
-    n = dot(n, V) < 0.0 ? -n : n;
-    vec3 behind = texture(sceneColor, clamp(uv + n.xy * 0.004, vec2(0.0), vec2(1.0))).rgb;
-    vec3 Rw = (G.invView * vec4(reflect(-V, n), 0.0)).xyz;
-    float F = 0.08 + 0.92 * pow(1.0 - clamp(dot(n, V), 0.0, 1.0), 4.0);
-    vec3 c = mix(behind, skyColor(Rw), F);
-    c = mix(c, vec3(0.9, 0.94, 0.96) * mix(0.3, 1.0, ambient), 0.25);
-    return c + sunSpecular(n, V, pixelFootprint(fd));
-}
-
 vec3 shadeSurfaceFromBelow(vec2 uv, vec3 n, float fd, vec3 deep) {
     vec3 P = viewPosAt(uv, fd);
     vec3 V = toEyeAt(uv);
@@ -625,11 +610,8 @@ void main() {
                 flow = vec2(cos(angle), sin(angle)) * (float((code >> 15) & 255u) / 255.0 * 8.0);
             }
         }
-        // Heightfield splash drops write -0.2 (droplet_front.frag with HF_DROPS).
-        bool drop = matTagged && matId < -0.125;
         color = lavaPass ? shadeAboveLava(uv, g.xyz, fd, ambient)
-            : drop ? shadeDrop(uv, g.xyz, fd, ambient)
-            : shadeAboveWater(uv, g.xyz, fd, sceneDist, ambient, aer, sheet, flow, sheetDrop);
+                         : shadeAboveWater(uv, g.xyz, fd, sceneDist, ambient, aer, sheet, flow, sheetDrop);
         vec4 clip = G.proj * vec4(viewPosAt(uv, fd), 1.0);
         outDepth = clip.z / clip.w;
     }
@@ -637,7 +619,10 @@ void main() {
     if (foam.a > 1e-4) {
         vec3 foamColor = foam.rgb / foam.a;
         float coverage = min(1.0 - exp(-foam.a * G.foamA.y), 0.9);
-        if (hasFluid && !underwater) {
+        // The particle regions' surface foam is laced; over heightfield water the whitewater is only spray and splash drops
+        // flying in front of it (its surface foam is shaded in shadeAboveWater), which the lace cut holes into.
+        bool hfWater = matTagged && matId >= 0.125 && matId < 0.25;
+        if (hasFluid && !underwater && !hfWater) {
             vec3 world = G.misc.yzw + (G.invView * vec4(viewPosAt(uv, fd), 0.0)).xyz;
             coverage *= foamLace(world.xz, coverage, pixelFootprint(fd));
         }

@@ -30,7 +30,11 @@ void main() {
     float type = vData.y;
     float a = vData.z;
     vec3 color = vec3(1.0);
-    if (type > 2.5) {
+    if (type >= 3.5) {
+        // Splash water drops (heightfield): water catching the light, a soft bright core.
+        a *= 0.85 * exp(-2.2 * r2);
+        color = vec3(0.86, 0.93, 1.0);
+    } else if (type > 2.5) {
         // Mist (heightfield spray): soft and faint, its alpha set in particle.vert.
         a *= exp(-4.0 * r2);
         color = vec3(0.9, 0.95, 1.0);

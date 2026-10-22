@@ -645,3 +645,10 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   straight through, sky reflected toward the rim (Fresnel), the sun's glint and 25% white. Shaded like the lake they refracted
   the dirt behind them and got the wet-bed darkening: dark pebbles. Radius 0.045 (was 0.07); crown 150 per block^3 (60..1200),
   jet 50 (15..400). Mist emission is off (it read as bright puffs); its type and rendering stay.
+* **Drops redone (same day):** as refracting spheres they looked like glass marbles: too big, and tinted by whatever the scene
+  copy holds behind them (the lake bed, not the lake surface, which is drawn later; the wooden pillar). Splash drops are now
+  drawn in the whitewater pass like the spray, as type 4 + size (the drop set's vel.w): a soft bright core (0.85 exp(-2.2 r^2)),
+  radius 0.03 x 0.5..1.4, and the heightfield's spray and drops are motion-blurred: stretched along their screen-space velocity
+  by the distance moved in 0.02 s (up to 7x), alpha / sqrt(stretch). The sphere path (HF_DROPS, shadeDrop) is gone. The
+  particle regions' foam lace is no longer applied over heightfield water, where it cut holes into the spray flying in front.
+  Region whitewater draws now push all 8 values (push constants persist between draws).

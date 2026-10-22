@@ -17,7 +17,7 @@ const vec2 CORNERS[6] = vec2[](vec2(-1, -1), vec2(1, -1), vec2(1, 1), vec2(-1, -
 void main() {
     uint id = uint(gl_InstanceIndex);
     Particle p = parts[id];
-#if defined(DROPLETS) && !defined(HF_DROPS)
+#ifdef DROPLETS
     if (p.pos.w < 0.0) {
         gl_Position = vec4(0.0, 0.0, -2.0, 1.0);
         return;
@@ -38,27 +38,25 @@ void main() {
     vec3 rel = G.domainOrigin.xyz + p.pos.xyz * G.domainOrigin.w;
     vec3 center = (G.view * vec4(rel, 1.0)).xyz;
     float r = pc.a.x;
-#ifdef HF_DROPS
-    // Heightfield water drops (splashes): vel.w holds the drop's radius as a multiple of pc.a.x.
-    r *= p.vel.w;
-    if (viewState.x > 0.5) {
-        gl_Position = vec4(0.0, 0.0, -2.0, 1.0);
-        return;
-    }
-#endif
 #ifndef DROPLETS
     bool foam = p.vel.w > 0.5 && p.vel.w < 1.5;
     if (foam) {
         r *= pc.b.x;
     }
     // Mist puffs (heightfield spray, type 3): a radius of their own (pc.b.y blocks) and a faint alpha (pc.b.z) that fades out.
-    bool mist = p.vel.w > 2.5;
+    bool mist = p.vel.w > 2.5 && p.vel.w < 3.5;
     if (mist) {
         r = pc.b.y;
+    }
+    // Splash water drops (heightfield, 4 + their size as a multiple of pc.b.w blocks).
+    bool drop = p.vel.w >= 3.5;
+    if (drop) {
+        r = pc.b.w * (p.vel.w - 4.0);
     }
 #else
     bool foam = false;
     bool mist = false;
+    bool drop = false;
 #endif
     float alpha = mist ? pc.b.z * clamp(p.pos.w, 0.0, 1.0) : 1.0;
     float dist = -center.z;
@@ -71,14 +69,29 @@ void main() {
         float s = pc.a.y / max(pixelR, 1e-4);
         alpha *= 1.0 / (s * s);
         r *= s;
-    } else if (pc.a.w > 0.0 && pixelR > pc.a.w && !foam && !mist) {
+    } else if (pc.a.w > 0.0 && pixelR > pc.a.w && !foam && !mist && !drop) {
         r *= pc.a.w / pixelR;
     }
     if (pc.a.w > 0.0) {
         alpha *= smoothstep(pc.a.z, pc.a.z + 1.2, dist);
     }
     vec2 c = CORNERS[gl_VertexIndex];
-    gl_Position = G.proj * vec4(center + vec3(c * r, 0.0), 1.0);
+    vec2 offset = c * r;
+#ifndef DROPLETS
+    // Heightfield spray and drops (pc.b.w > 0) are drawn motion-blurred: stretched along their velocity across the screen by the
+    // distance they move in about a frame, their light spread over the streak.
+    if (pc.b.w > 0.0 && !mist) {
+        vec2 sv = (mat3(G.view) * (p.vel.xyz * G.domainOrigin.w)).xy;
+        float sl = length(sv);
+        if (sl > 1.0e-3) {
+            vec2 ax = sv / sl;
+            float stretch = 1.0 + min(sl * 0.02 / max(r, 1.0e-4), 6.0);
+            offset = (ax * c.x * stretch + vec2(-ax.y, ax.x) * c.y) * r;
+            alpha /= sqrt(stretch);
+        }
+    }
+#endif
+    gl_Position = G.proj * vec4(center + vec3(offset, 0.0), 1.0);
     vUV = c;
     vCenter = center;
     vRadius = r;

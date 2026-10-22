@@ -1,7 +1,8 @@
 // Spray of the heightfield (see HfDomain): two sets of particles, each in two halves, in one buffer; pos.xyz relative to the
 // heightfield origin (blocks, y from its yMin) with life in pos.w, vel.xyz (blocks/s) and in vel.w:
 //  - set 0, spray (whitewater pass): the type, 0 a droplet, 3 a mist puff;
-//  - set 1, water drops (droplet passes, shaded as water): the drop's radius as a multiple of hfDropRadius.
+//  - set 1, splash water drops (whitewater pass too, as motion-blurred bright streaks): 4 + the drop's radius as a multiple of
+//    hfDropRadius (types 0..3 are the spray's).
 layout(std430, binding = 17) buffer Spray { Particle spray[]; };
 // [0], [1]: spray in each half; [2], [3]: drops in each half; [4..7], [8..11]: draw arguments for the current half of each set
 // (6 vertices, count, 0, first particle).
@@ -49,5 +50,5 @@ void sprayAdd(uint into, vec3 p, vec3 v, float life, float type) {
 }
 
 void dropAdd(uint into, vec3 p, vec3 v, float life, float size) {
-    particleAdd(SET_DROPS, into, p, v, life, size);
+    particleAdd(SET_DROPS, into, p, v, life, 4.0 + size);
 }
