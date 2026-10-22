@@ -1,7 +1,11 @@
 #version 450
 // After a tile's terrain changed (block placed or broken, chunk loaded), moves its water from the old span pages into the
-// rebuilt ones, column by column. Each old body of water goes whole into the new span it overlaps most (or the nearest one
-// when a block now fills it), so the volume is exact; water squeezed into a smaller span is under pressure and flows out.
+// rebuilt ones, column by column. Water stays where it is: each new span takes the part of every old water body that lies in its
+// own height range, so a block placed into a lake splits the column without lifting the water below it over the block (moving
+// each body whole into one span did that, standing the water up as a column a block or two high). Water an old body held above
+// its ceiling (under pressure) stays with the span it overlaps most; water inside cells that are solid now is gone, as when a
+// placed block replaces a water block. Where a span's floor dropped (a block broken under water) the water keeps its depth, so the
+// surface dips there and fills in from around.
 // A tile that stays simulated keeps its flux pages (indexed by layer): each new layer takes the flow and foam of the old body
 // that gave it the most water, so the water keeps moving through the edit instead of stopping and surging back.
 #include "hf_common.glsl"
@@ -42,28 +46,27 @@ void main() {
             continue;
         }
         float lo = g.x;
-        float hi = g.x + d;
+        float hi = g.x + min(d, max(g.y - g.x, 0.0));
+        float pressure = max(d - max(g.y - g.x, 0.0), 0.0);
         int best = -1;
         float bestOverlap = 0.0;
-        float bestGap = 3.0e38;
         for (int j = 0; j < 4; j++) {
             if (!hfValid(ng[j])) {
                 continue;
             }
-            float overlap = min(hi, ng[j].y) - max(lo, ng[j].x);
-            float gap = max(ng[j].x - hi, lo - ng[j].y);
-            if (overlap > bestOverlap || bestOverlap <= 0.0 && overlap <= 0.0 && gap < bestGap) {
+            float overlap = max(min(hi, ng[j].y) - max(lo, ng[j].x), 0.0);
+            acc[j] += overlap;
+            if (overlap > bestOverlap) {
                 best = j;
-                bestOverlap = max(overlap, 0.0);
-                bestGap = gap;
+                bestOverlap = overlap;
+            }
+            if (overlap > srcAmount[j]) {
+                srcAmount[j] = overlap;
+                src[j] = i;
             }
         }
         if (best >= 0) {
-            acc[best] += d;
-            if (d > srcAmount[best]) {
-                srcAmount[best] = d;
-                src[best] = i;
-            }
+            acc[best] += pressure;
         }
     }
     // Flow and foam move with the water (read everything first: old and new layers share these pages).

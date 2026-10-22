@@ -98,9 +98,10 @@ public final class HfCpuTest {
 	/**
 	 * A lake the heightfield took over whose blocks are still vanilla water (as kelp, seagrass or water the capture could not
 	 * convert stay), next to a shore with a log pillar; the third log is broken. keepOpen: HfWorld.voxels' rule (non-realistic
-	 * fluid keeps the current topology's openness), else the old rule (it is solid). Returns {surface before, highest after}.
+	 * fluid keeps the current topology's openness), else the old rule (it is solid). Returns {surface before, highest after, volume
+	 * before, volume after}.
 	 */
-	static float[] foreignLake(boolean keepOpen) {
+	static double[] foreignLake(boolean keepOpen) {
 		boolean[] foreign = {false};
 		boolean[] broken = {false};
 		HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 4, 16, 16);
@@ -124,11 +125,12 @@ public final class HfCpuTest {
 			sim.frame();
 		}
 		float before = maxSurface(sim, grid);
+		double volume = sim.volume();
 		foreign[0] = true;
 		broken[0] = true;
 		grid.markDirtyBlock(3, 67, 8);
 		sim.frame();
-		return new float[]{before, maxSurface(sim, grid)};
+		return new double[]{before, maxSurface(sim, grid), volume, sim.volume()};
 	}
 
 	static double totalFlux(HfTiledSim sim, HfTileGrid grid, int tile) {
@@ -689,8 +691,18 @@ public final class HfCpuTest {
 			double drift = Math.abs(tiled.volume() - v0) / v0 * 100.0;
 			check(behind > 0.3F, "after breaking an 8-block gap, water flows through: depth behind the dam " + behind);
 			check(drift < 1.0e-3, String.format("volume drift %.6f%% through the rebuild", drift));
-			// Fill a 4x4 block patch of the water with stone, 2 blocks high, at the bottom of the pool.
+			// Fill a 4x4 block patch of the water with stone, 2 blocks high, at the bottom of the pool: the stone replaces the water in
+			// those cells (as a placed block replaces a water block), and nothing is stood up on top of it.
 			double v1 = tiled.volume();
+			double inPatch = 0.0;
+			float level = 0.0F;
+			for (int cz = 4 * C; cz < 8 * C; cz++) {
+				for (int cx = 4 * C; cx < 8 * C; cx++) {
+					float d = tiled.depthAt(grid.slotAt(0, 0), 0, cz * tn + cx);
+					inPatch += Math.min(d, 2.0F) * grid.cell * grid.cell;
+					level = Math.max(level, 64.0F + d);
+				}
+			}
 			for (int x = 4; x < 8; x++) {
 				for (int z = 4; z < 8; z++) {
 					for (int y = 64; y < 66; y++) {
@@ -701,15 +713,15 @@ public final class HfCpuTest {
 			}
 			tiled.frame();
 			double v2 = tiled.volume();
-			check(Math.abs(v2 - v1) / v1 < 1.0e-6, String.format("placing 32 blocks in the water keeps the volume: %.4f -> %.4f", v1, v2));
+			check(Math.abs(v1 - v2 - inPatch) < 1.0e-3, String.format("placing 32 blocks in the water removes exactly the water in them: %.4f -> %.4f (%.4f in the cells)", v1, v2, inPatch));
 			int col = 5 * C * tn + 5 * C;
 			float onTop = tiled.depthAt(grid.slotAt(0, 0), 0, col);
 			check(grid.floorOf(tiled.geo[grid.span(grid.slotAt(0, 0), 0, col)]) == 66.0F, "the patch raised the floor to 66");
-			check(onTop > 0.0F, "the displaced water sits on top of the new blocks: depth " + onTop);
+			check(onTop <= Math.max(level - 66.0F, 0.0F) + 1.0e-4F, String.format("no water is stood up on the new blocks: depth on top %.3f (pool level was %.3f)", onTop, level));
 			for (int f = 0; f < 600; f++) {
 				tiled.frame();
 			}
-			check(Math.abs(tiled.volume() - v1) / v1 < 1.0e-5, String.format("volume after settling %.4f (was %.4f)", tiled.volume(), v1));
+			check(Math.abs(tiled.volume() - v2) / v2 < 1.0e-5, String.format("volume after settling %.4f (was %.4f)", tiled.volume(), v2));
 		}
 
 		System.out.println("Block sync: spans -> block amounts -> spans");
@@ -929,10 +941,34 @@ public final class HfCpuTest {
 
 		System.out.println("Edits: taken-over water that is still a vanilla block (kelp, seagrass, unconverted water) stays put through a rebuild");
 		{
-			float[] old = foreignLake(false);
-			float[] now = foreignLake(true);
-			check(old[1] > old[0] + 3.0F, String.format("old rule (non-realistic fluid is solid): breaking a log on the shore lifts the lake into a tower, %.2f -> %.2f", old[0], old[1]));
-			check(Math.abs(now[1] - now[0]) < 0.05F, String.format("kept open where the heightfield holds it: the lake stays at %.2f -> %.2f", now[0], now[1]));
+			double[] old = foreignLake(false);
+			double[] now = foreignLake(true);
+			check(old[3] < 0.1 * old[2], String.format("old rule (non-realistic fluid is solid): breaking a log on the shore turns the lake solid, water %.1f -> %.1f (the old remap stood it up as a tower instead)", old[2], old[3]));
+			check(Math.abs(now[1] - now[0]) < 0.05 && Math.abs(now[3] - now[2]) < 1.0e-3,
+				String.format("kept open where the heightfield holds it: the lake stays at %.2f -> %.2f, water %.1f -> %.1f", now[0], now[1], now[2], now[3]));
+		}
+
+		System.out.println("Edits: a block placed into a lake replaces its water and splits the column without lifting the water over it");
+		for (int y : new int[]{59, 61, 64}) {
+			boolean[] placed = {false};
+			HfCpuTest.Solid solid = (x, yy, z) -> placed[0] && x == 10 && z == 8 && yy == y || (x < 6 ? yy < 65 : yy < 59);
+			HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 4, 16, 16);
+			HfTiledSim sim = new HfTiledSim(grid, voxels(solid));
+			sim.maxNewTiles = 0;
+			sim.addTile(0, 0, (l, c) -> (c % grid.tn) / C >= 6 && l == 0 ? 64.8 - 59.0 : 0.0);
+			for (int f = 0; f < 30; f++) {
+				sim.frame();
+			}
+			float before = maxSurface(sim, grid);
+			double vol = sim.volume();
+			placed[0] = true;
+			grid.markDirtyBlock(10, y, 8);
+			sim.frame();
+			float after = maxSurface(sim, grid);
+			double lost = vol - sim.volume();
+			double own = Math.clamp(64.8 - y, 0.0, 1.0);
+			check(after - before < 0.05F && Math.abs(lost - own) < 0.02,
+				String.format("block at y %d: highest surface %.3f -> %.3f, water removed %.3f (the %.1f in its cell)", y, before, after, lost, own));
 		}
 
 		System.out.println("Splashes: an impact's crater and ring scale with its speed, volume exact");

@@ -138,10 +138,11 @@ final class HfTiledSim {
 					continue;
 				}
 				float lo = this.g.floorOf(gg);
-				float hi = lo + d;
+				float room = Math.max(this.g.ceilOf(gg) - lo, 0.0F);
+				float hi = lo + Math.min(d, room);
+				float pressure = Math.max(d - room, 0.0F);
 				int best = -1;
 				float bestOverlap = 0.0F;
-				float bestGap = 3.0e38F;
 				for (int j = 0; j < 4; j++) {
 					if (newPages[j] < 0) {
 						continue;
@@ -152,20 +153,19 @@ final class HfTiledSim {
 					}
 					float nf = this.g.floorOf(ng);
 					float nc = this.g.ceilOf(ng);
-					float overlap = Math.min(hi, nc) - Math.max(lo, nf);
-					float gap = Math.max(nf - hi, lo - nc);
-					if (overlap > bestOverlap || bestOverlap <= 0.0F && overlap <= 0.0F && gap < bestGap) {
+					float overlap = Math.max(Math.min(hi, nc) - Math.max(lo, nf), 0.0F);
+					acc[j] += overlap;
+					if (overlap > bestOverlap) {
 						best = j;
-						bestOverlap = Math.max(overlap, 0.0F);
-						bestGap = gap;
+						bestOverlap = overlap;
+					}
+					if (overlap > srcAmount[j]) {
+						srcAmount[j] = overlap;
+						src[j] = i;
 					}
 				}
 				if (best >= 0) {
-					acc[best] += d;
-					if (d > srcAmount[best]) {
-						srcAmount[best] = d;
-						src[best] = i;
-					}
+					acc[best] += pressure;
 				}
 			}
 			for (int j = 0; j < 4; j++) {

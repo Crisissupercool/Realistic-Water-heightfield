@@ -65,8 +65,35 @@ final class HfDomain implements AutoCloseable {
 	 * A rebuilt tile: new pages (geo, links) to upload, then water to remap from the old pages, which are freed afterwards.
 	 * fluxPages: the flux pages the tile kept through the rebuild (NONE where it has none), whose flow the remap moves too.
 	 */
-	private record Rebuilt(int[] oldPages, int[] newPages, int[] fluxPages, int[] freshFlux, VkBuf staging) {
+	private record Rebuilt(int tile, int[] oldPages, int[] newPages, int[] fluxPages, int[] freshFlux, VkBuf staging, int[] oldGeo,
+		int oldLayers, int[] newGeo, int newLayers) {
 	}
+
+	/**
+	 * Edit probe (WaterSettings.hfEditProbe, a diagnostic): the depth of a rebuilt tile read back just before the remap, just after
+	 * it and {@link #PROBE_LATER} frames later, so a block edit that makes the water jump is reported in chat with where it
+	 * happened, at which stage (the remap itself or the solver afterwards) and how the column's spans changed.
+	 */
+	private static final int PROBE_LATER = 12;
+	private static final int MAX_PROBES = 4;
+
+	private static final class EditProbe {
+		final Rebuilt r;
+		final VkBuf readback;
+		final int version;
+		long laterFrame;
+		long readyFrame = Long.MAX_VALUE;
+
+		EditProbe(Rebuilt r, VkBuf readback, int version) {
+			this.r = r;
+			this.readback = readback;
+			this.version = version;
+		}
+	}
+
+	private final List<EditProbe> probes = new ArrayList<>();
+	private long frameNo;
+	private @org.jspecify.annotations.Nullable String probeText;
 
 	final HfTileGrid grid;
 	final int originX;
@@ -246,6 +273,8 @@ final class HfDomain implements AutoCloseable {
 
 	/** Swaps in a rebuilt topology for a tile; the water is remapped into it on the GPU at the next {@link #record}. */
 	boolean rebuildTile(int tile, HfTileGrid.Tile t) {
+		int[] oldGeo = this.grid.tileGeo[tile];
+		int oldLayers = this.grid.layersUsed[tile];
 		int[] old = this.grid.replace(tile, t);
 		if (old == null) {
 			return false;
@@ -254,7 +283,8 @@ final class HfDomain implements AutoCloseable {
 		System.arraycopy(this.grid.spanPage, tile * 4, pages, 0, HfTileGrid.MAX_LAYERS);
 		int[] fluxPages = new int[HfTileGrid.MAX_LAYERS];
 		System.arraycopy(this.grid.fluxPage, tile * 4, fluxPages, 0, HfTileGrid.MAX_LAYERS);
-		this.rebuilt.add(new Rebuilt(old, pages, fluxPages, this.grid.lastFreshFlux, this.stage(t, null)));
+		this.rebuilt.add(new Rebuilt(tile, old, pages, fluxPages, this.grid.lastFreshFlux, this.stage(t, null), oldGeo, oldLayers, t.geo,
+			t.layersUsed));
 		this.tilesDirty = true;
 		this.meshDirty = true;
 		return true;
@@ -453,6 +483,11 @@ final class HfDomain implements AutoCloseable {
 					this.foam.fill(cb, (long) fp * this.ps * 4L, (long) this.ps * 4L, 0);
 					this.foam.fill(cb, (this.foamHalf + (long) fp * this.ps) * 4L, (long) this.ps * 4L, 0);
 				}
+				if (WaterSettings.hfEditProbe && this.probes.size() < MAX_PROBES && r.oldGeo() != null) {
+					EditProbe probe = new EditProbe(r, VkBuf.readback(3L * HfTileGrid.MAX_LAYERS * this.ps * 4L), this.grid.version[r.tile()]);
+					this.copyProbe(cb, probe, r.oldPages(), 0);
+					this.probes.add(probe);
+				}
 			}
 			Vk.barrier(cb);
 			for (Rebuilt r : this.rebuilt) {
@@ -465,6 +500,12 @@ final class HfDomain implements AutoCloseable {
 				p[5].dispatch(cb, ComputeProgram.groups(this.ps, 256), 1, 1);
 			}
 			Vk.barrier(cb);
+			for (EditProbe probe : this.probes) {
+				if (this.rebuilt.contains(probe.r)) {
+					this.copyProbe(cb, probe, probe.r.newPages(), 1);
+					probe.laterFrame = this.frameNo + PROBE_LATER;
+				}
+			}
 			for (Rebuilt r : this.rebuilt) {
 				this.grid.releaseSpanPages(r.oldPages());
 				Vk.destroyLater(r.staging());
@@ -619,6 +660,10 @@ final class HfDomain implements AutoCloseable {
 		}
 		String t = this.debugText;
 		this.debugText = null;
+		if (this.probeText != null) {
+			t = t == null ? this.probeText : t + "\n" + this.probeText;
+			this.probeText = null;
+		}
 		return t;
 	}
 
@@ -714,6 +759,194 @@ final class HfDomain implements AutoCloseable {
 			Vk.barrier(cb);
 		}
 		this.lastDt = dt;
+		this.advanceProbes(cb);
+	}
+
+	private void copyProbe(VkCommandBuffer cb, EditProbe probe, int[] pages, int region) {
+		long layerBytes = (long) this.ps * 4L;
+		for (int l = 0; l < HfTileGrid.MAX_LAYERS; l++) {
+			if (pages[l] != HfTileGrid.NONE) {
+				this.depth.copyTo(cb, probe.readback, pages[l] * layerBytes, (region * HfTileGrid.MAX_LAYERS + l) * layerBytes, layerBytes);
+			}
+		}
+	}
+
+	/** Takes the later readback of probed tiles, and reports the ones whose readbacks have all arrived. */
+	private void advanceProbes(VkCommandBuffer cb) {
+		this.frameNo++;
+		if (this.probes.isEmpty()) {
+			return;
+		}
+		boolean copied = false;
+		for (java.util.Iterator<EditProbe> it = this.probes.iterator(); it.hasNext(); ) {
+			EditProbe probe = it.next();
+			int tile = probe.r.tile();
+			if (probe.readyFrame == Long.MAX_VALUE && probe.laterFrame > 0 && this.frameNo >= probe.laterFrame) {
+				if (this.grid.version[tile] != probe.version) {
+					// Rebuilt again before the later look: report what the remap did without it.
+					probe.readyFrame = this.frameNo + Vk.FRAME_RING + 1;
+					probe.laterFrame = -1;
+				} else {
+					int[] pages = new int[HfTileGrid.MAX_LAYERS];
+					System.arraycopy(this.grid.spanPage, tile * 4, pages, 0, HfTileGrid.MAX_LAYERS);
+					this.copyProbe(cb, probe, pages, 2);
+					copied = true;
+					probe.readyFrame = this.frameNo + Vk.FRAME_RING + 1;
+				}
+			} else if (this.frameNo >= probe.readyFrame) {
+				it.remove();
+				String text = this.analyzeProbe(probe);
+				Vk.destroyLater(probe.readback);
+				if (text != null) {
+					this.probeText = this.probeText == null ? text : this.probeText + "\n" + text;
+				}
+			}
+		}
+		if (copied) {
+			Vk.barrier(cb);
+		}
+	}
+
+	/** Highest water surface of one column over its spans (water deeper than 0.01), or NaN when it holds none. */
+	private float columnTop(int[] geo, int layers, ByteBuffer b, int region, int col, float[] spans) {
+		float top = Float.NaN;
+		int n = 0;
+		for (int l = 0; l < layers; l++) {
+			int g = geo[l * this.ps + col];
+			if (!HfTileGrid.validGeo(g)) {
+				continue;
+			}
+			float d = b.getFloat(((region * HfTileGrid.MAX_LAYERS + l) * this.ps + col) * 4);
+			float fl = this.grid.floorOf(g);
+			if (spans != null && n < 4) {
+				spans[n * 3] = fl;
+				spans[n * 3 + 1] = Math.min(this.grid.ceilOf(g), 9999.0F);
+				spans[n * 3 + 2] = d;
+				n++;
+			}
+			if (d > 0.01F) {
+				top = Float.isNaN(top) ? fl + d : Math.max(top, fl + d);
+			}
+		}
+		if (spans != null) {
+			for (int k = n; k < 4; k++) {
+				spans[k * 3] = Float.NaN;
+			}
+		}
+		return top;
+	}
+
+	private static String spansText(float[] s) {
+		StringBuilder b = new StringBuilder();
+		for (int k = 0; k < 4 && !Float.isNaN(s[k * 3]); k++) {
+			b.append(String.format("%s%.2f-%s:%.2f", k > 0 ? ", " : "", s[k * 3], s[k * 3 + 1] >= 9999.0F ? "open" : String.format("%.2f", s[k * 3 + 1]),
+				s[k * 3 + 2]));
+		}
+		return b.length() == 0 ? "none" : b.toString();
+	}
+
+	private @org.jspecify.annotations.Nullable String analyzeProbe(EditProbe probe) {
+		Rebuilt r = probe.r;
+		boolean later = probe.laterFrame >= 0;
+		VkBuf rb = probe.readback;
+		rb.invalidate(0, 3L * HfTileGrid.MAX_LAYERS * this.ps * 4L);
+		ByteBuffer b = rb.mapped();
+		int tn = this.grid.tn;
+		int cpb = this.grid.cpb;
+		int changed = 0;
+		int[] box = {Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MIN_VALUE, Integer.MIN_VALUE};
+		float worstRemap = 0.0F;
+		float worstLater = 0.0F;
+		int remapCol = -1;
+		int laterCol = -1;
+		double volOld = 0.0;
+		double volNew = 0.0;
+		double volLater = 0.0;
+		float area = this.cell * this.cell;
+		for (int col = 0; col < this.ps; col++) {
+			boolean differs = false;
+			for (int l = 0; l < HfTileGrid.MAX_LAYERS && !differs; l++) {
+				int a = l < r.oldLayers() ? r.oldGeo()[l * this.ps + col] : HfTileGrid.INVALID_GEO;
+				int c = l < r.newLayers() ? r.newGeo()[l * this.ps + col] : HfTileGrid.INVALID_GEO;
+				differs = (HfTileGrid.validGeo(a) || HfTileGrid.validGeo(c)) && a != c;
+			}
+			int bx = col % tn / cpb;
+			int bz = col / tn / cpb;
+			if (differs) {
+				changed++;
+				box[0] = Math.min(box[0], bx);
+				box[1] = Math.min(box[1], bz);
+				box[2] = Math.max(box[2], bx);
+				box[3] = Math.max(box[3], bz);
+			}
+			for (int l = 0; l < HfTileGrid.MAX_LAYERS; l++) {
+				if (l < r.oldLayers() && HfTileGrid.validGeo(r.oldGeo()[l * this.ps + col])) {
+					volOld += b.getFloat((l * this.ps + col) * 4) * area;
+				}
+				if (l < r.newLayers() && HfTileGrid.validGeo(r.newGeo()[l * this.ps + col])) {
+					volNew += b.getFloat(((HfTileGrid.MAX_LAYERS + l) * this.ps + col) * 4) * area;
+					if (later) {
+						volLater += b.getFloat(((2 * HfTileGrid.MAX_LAYERS + l) * this.ps + col) * 4) * area;
+					}
+				}
+			}
+			float oldTop = this.columnTop(r.oldGeo(), r.oldLayers(), b, 0, col, null);
+			float newTop = this.columnTop(r.newGeo(), r.newLayers(), b, 1, col, null);
+			float base = Float.isNaN(oldTop) ? Float.NaN : oldTop;
+			if (!Float.isNaN(newTop)) {
+				float rise = Float.isNaN(base) ? newTop - this.grid.floorOf(this.firstValid(r.newGeo(), r.newLayers(), col)) : newTop - base;
+				if (rise > worstRemap) {
+					worstRemap = rise;
+					remapCol = col;
+				}
+			}
+			if (later) {
+				float laterTop = this.columnTop(r.newGeo(), r.newLayers(), b, 2, col, null);
+				if (!Float.isNaN(laterTop) && !Float.isNaN(base) && laterTop - base > worstLater) {
+					worstLater = laterTop - base;
+					laterCol = col;
+				}
+			}
+		}
+		boolean volumeJump = Math.abs(volNew - volOld) > 0.5 || later && Math.abs(volLater - volOld) > 2.0;
+		if (worstRemap < 0.4F && worstLater < 0.4F && !volumeJump) {
+			return null;
+		}
+		int ox = this.originX + this.grid.tileX[r.tile()] * HfTileGrid.TILE_BLOCKS;
+		int oz = this.originZ + this.grid.tileZ[r.tile()] * HfTileGrid.TILE_BLOCKS;
+		StringBuilder sb = new StringBuilder(String.format("[edit probe] tile at %d %d: %d columns changed shape%s; volume %.2f -> %.2f after remap%s",
+			ox, oz, changed, changed > 0 ? String.format(" (blocks x %d..%d, z %d..%d)", ox + box[0], ox + box[2], oz + box[1], oz + box[3]) : "",
+			volOld, volNew, later ? String.format(" -> %.2f after %d frames", volLater, PROBE_LATER) : ""));
+		int[] cols = {remapCol, laterCol};
+		float[] rises = {worstRemap, worstLater};
+		String[] what = {"remap", PROBE_LATER + " frames later"};
+		for (int k = 0; k < 2; k++) {
+			int col = cols[k];
+			if (col < 0 || rises[k] < 0.4F) {
+				continue;
+			}
+			float[] so = new float[12];
+			float[] sn = new float[12];
+			float[] sl = new float[12];
+			this.columnTop(r.oldGeo(), r.oldLayers(), b, 0, col, so);
+			this.columnTop(r.newGeo(), r.newLayers(), b, 1, col, sn);
+			if (later) {
+				this.columnTop(r.newGeo(), r.newLayers(), b, 2, col, sl);
+			}
+			sb.append(String.format("%n  %s: surface +%.2f at x %.1f z %.1f | before (floor-ceil:depth) %s | after remap %s%s", what[k], rises[k],
+				ox + (col % tn + 0.5) / cpb, oz + (col / tn + 0.5) / cpb, spansText(so), spansText(sn),
+				later ? " | later " + spansText(sl) : ""));
+		}
+		return sb.toString();
+	}
+
+	private int firstValid(int[] geo, int layers, int col) {
+		for (int l = 0; l < layers; l++) {
+			if (HfTileGrid.validGeo(geo[l * this.ps + col])) {
+				return geo[l * this.ps + col];
+			}
+		}
+		return HfTileGrid.INVALID_GEO;
 	}
 
 	/** Rebuilds the surface mesh only when the water moved, tiles changed or the render threshold changed. */
@@ -784,6 +1017,10 @@ final class HfDomain implements AutoCloseable {
 
 	@Override
 	public void close() {
+		for (EditProbe probe : this.probes) {
+			Vk.destroyLater(probe.readback);
+		}
+		this.probes.clear();
 		for (Added a : this.added) {
 			Vk.destroyLater(a.staging());
 		}

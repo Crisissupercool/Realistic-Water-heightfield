@@ -566,3 +566,17 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   openness (`HfTileGrid.openVoxels`): open where the heightfield already holds the space, solid where it never did, so it still
   does not flow into vanilla water. Test: a captured lake whose blocks stay vanilla water, a log broken on its shore: the old
   rule lifts it 64.80 -> 70.80, now it stays at 64.80. `/water hf stats` reports how many such blocks edits kept open.
+* **Remap keeps water where it is:** the remap used to move each old water body whole into the one new span it overlapped most.
+  A block placed into a lake splits the column, and the water below the block was moved over it: the surface there jumped by
+  up to two blocks, standing the water up as a column that then collapsed. Now each new span takes the part of every old body
+  that lies in its height range; water an old body held above its ceiling (pressure) goes with the span it overlaps most; water
+  inside cells that are solid now is gone, as when a placed block replaces a water block (the client's inject for that water
+  resolved after the remap, into the solid cell, so it never applied). A floor that drops (a block broken under water) keeps the
+  depth, so the surface dips there and fills in from around. Tests: a block placed at the bed, mid-water and at the surface of a
+  5.8-deep lake leaves its surface at 64.80 and removes exactly the water in its cell (1.0, 1.0, 0.8); a 4x4x2 patch removes
+  the 25.56 in its cells and stands nothing up on top.
+* **Edit probe (`hfEditProbe`, on for now):** for each rebuilt tile the depth is read back just before the remap, just after it and
+  12 frames later; when the surface anywhere in the tile rises by more than 0.4 blocks, or its volume changes, chat shows where,
+  at which stage (remap or solver), how many columns changed shape (and where), and the column's spans and depths before, after
+  the remap and later. The CPU mirror reproduces neither the log-on-the-shore tower nor any jump through edits on several
+  scenes (tile borders and corners, moving water, breaking and placing), so this is how the in-game case gets pinned down.
