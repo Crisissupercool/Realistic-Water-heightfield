@@ -171,7 +171,21 @@ vec2 rippleGradient(vec2 p, float t, float footprint) {
     return g;
 }
 
-vec3 rippleNormal(vec3 nView, vec3 viewPos, float footprint) {
+// Flow mapping: two copies of a pattern carried along by the water, each restarted every cycle, half a cycle apart, and blended
+// by a triangle weight that is zero when a copy restarts, so the pattern moves with the current without ever visibly jumping.
+const float FLOW_CYCLE = 1.6;
+
+void flowPhases(vec2 flow, out vec2 off0, out vec2 off1, out float w0) {
+    float t = G.simB.z / FLOW_CYCLE;
+    float p0 = fract(t);
+    float p1 = fract(t + 0.5);
+    off0 = flow * (p0 - 0.5) * FLOW_CYCLE;
+    off1 = flow * (p1 - 0.5) * FLOW_CYCLE;
+    w0 = 1.0 - abs(2.0 * p0 - 1.0);
+}
+
+// flow: water velocity (blocks/s, world x/z) for heightfield water, so the ripples drift with rivers and streams.
+vec3 rippleNormal(vec3 nView, vec3 viewPos, float footprint, vec2 flow) {
     if (G.shadeA.x <= 0.0) {
         return nView;
     }
@@ -181,9 +195,27 @@ vec3 rippleNormal(vec3 nView, vec3 viewPos, float footprint) {
     // At grazing angles a pixel covers far more surface along the view direction than its distance alone implies;
     // without this the finer ripple bands alias into moire rings on large flat water.
     float grazing = max(abs(dot(nView, normalize(-viewPos))), 0.05);
-    vec2 grad = rippleGradient(world.xz * scale, G.simB.z * G.shadeA.z, footprint * scale / grazing);
+    float t = G.simB.z * G.shadeA.z;
+    float fp = footprint * scale / grazing;
+    vec2 grad;
+    if (dot(flow, flow) > 0.0025) {
+        vec2 off0;
+        vec2 off1;
+        float w0;
+        flowPhases(flow, off0, off1, w0);
+        grad = rippleGradient((world.xz - off0) * scale, t, fp) * w0
+            + rippleGradient((world.xz - off1) * scale + vec2(37.1, 11.3), t, fp) * (1.0 - w0);
+        // Faster water is rougher.
+        grad *= 1.0 + 0.12 * min(length(flow), 6.0);
+    } else {
+        grad = rippleGradient(world.xz * scale, t, fp);
+    }
     vec3 g = vec3(grad.x, 0.0, grad.y) * G.shadeA.x;
     return normalize(mat3(G.view) * normalize(nWorld - (g - nWorld * dot(g, nWorld))));
+}
+
+vec3 rippleNormal(vec3 nView, vec3 viewPos, float footprint) {
+    return rippleNormal(nView, viewPos, footprint, vec2(0.0));
 }
 
 vec3 sunSpecular(vec3 n, vec3 V, float footprint) {
@@ -305,7 +337,7 @@ float foamTexture(vec2 p, float coverage, float footprint) {
     float t = G.simB.z;
     vec2 drift = vec2(t * 0.07, -t * 0.05);
     float d1 = 1.0 - smoothstep(0.03, 0.12, footprint);
-    float d2 = 1.0 - smoothstep(0.012, 0.05, footprint);
+    float d2 = 1.0 - smoothstep(0.006, 0.025, footprint);
     float v = valueNoise(p * 1.1 + drift) * 0.45 + valueNoise(p * 2.9 + vec2(3.1, 0.0) - drift) * 0.3
         + mix(0.5, valueNoise(p * 9.0 + vec2(0.0, 7.7) + drift * 2.0), d1) * 0.17
         + mix(0.5, valueNoise(p * 23.0 + vec2(1.3, 0.0) - drift * 3.0), d2) * 0.08;
@@ -329,12 +361,32 @@ float foamTexture(vec2 p, float coverage, float footprint) {
         }
     }
     float pore = radius > 0.0 ? 1.0 - smoothstep(radius - 0.06, radius + 0.06, best) : 0.0;
-    return cover * (1.0 - 0.4 * d2 * pore);
+    return cover * (1.0 - 0.25 * d2 * pore);
+}
+
+// Foam carried by the current: flow-mapped like the ripples and stretched into streaks along fast water.
+float flowFoam(vec2 p, vec2 flow, float coverage, float footprint) {
+    float speed = length(flow);
+    if (speed < 0.05) {
+        return foamTexture(p, coverage, footprint);
+    }
+    vec2 dir = flow / speed;
+    vec2 across = vec2(-dir.y, dir.x);
+    float stretch = 1.0 + 0.35 * min(speed, 6.0);
+    vec2 off0;
+    vec2 off1;
+    float w0;
+    flowPhases(flow, off0, off1, w0);
+    vec2 a = p - off0;
+    vec2 b = p - off1 + vec2(13.7, 5.1);
+    float fa = foamTexture(vec2(dot(a, across), dot(a, dir) / stretch), coverage, footprint);
+    float fb = foamTexture(vec2(dot(b, across), dot(b, dir) / stretch), coverage, footprint);
+    return mix(fb, fa, w0);
 }
 
 // Aerated water (heightfield only, aer from the material id): falling sheets get streaks running down them and a bumpy normal
 // instead of the flat glass look; foam on the surface shows as soft patches. Ripples around the player bend the surface normal.
-vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, float aer, bool sheet) {
+vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, float aer, bool sheet, vec2 flow) {
     vec3 P = viewPosAt(uv, fd);
     vec3 V = toEyeAt(uv);
     n = dot(n, V) < 0.0 ? -n : n;
@@ -364,10 +416,13 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     if (!sheet) {
         wk = wakeAt(world, footprint);
         vec2 slope = wk.xy * pc.wakeGain;
+        float steep = length(slope);
+        slope *= steep > 0.9 ? 0.9 / steep : 1.0;
+        wk.xy = slope;
         tilt = mat3(G.view) * vec3(slope.x, 0.0, slope.y);
         n = normalize(n - tilt);
     }
-    vec3 wrinkled = rippleNormal(n, P, footprint);
+    vec3 wrinkled = rippleNormal(n, P, footprint, flow);
     n = normalize(mix(n, wrinkled, smoothstep(0.0, 0.15, dot(wrinkled, V))));
 
     // Refraction shifts the scene behind by how far the normal leans away from vertical (flat water does not shift it), capped
@@ -391,6 +446,13 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     vec3 transmitted = under * exp(-G.absorb.rgb * path);
     vec3 scattered = G.scatter.rgb * ambient * (1.0 - exp(-G.scatter.w * path));
     vec3 water = transmitted + scattered;
+    // Seen from above, little is reflected, so a wake would barely show; light it like relief instead: slopes facing the sun
+    // scatter more light up out of the water, slopes facing away less.
+    if (!sheet && G.sunDir.w > 0.0) {
+        vec3 sunW = normalize(mat3(G.invView) * G.sunDir.xyz);
+        float facing = dot(normalize(vec3(-wk.x, 1.0, -wk.y)), sunW) - sunW.y;
+        water *= 1.0 + clamp(facing * 2.5, -0.35, 0.35) * G.sunDir.w;
+    }
 
     vec3 Rv = reflect(-V, n);
     vec3 Rw = (G.invView * vec4(Rv, 0.0)).xyz;
@@ -406,7 +468,7 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
         color = mix(color, vec3(0.9, 0.94, 0.96) * mix(0.25, 1.0, ambient), churn * 0.75);
     }
     if (aer > 0.0) {
-        float cover = sheet ? aer * (0.35 + 0.9 * smoothstep(0.3, 0.75, streaks)) : 0.9 * foamTexture(world.xz, aer, footprint);
+        float cover = sheet ? aer * (0.35 + 0.9 * smoothstep(0.3, 0.75, streaks)) : 0.7 * flowFoam(world.xz, flow, aer * 0.85, footprint);
         color = mix(color, vec3(0.9, 0.94, 0.96) * mix(0.25, 1.0, ambient), clamp(cover, 0.0, 0.95));
     }
     return color;
@@ -478,9 +540,18 @@ void main() {
         float fog = G.scatter.w * G.misc.x;
         color = color * exp(-G.absorb.rgb * visible * G.misc.x) + deep * (1.0 - exp(-fog * visible));
     } else if (hasFluid) {
-        bool sheet = matTagged && matId > 0.115;
-        float aer = matTagged ? clamp(sheet ? (matId - 0.12) / 0.1 : matId / 0.1, 0.0, 1.0) : 0.0;
-        color = lavaPass ? shadeAboveLava(uv, g.xyz, fd, ambient) : shadeAboveWater(uv, g.xyz, fd, sceneDist, ambient, aer, sheet);
+        // Heightfield water packs aeration, the sheet flag and its velocity into the material value (see mesh_front.frag).
+        bool sheet = false;
+        float aer = 0.0;
+        vec2 flow = vec2(0.0);
+        if (matTagged && matId >= 0.125 && matId < 0.25) {
+            uint code = floatBitsToUint(matId) & 0x7FFFFFu;
+            aer = float(code & 63u) / 63.0;
+            sheet = (code & 64u) != 0u;
+            float angle = float((code >> 7) & 255u) / 255.0 * 6.2831853;
+            flow = vec2(cos(angle), sin(angle)) * (float((code >> 15) & 255u) / 255.0 * 8.0);
+        }
+        color = lavaPass ? shadeAboveLava(uv, g.xyz, fd, ambient) : shadeAboveWater(uv, g.xyz, fd, sceneDist, ambient, aer, sheet, flow);
         vec4 clip = G.proj * vec4(viewPosAt(uv, fd), 1.0);
         outDepth = clip.z / clip.w;
     }

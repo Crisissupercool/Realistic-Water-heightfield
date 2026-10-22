@@ -18,7 +18,7 @@ import org.lwjgl.vulkan.VkCommandBuffer;
  *
  * <p>All heightfield shaders share one binding layout: 0 Globals UBO, 1 geo, 2 depth, 3 flux, 4 links, 5 page list, 6 tile info,
  * 7 tile active flags, 8 stats, 9 verts, 10 quads, 11 mesh counters, 12 view state (probe only), 13 page owners, 14 aux
- * (inject or reservoir entries), 15 foam (two halves per flux page span, swapped every solver step).
+ * (inject or reservoir entries), 15 foam (two halves per flux page span, swapped every solver step), 16 vertex flow (mesh).
  */
 final class HfDomain implements AutoCloseable {
 	/** Two vec4 per (span page, group of 256 spans): (volume, max depth, max speed, max rate), (border bits, 0, 0, 0). */
@@ -32,7 +32,7 @@ final class HfDomain implements AutoCloseable {
 		if (programs == null) {
 			int U = Desc.UBO;
 			int S = Desc.SSBO;
-			int[] layout = {U, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S};
+			int[] layout = {U, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S};
 			programs = new ComputeProgram[]{
 				new ComputeProgram("hf_flux.comp", layout),
 				new ComputeProgram("hf_depth.comp", layout),
@@ -97,6 +97,8 @@ final class HfDomain implements AutoCloseable {
 	final VkBuf verts;
 	final VkBuf quads;
 	final VkBuf meshCounters;
+	/** Water velocity per mesh vertex (two halves), for flow-mapped shading. */
+	final VkBuf vertFlow;
 	private final List<Added> added = new ArrayList<>();
 	private final List<Rebuilt> rebuilt = new ArrayList<>();
 	private boolean tilesDirty;
@@ -174,6 +176,7 @@ final class HfDomain implements AutoCloseable {
 		this.verts = VkBuf.device(this.quadCapacity * 4L * 16L, 0);
 		this.quads = VkBuf.device(this.quadCapacity * 16L, 0);
 		this.meshCounters = VkBuf.device(64, VkBuf.INDIRECT);
+		this.vertFlow = VkBuf.device(this.quadCapacity * 4L * 4L, 0);
 		for (int i = 0; i < Vk.FRAME_RING; i++) {
 			this.debugReadback[i] = VkBuf.readback(DEBUG_SPANS * 12L);
 			this.injectRing[i] = VkBuf.upload(MAX_INJECT * 8L, VkBuf.STORAGE);
@@ -191,7 +194,7 @@ final class HfDomain implements AutoCloseable {
 	/** Size of the GPU allocation, for /water hf stats. */
 	long bytes() {
 		return (long) this.grid.maxPages * this.ps * SPAN_BYTES + (long) this.grid.maxFluxPages * this.ps * (FLUX_BYTES + 8L)
-			+ this.quadCapacity * 80L;
+			+ this.quadCapacity * 96L;
 	}
 
 	private VkBuf stage(HfTileGrid.Tile t, float[] initialDepth) {
@@ -285,7 +288,8 @@ final class HfDomain implements AutoCloseable {
 	private void bind(ComputeProgram p, VkCommandBuffer cb, Desc ubo, int ring, VkBuf view, VkBuf aux) {
 		p.bind(cb, ubo, Desc.ssbo(this.geo), Desc.ssbo(this.depth), Desc.ssbo(this.flux), Desc.ssbo(this.links), Desc.ssbo(this.listRing[ring]),
 			Desc.ssbo(this.tileInfo), Desc.ssbo(this.activeRing[ring]), Desc.ssbo(this.stats), Desc.ssbo(this.verts), Desc.ssbo(this.quads),
-			Desc.ssbo(this.meshCounters), Desc.ssbo(view), Desc.ssbo(this.pageOwner), Desc.ssbo(aux), Desc.ssbo(this.foam));
+			Desc.ssbo(this.meshCounters), Desc.ssbo(view), Desc.ssbo(this.pageOwner), Desc.ssbo(aux), Desc.ssbo(this.foam),
+			Desc.ssbo(this.vertFlow));
 	}
 
 	/**
@@ -782,7 +786,8 @@ final class HfDomain implements AutoCloseable {
 		this.added.clear();
 		this.rebuilt.clear();
 		List<AutoCloseable> all = new ArrayList<>(List.of(
-			this.geo, this.depth, this.flux, this.foam, this.links, this.tileInfo, this.pageOwner, this.stats, this.verts, this.quads, this.meshCounters));
+			this.geo, this.depth, this.flux, this.foam, this.links, this.tileInfo, this.pageOwner, this.stats, this.verts, this.quads, this.meshCounters,
+			this.vertFlow));
 		all.add(this.reservoirBuf);
 		all.add(this.sampleBuf);
 		for (int i = 0; i < Vk.FRAME_RING; i++) {

@@ -21,7 +21,7 @@ layout(std430, binding = 8) writeonly buffer Stats { vec4 stats[]; };
 // Water falling into a span, weighted by how far it falls (blocks of depth per second x blocks, up to 4), that makes it fully
 // white: a trickle down a 1-block step barely foams, a waterfall does. Flow speeds (blocks/s) over which
 // fast water turns white; body speeds over which a body stirs up foam.
-const float FOAM_FALL_RATE = 3.0;
+const float FOAM_FALL_RATE = 6.0;
 const vec2 FOAM_FAST = vec2(5.0, 12.0);
 const vec2 FOAM_STIR = vec2(1.5, 4.0);
 
@@ -97,7 +97,7 @@ void main() {
         float f = h > 1.0e-4 ? clamp(mass / h, 0.0, 1.0) * HF_FOAM_KEEP : 0.0;
         f = max(f, 0.9 * smoothstep(0.0, FOAM_FALL_RATE, falling / area));
         // Only water deep enough for its speed to mean something (thin films give huge flux / depth ratios).
-        f = max(f, 0.5 * smoothstep(FOAM_FAST.x, FOAM_FAST.y, speed) * smoothstep(0.05, 0.2, h));
+        f = max(f, 0.35 * smoothstep(FOAM_FAST.x, FOAM_FAST.y, speed) * smoothstep(0.05, 0.2, h));
         vec3 stir = hfStir(a, floorA, floorA + h);
         if (stir.z > 0.0) {
             f = max(f, 0.35 * smoothstep(FOAM_STIR.x, FOAM_STIR.y, length(stir.xy)));

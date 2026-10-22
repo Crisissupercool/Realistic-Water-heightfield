@@ -53,7 +53,7 @@ public final class WaterRenderer implements AutoCloseable {
 		GraphicsProgram.State add = new GraphicsProgram.State(this.thicknessFormat, VK10.VK_FORMAT_UNDEFINED, false, false, VK10.VK_COMPARE_OP_ALWAYS,
 			GraphicsProgram.Blend.ADD);
 		Map<String, String> droplets = Map.of("DROPLETS", "1", "VIEW_BINDING", "3");
-		this.meshFront = new GraphicsProgram("mesh.vert", "mesh_front.frag", Map.of(), front, U, S, S, S);
+		this.meshFront = new GraphicsProgram("mesh.vert", "mesh_front.frag", Map.of("MESH_FLOW", "1"), front, U, S, S, S, S);
 		this.dropletFront = new GraphicsProgram("particle.vert", "droplet_front.frag", droplets, front, U, S, S, S);
 		this.meshThickness = new GraphicsProgram("mesh.vert", "mesh_thickness.frag", Map.of(), add, U, S, S, S, T);
 		this.dropletThickness = new GraphicsProgram("particle.vert", "droplet_thickness.frag", droplets, add, U, S, S, S, T);
@@ -148,6 +148,11 @@ public final class WaterRenderer implements AutoCloseable {
 		VkBuf meshCounters() {
 			return this.region != null ? this.region.mesher.meshCounters : this.heightfield.meshCounters;
 		}
+
+		/** Per-vertex water velocity (heightfield only), or null. */
+		@Nullable VkBuf meshFlow() {
+			return this.region != null ? null : this.heightfield.vertFlow;
+		}
 	}
 
 	public void record(VkCommandBuffer cb, List<Body> bodies, Desc view, long mainColorImage, long mainColorView, long mainDepthImage,
@@ -174,7 +179,9 @@ public final class WaterRenderer implements AutoCloseable {
 
 		GraphicsProgram.begin(cb, w, h, this.gbuffer.view, new float[]{0, 0, 0, 0}, this.materialId.view, new float[]{-1, 0, 0, 0}, this.fluidZ.view);
 		for (Body body : bodies) {
-			this.meshFront.bind(cb, body.ubo(), Desc.ssbo(body.meshVerts()), Desc.ssbo(body.meshQuads()), view);
+			VkBuf flow = body.meshFlow();
+			this.meshFront.bind(cb, body.ubo(), Desc.ssbo(body.meshVerts()), Desc.ssbo(body.meshQuads()), view,
+				Desc.ssbo(flow != null ? flow : this.noRipples));
 			this.meshFront.drawIndirect(cb, body.meshCounters(), SurfaceMesher.DRAW_ARGS_OFFSET);
 			WaterRegion r = body.region();
 			if (r == null) {

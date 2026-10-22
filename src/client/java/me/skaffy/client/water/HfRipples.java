@@ -16,7 +16,7 @@ final class HfRipples implements AutoCloseable {
 	private static final double WORLD_WRAP = 4096.0;
 	private static final float STEP = 1.0F / 20.0F;
 	/** Displaced volume per second and per block/s of horizontal (capped at 6) or vertical speed. */
-	private static final float MOVE_VOLUME = 0.05F;
+	private static final float MOVE_VOLUME = 0.12F;
 	private static final float BOB_VOLUME = 0.12F;
 	/** Fraction of a splash's displaced volume (capped) that rings out as fine waves; the solver carries the bulk of it. */
 	private static final float SPLASH_SHARE = 1.0F;

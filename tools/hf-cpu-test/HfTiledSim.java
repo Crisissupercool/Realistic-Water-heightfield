@@ -359,8 +359,8 @@ final class HfTiledSim {
 				float speed = nh > 0.05F ? Math.min(peak / (cell * nh), 30.0F) : 0.0F;
 				float mass = foamA * old + dt * (foamIn - out * foamA) / area;
 				float f = nh > 1.0e-4F ? Math.clamp(mass / nh, 0.0F, 1.0F) * foamKeep : 0.0F;
-				f = Math.max(f, 0.9F * smoothstep(0.0F, 3.0F, falling / area));
-				f = Math.max(f, 0.5F * smoothstep(5.0F, 12.0F, speed) * smoothstep(0.05F, 0.2F, nh));
+				f = Math.max(f, 0.9F * smoothstep(0.0F, 6.0F, falling / area));
+				f = Math.max(f, 0.35F * smoothstep(5.0F, 12.0F, speed) * smoothstep(0.05F, 0.2F, nh));
 				float[] st = this.stirAt(tile, col, floorA, floorA + nh);
 				if (st[2] > 0.0F) {
 					f = Math.max(f, 0.35F * smoothstep(1.5F, 4.0F, (float) Math.hypot(st[0], st[1])));

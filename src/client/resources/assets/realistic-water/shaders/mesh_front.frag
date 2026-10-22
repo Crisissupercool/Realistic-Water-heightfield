@@ -12,6 +12,7 @@ layout(location = 8) flat in vec3 vN3;
 layout(location = 9) flat in vec4 vAer4;
 layout(location = 10) in vec2 vQuadUV;
 layout(location = 11) flat in float vBilinear;
+layout(location = 12) in vec2 vFlow;
 layout(location = 0) out vec4 outG;
 layout(location = 1) out float outMat;
 
@@ -32,8 +33,18 @@ void main() {
         aer = mix(mix(vAer4.x, vAer4.y, t.x), mix(vAer4.w, vAer4.z, t.x), t.y);
     }
     outG = vec4(normalize(n), dist);
-    // Aeration rides in the material id below the 0.25 tolerance composite.frag allows (0 for the fluid meshes):
-    // surfaces 0..0.1, falling sheets (aerated walls) 0.12..0.22.
-    aer = clamp(aer, 0.0, 1.0);
-    outMat = G.matA.x + (vWall > 0.5 && aer > 0.005 ? 0.12 + 0.1 * aer : 0.1 * aer);
+    if (vBilinear > 0.5) {
+        // Heightfield water: aeration, the falling-sheet flag and the water velocity are packed into the mantissa of a value in
+        // [0.125, 0.25), inside the 0.25 tolerance composite.frag allows for water (the fluid meshes write exactly 0):
+        // bits 0-5 aeration, 6 sheet, 7-14 flow direction, 15-22 flow speed (0..8 blocks/s).
+        aer = clamp(aer, 0.0, 1.0);
+        bool sheet = vWall > 0.5 && aer > 0.005;
+        float speed = min(length(vFlow), 8.0);
+        float angle = speed > 1.0e-3 ? atan(vFlow.y, vFlow.x) : 0.0;
+        uint code = uint(aer * 63.0 + 0.5) | (sheet ? 64u : 0u) | (uint(fract(angle / 6.2831853 + 1.0) * 255.0 + 0.5) << 7)
+            | (uint(speed / 8.0 * 255.0 + 0.5) << 15);
+        outMat = uintBitsToFloat((124u << 23) | code);
+    } else {
+        outMat = G.matA.x;
+    }
 }

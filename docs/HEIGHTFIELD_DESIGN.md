@@ -491,3 +491,21 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   1 s running average, so sinking slowly makes no waves. `foamTexture` (also used for aerated water) has crisp patch edges and
   round bubbles of random size from a jittered grid, with detail fading by pixel footprint. Crests only brighten (troughs no
   longer darken, which drew a dark ring around a bobbing player).
+
+## 18. Flow-mapped shading and a visible wake (as built)
+
+* **Water velocity reaches the shading:** `hf_mesh.comp` writes each vertex's horizontal water velocity (average over the corner's
+  linked spans of outflow difference / (cell x depth), capped at 8 b/s) as packed halves into `vertFlow` (binding 16, 4 bytes per
+  vertex); `mesh.vert` (compiled with `MESH_FLOW` for the front pass only, binding 4) reads it for heightfield vertices.
+  `mesh_front.frag` packs heightfield aeration (6 bits), the sheet flag (1), flow direction (8) and speed (8, 0..8 b/s) into the
+  mantissa of a material value in [0.125, 0.25) (exponent fixed at 2^-3), inside composite's 0.25 water tolerance; the particle
+  meshes keep writing exactly 0.
+* **Flow maps:** `composite.frag` carries the detail ripples and the foam along the current: two copies offset by flow x phase,
+  restarting every 1.6 s half a cycle apart, blended by a triangle weight (the standard flow-map technique), so rivers and
+  cascades move instead of showing a frozen pattern. Foam is stretched into streaks along fast water (x(1 + 0.35 speed)); faster
+  water gets rougher ripples. Foam on aerated water shows at 0.7 x coverage 0.85 x aeration, bubbles subtler and only up close;
+  falling-water foam is full at 6 (blocks/s x blocks), fast-flow foam capped at 0.35.
+* **Wake visible from above:** seen steeply little is reflected, so slope alone barely shows. The wake now also lights the water
+  like relief (slopes facing the sun scatter more light up, +-35%), its source is 2.4x stronger (0.12 blocks^3 per (b/s) per s),
+  `hfRippleNormal` defaults to 2.5 and the slope is capped at 0.9. Numpy with the shader math: swimming at 2-5.6 b/s, the wake
+  covers ~25% of the 17 x 12 blocks behind the player, median tilt 8 deg, 95th percentile ~30 deg, brightness change up to 35%.

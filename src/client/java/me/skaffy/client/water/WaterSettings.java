@@ -175,7 +175,7 @@ public final class WaterSettings {
 	/** How strongly the player makes its wake and splash rings on heightfield water (swimming, wading, bobbing, jumping in); 0 off. */
 	public static float hfRipples = 1.0F;
 	/** How much the wake bends the surface when shading (multiplies its slope). */
-	public static float hfRippleNormal = 1.5F;
+	public static float hfRippleNormal = 2.5F;
 	/** Seconds the wake's waves take to fade to about a third. */
 	public static float hfWakeLife = 4.0F;
 	/** How white the churned water right behind a swimmer shows (0 off). */

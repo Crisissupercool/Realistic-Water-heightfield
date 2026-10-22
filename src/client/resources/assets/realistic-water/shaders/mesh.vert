@@ -16,6 +16,10 @@ layout(location = 8) flat out vec3 vN3;
 layout(location = 9) flat out vec4 vAer4;
 layout(location = 10) out vec2 vQuadUV;
 layout(location = 11) flat out float vBilinear;
+layout(location = 12) out vec2 vFlow;  // heightfield water velocity (blocks/s, world x/z); zero for the fluid meshes
+#ifdef MESH_FLOW
+layout(std430, binding = 4) readonly buffer VertFlow { uint vertFlow[]; };
+#endif
 
 const int CORNER[6] = int[](0, 1, 2, 0, 2, 3);
 const vec2 CORNER_UV[4] = vec2[](vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0));
@@ -48,6 +52,12 @@ void main() {
     vWall = wall ? 1.0 : 0.0;
     vOpen = open ? 1.0 : 0.0;
     vAer = aer;
+    vFlow = vec2(0.0);
+#ifdef MESH_FLOW
+    if (open) {
+        vFlow = unpackHalf2x16(vertFlow[q[cornerIndex]]);
+    }
+#endif
     vQuadUV = CORNER_UV[cornerIndex];
     vBilinear = open ? 1.0 : 0.0;
     vec3 cn[4];

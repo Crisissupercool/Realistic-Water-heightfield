@@ -12,6 +12,8 @@ layout(std430, binding = 3) readonly buffer Flux { float flux[]; };
 layout(std430, binding = 9) writeonly buffer Verts { vec4 verts[]; };
 layout(std430, binding = 10) writeonly buffer Quads { uvec4 quads[]; };
 layout(std430, binding = 11) buffer MeshCounters { uint meshCounters[]; };
+// Water velocity (blocks/s, horizontal) per vertex as packed halves, for flow-mapped foam and ripples in composite.frag.
+layout(std430, binding = 16) writeonly buffer VertFlow { uint vertFlow[]; };
 
 // Vanilla draws a full water block 1/9 below its top; the heightfield surface is lowered the same (scaled down in shallow water).
 #define HF_SURFACE_DROP hp.p0.x
@@ -163,7 +165,17 @@ float cornerSample(bool ok, bool link, HfSpan t, float lo, float level) {
 // Height, smooth normal and foam at one corner, from the (up to) four spans sharing it: the average over our span, the spans
 // linked to it and shoreline samples from dry neighbors. A ramp corner may lie below our own floor (down to the lowest linked
 // floor); the vanilla-like surface drop uses the corner's water depth.
-vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce) {
+// Horizontal water velocity of a span from its outflows (blocks/s, capped at 8); zero on tiles that are not simulated.
+vec2 velocityOf(HfSpan t) {
+    if (t.flux == HF_NONE) {
+        return vec2(0.0);
+    }
+    vec2 v = vec2(outflowTo(t, 0) - outflowTo(t, 1), outflowTo(t, 2) - outflowTo(t, 3)) / (HF_CELL * max(depth[t.span], 0.05));
+    float sp = length(v);
+    return sp > 8.0 ? v * (8.0 / sp) : v;
+}
+
+vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce, out vec2 flow) {
     int dirX = sx > 0 ? 0 : 1;
     int dirZ = sz > 0 ? 2 : 3;
     HfSpan nx;
@@ -200,7 +212,9 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce) {
     float depthSum = top - fl;
     float aer = foamOf(a);
     float shares = 1.0;
+    flow = velocityOf(a);
     if (lx) {
+        flow += velocityOf(nx);
         vec2 gx = hfGeo(nx.span);
         levelSum += surfaceOf(nx.span);
         lo = min(lo, gx.x);
@@ -210,6 +224,7 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce) {
         shares += 1.0;
     }
     if (lz) {
+        flow += velocityOf(nz);
         vec2 gz = hfGeo(nz.span);
         levelSum += surfaceOf(nz.span);
         lo = min(lo, gz.x);
@@ -219,6 +234,7 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce) {
         shares += 1.0;
     }
     if (ld) {
+        flow += velocityOf(nd);
         vec2 gd = hfGeo(nd.span);
         levelSum += surfaceOf(nd.span);
         lo = min(lo, gd.x);
@@ -257,6 +273,7 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce) {
     h = clamp(h, lo, hiC);
     h -= HF_SURFACE_DROP * clamp(min(depthSum / shares, h - lo), 0.0, 1.0);
     vec3 n = normalize(vec3(-dhdx, 1.0, -dhdz));
+    flow /= shares;
     return vec4(n.x, h, n.z, aer / shares);
 }
 
@@ -264,7 +281,7 @@ vec3 cornerNormal(vec4 c) {
     return normalize(vec3(c.x, sqrt(max(1.0 - c.x * c.x - c.z * c.z, 1e-4)), c.z));
 }
 
-void emitTop(uint q, vec3 a, vec3 b, vec3 c, vec3 d, vec4 ca, vec4 cb, vec4 cc, vec4 cd) {
+void emitTop(uint q, vec3 a, vec3 b, vec3 c, vec3 d, vec4 ca, vec4 cb, vec4 cc, vec4 cd, vec2 fa, vec2 fb, vec2 fc, vec2 fd) {
     if (q >= HF_QUAD_CAP) {
         return;
     }
@@ -273,6 +290,10 @@ void emitTop(uint q, vec3 a, vec3 b, vec3 c, vec3 d, vec4 ca, vec4 cb, vec4 cc, 
     verts[v + 1u] = vec4(b, uintBitsToFloat(hfPack(cornerNormal(cb), false, cb.w)));
     verts[v + 2u] = vec4(c, uintBitsToFloat(hfPack(cornerNormal(cc), false, cc.w)));
     verts[v + 3u] = vec4(d, uintBitsToFloat(hfPack(cornerNormal(cd), false, cd.w)));
+    vertFlow[v] = packHalf2x16(fa);
+    vertFlow[v + 1u] = packHalf2x16(fb);
+    vertFlow[v + 2u] = packHalf2x16(fc);
+    vertFlow[v + 3u] = packHalf2x16(fd);
     quads[q] = uvec4(v, v + 1u, v + 2u, v + 3u);
 }
 
@@ -286,6 +307,9 @@ void emit(uint q, vec3 a, vec3 b, vec3 c, vec3 d, vec3 normal, bool wall) {
     verts[v + 1u] = vec4(b, packed);
     verts[v + 2u] = vec4(c, packed);
     verts[v + 3u] = vec4(d, packed);
+    for (uint j = 0u; j < 4u; j++) {
+        vertFlow[v + j] = 0u;
+    }
     quads[q] = uvec4(v, v + 1u, v + 2u, v + 3u);
 }
 
@@ -349,6 +373,7 @@ void emitCurtain(uint q, vec2 outward, vec3 e0, vec3 e1, vec2 end0, vec2 end1, f
             float aerBottom = clamp(0.3 + 0.25 * h, 0.3, 0.95) * body;
             float aer = max(mix(aerTop * body, aerBottom, s), 0.1);
             verts[v + uint(j)] = vec4(p, uintBitsToFloat(hfPack(n, true, aer)));
+            vertFlow[v + uint(j)] = 0u;
         }
         quads[q] = uvec4(v, v + 1u, v + 2u, v + 3u);
         q++;
@@ -374,10 +399,14 @@ void main() {
     float top = surfaceOf(s);
     float oy = HF_ORIGIN_Y;
 
-    vec4 c00 = corner(a, -1, -1, fl, top, ce);
-    vec4 c10 = corner(a, 1, -1, fl, top, ce);
-    vec4 c11 = corner(a, 1, 1, fl, top, ce);
-    vec4 c01 = corner(a, -1, 1, fl, top, ce);
+    vec2 f00;
+    vec2 f10;
+    vec2 f11;
+    vec2 f01;
+    vec4 c00 = corner(a, -1, -1, fl, top, ce, f00);
+    vec4 c10 = corner(a, 1, -1, fl, top, ce, f10);
+    vec4 c11 = corner(a, 1, 1, fl, top, ce, f11);
+    vec4 c01 = corner(a, -1, 1, fl, top, ce, f01);
     float h00 = c00.y - oy;
     float h10 = c10.y - oy;
     float h11 = c11.y - oy;
@@ -421,7 +450,8 @@ void main() {
     float z1 = z0 + c;
     float b = fl - oy;
 
-    if (drawTop) emitTop(q++, vec3(x0, h00, z0), vec3(x1, h10, z0), vec3(x1, h11, z1), vec3(x0, h01, z1), c00, c10, c11, c01);
+    if (drawTop) emitTop(q++, vec3(x0, h00, z0), vec3(x1, h10, z0), vec3(x1, h11, z1), vec3(x0, h01, z1), c00, c10, c11, c01,
+        f00, f10, f11, f01);
     if ((wallMask & 1u) != 0u) {
         float x = x1 - inset[0];
         emit(q++, vec3(x, b, z0), vec3(x, b, z1), vec3(x, h11, z1), vec3(x, h10, z0), vec3(1.0, 0.0, 0.0), true);
