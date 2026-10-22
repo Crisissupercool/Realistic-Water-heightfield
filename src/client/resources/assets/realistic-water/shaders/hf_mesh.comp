@@ -563,6 +563,10 @@ void main() {
     if (!hfFromPage(GID_U, a)) {
         return;
     }
+    // Tiles over chunks vanilla does not draw (beyond the render distance, not loaded) are not drawn either (HfDomain.setView).
+    if (tileInfo[a.tile * 4u + 1u].w != 0) {
+        return;
+    }
     uint s = a.span;
     vec2 g = hfGeo(s);
     if (!hfValid(g) || !wet(s)) {

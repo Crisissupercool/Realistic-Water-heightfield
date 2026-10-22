@@ -155,6 +155,8 @@ final class HfDomain implements AutoCloseable {
 	private final List<Rebuilt> rebuilt = new ArrayList<>();
 	private boolean tilesDirty;
 	private boolean statsCleared;
+	/** Per tile slot: its chunk is not drawn by vanilla (beyond the render distance or not loaded), so its water is not drawn. */
+	private boolean[] hidden = new boolean[0];
 
 	int lastSteps;
 	float lastDt;
@@ -564,7 +566,8 @@ final class HfDomain implements AutoCloseable {
 					b.putInt(o + 32 + d * 4, g.spanPage[s * 4 + d]);
 					b.putInt(o + 48 + d * 4, g.fluxPage[s * 4 + d]);
 				}
-				b.putInt(o + 16, g.tileX[s]).putInt(o + 20, g.tileZ[s]).putInt(o + 24, g.layersUsed[s]).putInt(o + 28, 0);
+				b.putInt(o + 16, g.tileX[s]).putInt(o + 20, g.tileZ[s]).putInt(o + 24, g.layersUsed[s])
+					.putInt(o + 28, s < this.hidden.length && this.hidden[s] ? 1 : 0);
 			}
 			for (int pg = 0; pg < g.maxPages; pg++) {
 				b.putInt(n * 64 + pg * 4, g.pageOwner[pg]);
@@ -722,6 +725,50 @@ final class HfDomain implements AutoCloseable {
 	 * Uploads new and rebuilt tiles, remaps water, zeroes new flux pages and runs {@code steps} solver steps over the activation's
 	 * pages. Call every frame (with an empty activation and steps = 0 while paused) so uploads and per-frame tables stay current.
 	 */
+	/** Whether the client has a chunk loaded. */
+	interface ChunkTest {
+		boolean loaded(int chunkX, int chunkZ);
+	}
+
+	/**
+	 * Hides tiles whose chunk vanilla does not draw: beyond the render distance (vanilla's own circle test, one chunk of slack) or
+	 * not loaded. Their water was drawn floating out past the end of the terrain. They keep simulating; only the mesh skips them
+	 * (and with it their spray). Call every frame after tiles change and before {@link #record}; it is cheap (one test per tile).
+	 */
+	void setView(int camChunkX, int camChunkZ, int radiusChunks, ChunkTest chunks) {
+		HfTileGrid g = this.grid;
+		if (this.hidden.length < g.maxTiles) {
+			this.hidden = new boolean[g.maxTiles];
+		}
+		int baseX = Math.floorDiv(g.originX, HfTileGrid.TILE_BLOCKS);
+		int baseZ = Math.floorDiv(g.originZ, HfTileGrid.TILE_BLOCKS);
+		long r2 = (long) radiusChunks * radiusChunks;
+		boolean changed = false;
+		for (int s = 0; s < g.count; s++) {
+			int cx = baseX + g.tileX[s];
+			int cz = baseZ + g.tileZ[s];
+			long dx = Math.max(0, Math.abs(cx - camChunkX) - 1);
+			long dz = Math.max(0, Math.abs(cz - camChunkZ) - 1);
+			boolean h = dx * dx + dz * dz >= r2 || !chunks.loaded(cx, cz);
+			if (h != this.hidden[s]) {
+				this.hidden[s] = h;
+				changed = true;
+			}
+		}
+		if (changed) {
+			this.tilesDirty = true;
+			this.meshDirty = true;
+		}
+	}
+
+	int hiddenTiles() {
+		int n = 0;
+		for (int s = 0; s < Math.min(this.grid.count, this.hidden.length); s++) {
+			n += this.hidden[s] ? 1 : 0;
+		}
+		return n;
+	}
+
 	void record(VkCommandBuffer cb, Desc ubo, HfTileGrid.Activation act, int steps, float dt, float sprayDt) {
 		ComputeProgram[] p = programs();
 		int ring = Vk.ringSlot();
@@ -1115,9 +1162,10 @@ final class HfDomain implements AutoCloseable {
 		double usedMb = (g.usedSpanPages() * (double) this.ps * SPAN_BYTES + g.usedFluxPages() * (double) this.ps * FLUX_BYTES) / 1.0e6;
 		return String.format(
 			(this.reservoirCount > 0 ? "[" + this.reservoirCount + " reservoir cells add/remove water] " : "") + "heightfield (Y " + g.yMin + " to " + g.yMax + "): %d/%d tiles, pages %d/%d + flux %d/%d (%.1f of %.0f MB), %d spans dropped  |  volume %,.1f blocks (%+.3f%% since start)  |  "
-				+ "max depth %.2f  max speed %.2f b/s  |  %s%s",
+				+ "max depth %.2f  max speed %.2f b/s  |  %s%s%s",
 			g.count, g.maxTiles, g.usedSpanPages(), g.maxPages, g.usedFluxPages(), g.maxFluxPages, usedMb, this.bytes() / 1.0e6, g.droppedSpans,
 			volume, drift, maxDepth, g.activeMax(g.maxSpeed), motion,
+			this.hiddenTiles() > 0 ? String.format("  |  %d tiles not drawn (past render distance)", this.hiddenTiles()) : "",
 			g.foreignKeptOpen > 0 ? String.format("  |  edits kept %,d non-realistic fluid blocks open", g.foreignKeptOpen) : "");
 	}
 

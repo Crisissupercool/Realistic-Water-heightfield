@@ -988,6 +988,9 @@ public final class WaterWorld {
 		this.writeHfGlobals(mc, hf, this.hfUbo.mapped(), o, width, height, stir);
 		this.hfUbo.flush(o, UBO_SIZE);
 		Desc ubo = Desc.ubo(this.hfUbo, o, UBO_SIZE);
+		if (level != null) {
+			hf.setView(Mth.floor(cam.x) >> 4, Mth.floor(cam.z) >> 4, mc.options.renderDistance().get(), level::hasChunk);
+		}
 		hf.record(cb, ubo, act, steps, dt, running ? frameDt : 0.0F);
 		this.gpuTimer.mark(cb, "hf solver");
 		this.hfWorld.request(cb, ubo, hf, frameDt);

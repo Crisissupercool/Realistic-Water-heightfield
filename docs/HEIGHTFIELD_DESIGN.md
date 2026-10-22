@@ -663,3 +663,8 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   The rim is less blue. `scratchpad/preview/drops7.py` projects a crown as the game does (1080p, 70 degree FOV) at 2.5 and
   12 blocks: the near splash reads as spray, and the far one is unchanged. Rejected in the preview: glassy drops with a dark
   lens rim or a bright Fresnel rim read as soap bubbles or coins, and long capsule streaks read as pills.
+* **Water past the render distance (Oct 22):** the mesh pass drew every tile, so water stayed visible floating past the end of
+  the terrain. `HfDomain.setView` now hides a tile when its chunk is outside vanilla's render-distance circle (vanilla's own
+  test, one chunk of slack) or is not loaded on the client. The hidden flag lives in the spare `tileInfo[tile*4+1].w` slot, and
+  `hf_mesh` skips those tiles, so they emit no spray either. Hidden tiles keep simulating; only drawing stops. The flags are
+  recomputed every frame (one test per tile), and the mesh rebuilds only when one changes. `/water hf stats` reports the count.
