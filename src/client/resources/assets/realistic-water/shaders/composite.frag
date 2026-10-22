@@ -7,10 +7,21 @@ layout(binding = 4) uniform sampler2D sceneDepth;
 layout(binding = 5) uniform sampler2D foamTex;
 layout(binding = 6) uniform sampler2D materialTex;
 layout(std430, binding = 7) readonly buffer ViewState { vec4 viewState; };
-// Material filter, then the heightfield ripple field (HfRipples): the drawn water level it lies on, normal gain, size (0 = off)
-// and its window's min texel (8 per block, wrapped world).
-layout(push_constant) uniform Push { float filterMat; float rippleY; float rippleGain; int rippleSize; ivec2 rippleMin; } pc;
-layout(std430, binding = 8) readonly buffer Ripples { uvec2 ripple[]; };
+// Material filter, then the player's wake (HfRipples): the drawn water level it lies on, normal gain, number of entries
+// (0 = off), wave life (s) and foam strength.
+// The wake only exists within wakeRadius of wakeCenter (wrapped world xz); pixels farther away skip it.
+layout(push_constant) uniform Push {
+    float filterMat;
+    float wakeY;
+    float wakeGain;
+    int wakeCount;
+    float wakeLife;
+    float wakeFoam;
+    vec2 wakeCenter;
+    float wakeRadius;
+} pc;
+// Points where the player disturbed the surface: (x, z) in wrapped world blocks, seconds since, displaced volume (blocks^3).
+layout(std430, binding = 8) readonly buffer Wake { vec4 wake[]; };
 layout(location = 0) out vec4 outColor;
 
 const float PI = 3.14159265;
@@ -121,22 +132,40 @@ vec3 traceReflection(vec3 origin, vec3 R, out float hit) {
     return vec3(0.0);
 }
 
-const vec2 RIPPLE_DIR[5] = vec2[](vec2(0.94, 0.34), vec2(-0.42, 0.91), vec2(0.71, -0.70), vec2(-0.86, -0.51), vec2(0.21, 0.98));
-const float RIPPLE_FREQ[5] = float[](1.0, 1.93, 3.57, 6.41, 11.7);
-const float RIPPLE_WEIGHT[5] = float[](0.357, 0.250, 0.179, 0.125, 0.089);
+float noiseHash(vec2 c) {
+    return float(hash(uint(int(c.x)) * 73856093u ^ uint(int(c.y)) * 19349663u)) * (1.0 / 4294967295.0);
+}
 
+float valueNoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(noiseHash(i), noiseHash(i + vec2(1.0, 0.0)), f.x), mix(noiseHash(i + vec2(0.0, 1.0)), noiseHash(i + 1.0), f.x), f.y);
+}
+
+// Small wind ripples: 12 directional waves with scattered directions, phases and deep-water speeds, their strength varied over
+// the surface by slow noise and their crests bent by a static warp, so the pattern does not repeat (5 fixed waves read as
+// regular stripes). Short waves spread wider around the wind direction, like real wind ripples.
 vec2 rippleGradient(vec2 p, float t, float footprint) {
     vec2 g = vec2(0.0);
-    vec2 q = p;
-    for (int i = 0; i < 5; i++) {
-        float lambda = 6.2831853 / RIPPLE_FREQ[i];
+    vec2 q = p + 0.6 * vec2(valueNoise(p * 0.21), valueNoise(p * 0.21 + 5.2));
+    float patchA = 0.3 + 1.4 * valueNoise(p * 0.03 + vec2(t * 0.01, 3.7));
+    float patchB = 0.3 + 1.4 * valueNoise(p * 0.07 + vec2(9.1, t * 0.015));
+    float freq = 0.9;
+    for (int i = 0; i < 12; i++) {
+        float lambda = 6.2831853 / freq;
         float fade = smoothstep(4.0, 12.0, lambda / max(footprint, 1e-5));
         if (fade <= 0.0) {
             break;
         }
-        float phase = dot(q, RIPPLE_DIR[i]) * RIPPLE_FREQ[i] + t * (0.8 + 0.3 * float(i));
-        g += RIPPLE_DIR[i] * (RIPPLE_WEIGHT[i] * fade * cos(phase));
-        q += RIPPLE_DIR[i].yx * (RIPPLE_WEIGHT[i] / RIPPLE_FREQ[i] * sin(phase) * 0.6);
+        // Directions step by the golden angle within a spread that widens for shorter waves, so no two neighbors line up.
+        float h2 = fract(sin(float(i) * 78.233 + 1.7) * 43758.5453);
+        float ang = 0.5 + (fract(float(i) * 0.618034 + 0.31) - 0.5) * 2.0 * (0.9 + 0.8 * float(i) / 11.0);
+        vec2 dir = vec2(cos(ang), sin(ang));
+        float w = 0.1015 * pow(freq, -0.15) * ((i & 1) == 0 ? patchA : patchB);
+        float phase = dot(q, dir) * freq + t * sqrt(freq) * 1.1 + h2 * 6.2831853;
+        g += dir * (w * fade * cos(phase));
+        freq *= 1.31;
     }
     return g;
 }
@@ -213,50 +242,59 @@ float foamLace(vec2 p, float coverage, float footprint) {
     return mix(0.55, wall, detail);
 }
 
-float rippleAt(ivec2 w) {
-    ivec2 d = w - pc.rippleMin;
-    if (any(lessThan(d, ivec2(0))) || any(greaterThanEqual(d, ivec2(pc.rippleSize)))) {
-        return 0.0;
+const float WAKE_G = 9.81;
+// Waves shorter than ~0.8 blocks die out (capillary and viscous losses). Each source has a size growing with its volume
+// (a splash spreads over its crater, not a point), which softens the near field and the shortest waves it makes.
+const float WAKE_KC = 8.0;
+const float WAKE_CORE = 0.15;
+
+// The player's wake and splash rings: the sum of deep-water ring waves from each point where the player disturbed the surface
+// (the Cauchy-Poisson solution: a volume V released at a point gives eta(r, t) = V k / (pi r) cos(g t^2 / 4r), with local
+// wavenumber k = g t^2 / 4r^2). Long waves outrun short ones, which draws the V of a Kelvin wake behind a moving body and turns
+// a splash into a train of rings. Evaluated per pixel, so it stays sharp at any distance; nothing is simulated on a grid.
+// Returns (d eta / dx, d eta / dz, eta, churned-water foam).
+vec4 wakeAt(vec3 world, float footprint) {
+    vec4 r = vec4(0.0);
+    if (pc.wakeCount <= 0 || abs(world.y - pc.wakeY) > 0.6 || distance(world.xz, pc.wakeCenter) > pc.wakeRadius) {
+        return r;
     }
-    uvec2 e = ripple[uint(w.y & 255) * 256u + uint(w.x & 255)];
-    return e.y == (uint(w.x & 32767) | (uint(w.y & 32767) << 16)) ? uintBitsToFloat(e.x) : 0.0;
-}
-
-float rippleHeight(vec2 t) {
-    vec2 b = floor(t - 0.5);
-    vec2 f = t - 0.5 - b;
-    ivec2 i = ivec2(b);
-    return mix(mix(rippleAt(i), rippleAt(i + ivec2(1, 0)), f.x), mix(rippleAt(i + ivec2(0, 1)), rippleAt(i + ivec2(1, 1)), f.x), f.y);
-}
-
-// Slope (d height / dx, dz) of the player's ripples at a water point, faded where a pixel covers several ripple texels and
-// toward the edge of the field.
-vec2 rippleSlope(vec3 world, float footprint) {
-    if (pc.rippleSize == 0 || abs(world.y - pc.rippleY) > 0.6) {
-        return vec2(0.0);
+    float trail = 0.0;
+    for (int i = 0; i < pc.wakeCount; i++) {
+        vec4 e = wake[i];
+        vec2 d = world.xz - e.xy;
+        float d2 = dot(d, d);
+        float tau = e.z;
+        if (d2 < 1.5) {
+            trail += abs(e.w) * exp(-d2 / 0.3) * exp(-tau / 1.2);
+        }
+        // Nothing has arrived yet beyond the first wave (theta < 0.5), so skip before the expensive part.
+        float reach = WAKE_G * tau * tau * 0.5;
+        if (d2 > reach * reach) {
+            continue;
+        }
+        float core = WAKE_CORE + 0.35 * sqrt(abs(e.w));
+        float rr = sqrt(d2 + core * core);
+        float th = WAKE_G * tau * tau / (4.0 * rr);
+        if (th < 0.5) {
+            continue;
+        }
+        float k = th / rr;
+        // Fade waves past the cut-off, waves shorter than ~4 pixels (they would alias), old waves, and the leading edge.
+        float kc = k / WAKE_KC;
+        float ks = k * core;
+        float env = exp(-kc * kc - 0.5 * ks * ks) * exp(-tau / max(pc.wakeLife, 0.1)) * clamp((th - 0.5) * 0.5, 0.0, 1.0)
+            * smoothstep(3.0, 6.0, 6.2831853 / max(k * footprint, 1.0e-5));
+        if (env < 1.0e-4) {
+            continue;
+        }
+        float amp = e.w * k / (3.14159265 * rr) * env;
+        r.z += amp * cos(th);
+        r.xy += (amp * k * sin(th) / rr) * d;
     }
-    vec2 t = world.xz * 8.0;
-    vec2 center = vec2(pc.rippleMin) + 0.5 * float(pc.rippleSize);
-    vec2 off = abs(t - center);
-    float fade = (1.0 - smoothstep(0.35, 0.5, max(off.x, off.y) / float(pc.rippleSize))) * (1.0 - smoothstep(0.15, 0.5, footprint));
-    if (fade <= 0.0) {
-        return vec2(0.0);
-    }
-    float gx = rippleHeight(t + vec2(1.0, 0.0)) - rippleHeight(t - vec2(1.0, 0.0));
-    float gz = rippleHeight(t + vec2(0.0, 1.0)) - rippleHeight(t - vec2(0.0, 1.0));
-    return vec2(gx, gz) * 4.0 * fade;
+    r.w = 1.0 - exp(-trail * 25.0 * pc.wakeFoam);
+    return r;
 }
 
-float noiseHash(vec2 c) {
-    return float(hash(uint(int(c.x)) * 73856093u ^ uint(int(c.y)) * 19349663u)) * (1.0 / 4294967295.0);
-}
-
-float valueNoise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    return mix(mix(noiseHash(i), noiseHash(i + vec2(1.0, 0.0)), f.x), mix(noiseHash(i + vec2(0.0, 1.0)), noiseHash(i + 1.0), f.x), f.y);
-}
 
 // Soft drifting foam patches; coverage grows with aer (more and larger patches), edges soften with distance.
 float foamPatches(vec2 p, float aer, float footprint) {
@@ -297,19 +335,19 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     float film = sheet ? 0.0 : 1.0 - smoothstep(0.02, max(G.shadeB.z, 0.03), vertical);
     n = normalize(mix(n, upV, film * 0.9));
     vec3 tilt = vec3(0.0);
+    vec4 wk = vec4(0.0);
     if (!sheet) {
-        vec2 slope = rippleSlope(world, footprint) * pc.rippleGain;
+        wk = wakeAt(world, footprint);
+        vec2 slope = wk.xy * pc.wakeGain;
         tilt = mat3(G.view) * vec3(slope.x, 0.0, slope.y);
         n = normalize(n - tilt);
     }
     vec3 wrinkled = rippleNormal(n, P, footprint);
     n = normalize(mix(n, wrinkled, smoothstep(0.0, 0.15, dot(wrinkled, V))));
 
-    // The player's ripples bend reflections fully but refraction only a little: at full strength the riverbed would swim.
-    // Refraction shifts the scene behind by how far the normal leans away from vertical. Using the whole view-space normal
-    // shifted flat water too, by an amount that changes with the view angle and the water thickness under each pixel, so up
-    // close the riverbed slid around with every step and every head bob; the shift is also capped on screen.
-    vec3 nRefract = normalize(n + 0.7 * tilt);
+    // Refraction shifts the scene behind by how far the normal leans away from vertical (flat water does not shift it), capped
+    // on screen; the wake bends it half as much as it bends reflections, so the riverbed stays readable behind a swimmer.
+    vec3 nRefract = normalize(n + 0.5 * tilt);
     vec2 bend = (nRefract - upV * dot(nRefract, upV)).xy;
     vec2 offset = bend * G.waterA.z * clamp(thickness, 0.0, 2.0) / max(fd, 2.0);
     float shift = length(offset);
@@ -336,6 +374,12 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     vec3 reflection = mix(skyColor(Rw), ssr, hit);
     float F = 0.02 + 0.98 * pow(1.0 - clamp(dot(n, V), 0.0, 1.0), 5.0);
     vec3 color = mix(water, reflection, F) + sunSpecular(n, V, footprint);
+    // Wave crests are thinner, so light scattered in the water shows through them a little brighter.
+    color += G.scatter.rgb * ambient * clamp(wk.z * 2.5, -0.1, 0.25);
+    if (wk.w > 0.0) {
+        float churn = wk.w * foamPatches(world.xz * 1.7, wk.w, footprint);
+        color = mix(color, vec3(0.9, 0.94, 0.96) * mix(0.25, 1.0, ambient), clamp(churn * 0.8, 0.0, 0.8));
+    }
     if (aer > 0.0) {
         float cover = sheet ? aer * (0.35 + 0.9 * smoothstep(0.3, 0.75, streaks)) : 0.9 * foamPatches(world.xz, aer, footprint);
         color = mix(color, vec3(0.9, 0.94, 0.96) * mix(0.25, 1.0, ambient), clamp(cover, 0.0, 0.95));

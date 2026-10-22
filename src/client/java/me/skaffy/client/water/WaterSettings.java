@@ -172,10 +172,14 @@ public final class WaterSettings {
 	public static float hfCurtainMinFlow = 0.005F;
 	/** How hard the player pushes heightfield water when moving through it (bow wave, wake, rings when jumping in); 0 turns it off. */
 	public static float hfStirStrength = 1.0F;
-	/** How strongly the player makes fine ripples on heightfield water (wading, swimming, bobbing, jumping in); 0 turns them off. */
+	/** How strongly the player makes its wake and splash rings on heightfield water (swimming, wading, bobbing, jumping in); 0 off. */
 	public static float hfRipples = 1.0F;
-	/** How much the ripples bend the surface when shading (multiplies their slope). */
-	public static float hfRippleNormal = 2.0F;
+	/** How much the wake bends the surface when shading (multiplies its slope). */
+	public static float hfRippleNormal = 1.5F;
+	/** Seconds the wake's waves take to fade to about a third. */
+	public static float hfWakeLife = 4.0F;
+	/** How white the churned water right behind a swimmer shows (0 off). */
+	public static float hfWakeFoam = 1.0F;
 	/** How big a crater and ring wave a body hitting heightfield water makes (scales the displaced volume); 0 turns splashes off. */
 	public static float hfSplash = 1.0F;
 	/** How white foam and falling water show on heightfield water (0 off, 1 normal). */

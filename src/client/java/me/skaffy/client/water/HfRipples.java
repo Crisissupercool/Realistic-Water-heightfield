@@ -1,126 +1,139 @@
 package me.skaffy.client.water;
 
-import me.skaffy.client.vk.ComputeProgram;
-import me.skaffy.client.vk.Desc;
-import me.skaffy.client.vk.Program;
+import java.nio.ByteBuffer;
 import me.skaffy.client.vk.Vk;
 import me.skaffy.client.vk.VkBuf;
-import org.lwjgl.vulkan.VkCommandBuffer;
 
 /**
- * Fine ripples around the player on heightfield water (hf_ripple.comp): a 256 x 256 wave field at 8 texels per block that the
- * composite pass uses to bend the water's normal. The solver's half-block cells can't show waves this small, so this is
- * what makes swimming, wading and jumping in visibly disturb the surface. It moves no water.
+ * The player's wake and splash rings on heightfield water, for composite.frag ({@code wakeAt}). While the player is at the surface
+ * this records, 20 times a second, where it disturbed the water and by how much (moving pushes water aside, bobbing pushes it
+ * down and draws it back, a splash drops a whole volume at once). The composite pass sums the deep-water ring wave that spreads
+ * from each point since then, which forms a Kelvin wake behind a moving body and ring trains around splashes, evaluated per pixel
+ * so it is sharp at any distance. It only shades the water; the solver's own waves move it (see hfStir and splashes).
  */
 final class HfRipples implements AutoCloseable {
-	static final int SIZE = 256;
-	static final int PER_BLOCK = 8;
+	static final int MAX = 160;
 	private static final double WORLD_WRAP = 4096.0;
-	private static final float STEP = 1.0F / 60.0F;
-	private static final float WAVE_SPEED = 1.5F;
-	private static final float DAMPING = 0.995F;
-	private static final float RELAX = 0.3F;
+	private static final float STEP = 1.0F / 20.0F;
+	/** Displaced volume per second and per block/s of horizontal (capped at 6) or vertical speed. */
+	private static final float MOVE_VOLUME = 0.05F;
+	private static final float BOB_VOLUME = 0.12F;
+	/** Fraction of a splash's displaced volume (capped) that rings out as fine waves; the solver carries the bulk of it. */
+	private static final float SPLASH_SHARE = 1.0F;
+	private static final float SPLASH_MAX = 4.0F;
 
-	private static ComputeProgram program;
-
-	private final VkBuf[] field = new VkBuf[2];
-	private int current;
-	private boolean cleared;
-	private float pending;
+	private final VkBuf[] upload = new VkBuf[Vk.FRAME_RING];
+	private final float[] ex = new float[MAX];
+	private final float[] ez = new float[MAX];
+	private final float[] et = new float[MAX];
+	private final float[] ev = new float[MAX];
+	private int head;
+	private int size;
 	private float time;
+	private float pending;
+	private int slot;
 
-	/** Window min texel (wrapped world, see {@link #wrap}) and the water level the ripples lie on; NaN while there are none. */
-	int winX;
-	int winZ;
+	/** Entries uploaded this frame, the water level they lie on (NaN before the first) and where the player is (wrapped world). */
+	int count;
 	float planeY = Float.NaN;
+	float centerX;
+	float centerZ;
 
 	HfRipples() {
-		for (int i = 0; i < 2; i++) {
-			this.field[i] = VkBuf.device((long) SIZE * SIZE * 8L, 0);
-		}
-		if (program == null) {
-			program = new ComputeProgram("hf_ripple.comp", Desc.SSBO, Desc.SSBO);
+		for (int i = 0; i < Vk.FRAME_RING; i++) {
+			this.upload[i] = VkBuf.upload(MAX * 16L, VkBuf.STORAGE);
 		}
 	}
 
-	static void closeProgram() {
-		if (program != null) {
-			program.close();
-			program = null;
-		}
-	}
-
-	/** The field after the last step, for composite.frag. */
+	/** This frame's entries for composite.frag. */
 	VkBuf current() {
-		return this.field[this.current];
+		return this.upload[this.slot];
 	}
 
-	/** Same wrap as the shading globals, so world.xz in composite.frag and these texels agree. */
+	/** Same wrap as the shading globals, so world.xz in composite.frag and these points agree. */
 	static double wrap(double v) {
 		return v - Math.floor(v / WORLD_WRAP) * WORLD_WRAP;
 	}
 
+	private void add(double x, double z, float volume) {
+		int i = (this.head + this.size) % MAX;
+		if (this.size == MAX) {
+			this.head = (this.head + 1) % MAX;
+		} else {
+			this.size++;
+		}
+		this.ex[i] = (float) wrap(x);
+		this.ez[i] = (float) wrap(z);
+		this.et[i] = this.time;
+		this.ev[i] = volume;
+	}
+
+	/** A body hit the surface at (x, z), displacing {@code volume} blocks^3 (see HfWorld.splash): a ring train spreads from it. */
+	void impact(double x, double z, double volume, float surface) {
+		this.add(x, z, (float) -Math.min(volume * SPLASH_SHARE, SPLASH_MAX) * WaterSettings.hfRipples);
+		this.planeY = surface;
+	}
+
 	/**
-	 * Advances the ripples by this frame's time and stirs them where the player meets the heightfield water surface.
+	 * Advances the clock, records where the player disturbs the surface and uploads the live points for this frame.
 	 *
 	 * @param sample the latest heightfield sample at the player ({u, w, surface, depth, found, floor}), or null
 	 */
-	void record(VkCommandBuffer cb, net.minecraft.client.Minecraft mc, float[] sample, float frameDt, boolean running) {
+	void record(net.minecraft.client.Minecraft mc, float[] sample, float frameDt, boolean running) {
 		var player = mc.player;
-		if (!this.cleared) {
-			this.field[0].fill(cb, 0);
-			this.field[1].fill(cb, 0);
-			Vk.barrier(cb);
-			this.cleared = true;
+		if (running) {
+			this.time += frameDt;
+			this.pending = Math.min(this.pending + frameDt, 4.0F * STEP);
 		}
-		if (player == null || !running || WaterSettings.hfRipples <= 0.0F) {
-			return;
+		if (player != null) {
+			this.centerX = (float) wrap(player.getX());
+			this.centerZ = (float) wrap(player.getZ());
 		}
-		double px = wrap(player.getX()) * PER_BLOCK;
-		double pz = wrap(player.getZ()) * PER_BLOCK;
-		this.winX = (int) Math.floor(px) - SIZE / 2;
-		this.winZ = (int) Math.floor(pz) - SIZE / 2;
-
-		// Source: only while the body is at the water surface (wading, swimming, crossing it).
-		float target = 0.0F;
-		float radius = 0.0F;
-		if (sample != null && sample[4] > 0.5F && sample[3] > 0.05F && !player.isSpectator()) {
+		boolean contact = false;
+		if (running && player != null && !player.isSpectator() && sample != null && sample[4] > 0.5F && sample[3] > 0.05F
+			&& WaterSettings.hfRipples > 0.0F) {
 			var box = player.getBoundingBox();
 			float surface = sample[2];
-			if (box.minY < surface + 0.05 && box.maxY > surface - 0.3) {
-				double vx = (player.getX() - player.xo) * 20.0;
-				double vy = (player.getY() - player.yo) * 20.0;
-				double vz = (player.getZ() - player.zo) * 20.0;
-				float speed = (float) Math.hypot(vx, vz);
-				float still = 1.0F - Math.min(speed / 0.5F, 1.0F);
-				target = -0.06F * Math.min(speed, 3.0F) / 3.0F
-					- 0.03F * still * (0.5F + 0.5F * (float) Math.sin(this.time * 5.0F))
-					- 0.15F * (float) Math.min(Math.abs(vy) / 8.0, 1.0) * (Math.abs(vy) > 1.0 ? 1.0F : 0.0F);
-				target *= WaterSettings.hfRipples;
-				radius = (float) ((box.maxX - box.minX) * 0.5 + 0.1) * PER_BLOCK;
+			contact = box.minY < surface + 0.05 && box.maxY > surface - 0.3;
+			if (contact) {
 				this.planeY = surface;
 			}
 		}
-		this.pending = Math.min(this.pending + frameDt, 4.0F * STEP);
-		float c = WAVE_SPEED * PER_BLOCK * STEP;
 		while (this.pending >= STEP) {
 			this.pending -= STEP;
-			this.time += STEP;
-			VkBuf cur = this.field[this.current];
-			VkBuf next = this.field[1 - this.current];
-			program.bind(cb, Desc.ssbo(cur), Desc.ssbo(next));
-			program.push(cb, this.winX, this.winZ, SIZE, 0,
-				Program.f(c * c), Program.f(DAMPING), Program.f(RELAX), 0,
-				Program.f((float) px), Program.f((float) pz), Program.f(radius), Program.f(target));
-			program.dispatch(cb, SIZE / 16, SIZE / 16, 1);
-			Vk.barrier(cb);
-			this.current = 1 - this.current;
+			if (!contact) {
+				continue;
+			}
+			double vx = (player.getX() - player.xo) * 20.0;
+			double vy = (player.getY() - player.yo) * 20.0;
+			double vz = (player.getZ() - player.zo) * 20.0;
+			float speed = (float) Math.min(Math.hypot(vx, vz), 6.0);
+			float down = (float) Math.clamp(-vy, -6.0, 6.0);
+			// Moving pushes water aside (a moving depression); going down pushes it away, coming up draws it back in.
+			float volume = -STEP * (MOVE_VOLUME * speed + BOB_VOLUME * down) * WaterSettings.hfRipples;
+			if (Math.abs(volume) > 1.0e-5F) {
+				this.add(player.getX(), player.getZ(), volume);
+			}
 		}
+		// Drop points whose waves have faded (after ~2 lifetimes they are below 15%).
+		float maxAge = Math.max(1.0F, 2.0F * WaterSettings.hfWakeLife);
+		while (this.size > 0 && this.time - this.et[this.head] > maxAge) {
+			this.head = (this.head + 1) % MAX;
+			this.size--;
+		}
+		this.slot = Vk.ringSlot();
+		ByteBuffer b = this.upload[this.slot].mapped();
+		for (int n = 0; n < this.size; n++) {
+			int i = (this.head + n) % MAX;
+			b.putFloat(n * 16, this.ex[i]).putFloat(n * 16 + 4, this.ez[i]).putFloat(n * 16 + 8, this.time - this.et[i]).putFloat(n * 16 + 12, this.ev[i]);
+		}
+		this.upload[this.slot].flush(0, Math.max(16L, this.size * 16L));
+		this.count = this.size;
 	}
 
 	@Override
 	public void close() {
-		for (VkBuf b : this.field) {
+		for (VkBuf b : this.upload) {
 			Vk.destroyLater(b);
 		}
 	}

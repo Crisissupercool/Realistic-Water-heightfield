@@ -463,3 +463,24 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   0.4 x (speed / 5)^1.5 blocks^3 x `hfSplash` (cap 40), radius 0.5 + 0.35 sqrt(volume) (0.6..4), depth limited to 80% of the
   water there. Gravity turns it into a rebound jet and an expanding ring. CPU numbers in 4-deep water: 5 b/s (a 1-block jump)
   0.015 wave at 3 blocks; 20 b/s 0.13; 78 b/s (terminal speed) 0.79 at 3 blocks, 0.15 at 8, rebound jet 1.9 blocks.
+
+## 17. Wake synthesis and less repetitive ripples (as built)
+
+* **The ripple grid is gone.** A plain wave equation on a 1/8-block grid (HfRipples v1) moves every wavelength at the same speed,
+  so a moving player only made a fading ring, and the grid looked blocky up close. Real wakes come from dispersion (long waves
+  outrun short ones). A fitted 13x13 vertical-derivative kernel (iWave) was tried in numpy first: it cannot represent |k| at
+  wake wavelengths (2.6-10 blocks for a swimmer at 2-4 b/s, i.e. 20-80 texels), relative error > 50%.
+* **Instead, per-pixel Cauchy-Poisson synthesis:** while the player is at the surface, `HfRipples` records 20 points per second
+  (wrapped world x, z, time, signed volume: 0.05 blocks^3 per (b/s) of horizontal speed up to 6, 0.12 per (b/s) of vertical
+  speed, so bobbing pushes and draws water alternately) and splashes add one point with the impact's displaced volume (up to 4).
+  Up to 160 points live ~2 x `hfWakeLife`. `composite.frag` sums, per water pixel within 48 blocks of the player and 0.6 blocks
+  of the wake level, the deep-water ring wave of each point: eta = V k / (pi r) cos(g t^2 / 4r), k = g t^2 / 4r^2, enveloped by a
+  0.8-block cut-off (exp(-(k/8)^2)), the source size (core 0.15 + 0.35 sqrt|V|, exp(-(k core)^2 / 2)), `hfWakeLife` (4 s), the
+  leading edge, and a fade for waves shorter than ~4 pixels. Superposition gives a true Kelvin wake (cusp lines and transverse
+  waves) and ring trains around splashes, sharp at any distance. Its slope (x `hfRippleNormal`, 1.5) bends reflections fully and
+  refraction by half; crests (eta > 0) brighten slightly; churned water right behind the swimmer (points within ~0.5 blocks,
+  fading over ~1 s) shows as foam (`hfWakeFoam`). Numpy check with the shader math: swimming at 3 b/s gives 7 deg typical,
+  16 deg peak tilt along the wake arms; a 1.6 blocks^3 splash ~21 deg on its first ring after 2 s.
+* **Detail ripples:** 12 waves (frequencies x1.31 apart) instead of 5, directions stepped by the golden angle within a spread
+  widening for short waves, deep-water speeds, a static crest warp and two slow noise fields varying their strength, so the
+  surface no longer shows the regular stripes of the old pattern (rms slope 0.24 vs 0.35 at the same `detailStrength`).

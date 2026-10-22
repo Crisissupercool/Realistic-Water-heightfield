@@ -646,6 +646,9 @@ final class HfWorld {
 		double radius = Math.clamp(0.5 + 0.35 * Math.sqrt(volume), 0.6, 4.0);
 		double craterDepth = Math.min(2.0 * volume / (Math.PI * radius * radius), 0.8 * sm[3]);
 		this.crater(hf, player.getX(), player.getZ(), (float) surface, radius, craterDepth);
+		if (this.world.ripples != null) {
+			this.world.ripples.impact(player.getX(), player.getZ(), volume, (float) surface);
+		}
 	}
 
 	/** Moves water from a paraboloid crater of radius r and depth d at (x, z) into a ring from r to 2r, through injects. */

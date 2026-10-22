@@ -140,7 +140,7 @@ public final class WaterWorld {
 	private @Nullable SolidCache solids;
 	private @Nullable SolidCache sandSolids;
 	private @Nullable WaterRenderer renderer;
-	private @Nullable HfRipples ripples;
+	@Nullable HfRipples ripples;
 	private @Nullable GpuTimer gpuTimer;
 	private @Nullable SandRenderer sandRenderer;
 	private @Nullable VkBuf uboRing;
@@ -991,7 +991,7 @@ public final class WaterWorld {
 		hf.record(cb, ubo, act, steps, dt);
 		this.gpuTimer.mark(cb, "hf solver");
 		this.hfWorld.request(cb, ubo, hf, frameDt);
-		this.ripples.record(cb, mc, this.hfWorld.freshPlayerSample(), frameDt, running);
+		this.ripples.record(mc, this.hfWorld.freshPlayerSample(), frameDt, running);
 		this.gpuTimer.mark(cb, "hf sample+ripples");
 		hf.probe(cb, ubo, this.frameView, cam.x, cam.y, cam.z);
 		return new WaterRenderer.Body(null, hf, ubo);
@@ -1397,7 +1397,6 @@ public final class WaterWorld {
 		}
 		WaterRegion.closePrograms();
 		HfDomain.closePrograms();
-		HfRipples.closeProgram();
 		Vk.flushDeferredNow();
 	}
 }
