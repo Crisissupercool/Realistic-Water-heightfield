@@ -96,7 +96,7 @@ public record HfBlocksPayload(byte mode, long[] positions, byte[] amounts) imple
 					// Replaceable plants (grass, ferns, vines, a thin snow layer) give way to the water like they do to vanilla water.
 					// The heightfield already fills them (they have no collision); leaving them standing kept whole grassland floods
 					// out of the blocks, so mobs walked and burned in water that was only drawn.
-					boolean plant = !ours && amount > 0 && current.canBeReplaced() && current.getFluidState().isEmpty();
+					boolean plant = !ours && amount > 0 && !current.isAir() && current.canBeReplaced() && current.getFluidState().isEmpty();
 					if (!ours && !current.isAir() && !plant) {
 						continue;
 					}
