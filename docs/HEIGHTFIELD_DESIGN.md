@@ -656,3 +656,10 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   sprite as whitewater pass + composite draw it, shipped vs candidate). Now a crisp disc (anti-aliased over ~1 px via fwidth),
   alpha 1.5, a bright core and a bluer rim; motion blur over 12 ms, at most 4x, alpha x stretch^-0.3; a drop is at most 12 px
   in radius and fades in over 2 blocks from the camera, so drops flying past do not smear across the view.
+* **Drops up close (same day):** from a few blocks away a splash was a heap of equal white ovals ("rice"): every near drop hit
+  the same 12 px cap and stretched 4x. Real splash drops are millimetres, so they stay specks even next to the camera. A drop
+  now stops growing at `5 px x (size / 1.5)^1.5` (about 1 to 5 px), so a near splash keeps its mix of big and small drops.
+  Drops wider than 1.5 px stretch less, down to at most 1.6x at 4 px; thin streaks only come from small, distant drops.
+  The rim is less blue. `scratchpad/preview/drops7.py` projects a crown as the game does (1080p, 70 degree FOV) at 2.5 and
+  12 blocks: the near splash reads as spray, and the far one is unchanged. Rejected in the preview: glassy drops with a dark
+  lens rim or a bright Fresnel rim read as soap bubbles or coins, and long capsule streaks read as pills.

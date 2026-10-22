@@ -36,7 +36,7 @@ void main() {
         float r = sqrt(r2);
         float aa = max(fwidth(r), 1.0e-3);
         a *= 1.5 * (1.0 - smoothstep(1.0 - 1.5 * aa, 1.0, r));
-        color = mix(vec3(0.97, 0.99, 1.0), vec3(0.62, 0.74, 0.86), smoothstep(0.35, 0.95, r));
+        color = mix(vec3(0.97, 0.99, 1.0), vec3(0.76, 0.85, 0.93), smoothstep(0.45, 1.0, r));
     } else if (type > 2.5) {
         // Mist (heightfield spray): soft and faint, its alpha set in particle.vert.
         a *= exp(-4.0 * r2);

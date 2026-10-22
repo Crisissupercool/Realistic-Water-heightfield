@@ -69,11 +69,18 @@ void main() {
         float s = pc.a.y / max(pixelR, 1e-4);
         alpha *= 1.0 / (s * s);
         r *= s;
+        pixelR = pc.a.y;
     } else if (pc.a.w > 0.0 && pixelR > pc.a.w && !foam && !mist && !drop) {
         r *= pc.a.w / pixelR;
-    } else if (drop && pixelR > 12.0) {
-        // A drop right in front of the camera stays a drop, not a big smear across the view.
-        r *= 12.0 / pixelR;
+    } else if (drop) {
+        // Real splash drops are millimetres, so even right next to the camera they stay specks: a drop stops growing at a few
+        // pixels, the cap set by its own size so a near splash keeps its mix of big and small drops. A 12 px cap for every drop
+        // made a near splash a heap of equal white ovals ("rice"; scratchpad preview/drops7.py).
+        float cap = 5.0 * pow(clamp((p.vel.w - 4.0) / 1.5, 0.0, 1.0), 1.5);
+        if (pixelR > cap) {
+            r *= cap / pixelR;
+            pixelR = cap;
+        }
     }
     if (pc.a.w > 0.0) {
         alpha *= smoothstep(pc.a.z, pc.a.z + (drop ? 2.0 : 1.2), dist);
@@ -82,13 +89,15 @@ void main() {
     vec2 offset = c * r;
 #ifndef DROPLETS
     // Heightfield spray and drops (pc.b.w > 0) are drawn with a little motion blur: stretched along their velocity across the
-    // screen by the distance they move in 12 ms, at most 4x (more read as blurry streaks).
+    // screen by the distance they move in 12 ms, at most 4x (more read as blurry streaks). Drops a few pixels wide stay nearly
+    // round (at most 1.6x): wide streaks are what read as grains; thin streaks only come from small, distant drops.
     if (pc.b.w > 0.0 && !mist) {
         vec2 sv = (mat3(G.view) * (p.vel.xyz * G.domainOrigin.w)).xy;
         float sl = length(sv);
         if (sl > 1.0e-3) {
             vec2 ax = sv / sl;
-            float stretch = 1.0 + min(sl * 0.012 / max(r, 1.0e-4), 3.0);
+            float maxStretch = drop ? mix(3.0, 0.6, smoothstep(1.5, 4.0, pixelR)) : 3.0;
+            float stretch = 1.0 + min(sl * 0.012 / max(r, 1.0e-4), maxStretch);
             offset = (ax * c.x * stretch + vec2(-ax.y, ax.x) * c.y) * r;
             alpha *= pow(stretch, -0.3);
         }
