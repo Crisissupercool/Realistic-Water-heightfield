@@ -1397,7 +1397,7 @@ public final class WaterWorld {
 		}
 	}
 
-	static void startShaderWarmup() {
+	public static void startShaderWarmup() {
 		ShaderWarmup.start();
 	}
 
