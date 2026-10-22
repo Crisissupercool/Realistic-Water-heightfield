@@ -1,4 +1,6 @@
 #version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+#extension GL_KHR_shader_subgroup_ballot : enable
 // Builds the heightfield water mesh in the same format SurfaceMesher produces (verts = position + packed normal,
 // quads = 4 vertex indices, meshCounters[1] = quad count), so WaterRenderer can draw and shade it unchanged.
 //
@@ -636,7 +638,16 @@ void main() {
     if (count == 0u) {
         return;
     }
-    uint q = atomicAdd(meshCounters[1], count);
+    // One atomic per subgroup instead of one per span: every wet span reserving its quads on the same counter was the mesh pass's
+    // bottleneck on big floods (hundreds of thousands of atomics on one address per frame). Offsets within the subgroup come
+    // from a prefix sum over the spans still running here (as g2p.comp does for particles).
+    uint total = subgroupAdd(count);
+    uint within = subgroupExclusiveAdd(count);
+    uint base = 0u;
+    if (subgroupElect()) {
+        base = atomicAdd(meshCounters[1], total);
+    }
+    uint q = subgroupBroadcastFirst(base) + within;
     if (q >= HF_QUAD_CAP) {
         return;
     }

@@ -110,6 +110,8 @@ final class HfDomain implements AutoCloseable {
 	/** Water springs added minus water open edges drained, in blocks^3, since the heightfield started (counted on the GPU). */
 	double reservoirVolume;
 	private long statsTail;
+	/** Quads in the surface mesh as of a few frames ago (may exceed the capacity: the overflow is not drawn). */
+	private int lastQuads;
 
 	private final int ps;
 	private final int groupsPerPage;
@@ -615,6 +617,7 @@ final class HfDomain implements AutoCloseable {
 		rb.invalidate(0, this.statsTail + 16L);
 		ByteBuffer b = rb.mapped();
 		double fromReservoirs = b.getInt((int) this.statsTail) / 65536.0;
+		this.lastQuads = b.getInt((int) this.statsTail + 4);
 		this.reservoirVolume += fromReservoirs;
 		this.initialVolume += fromReservoirs;
 		HfTileGrid g = this.grid;
@@ -833,7 +836,8 @@ final class HfDomain implements AutoCloseable {
 			}
 			this.stats.copyTo(cb, this.statsReadback[ring], 0, 0, this.statsTail + 16L);
 			Vk.barrier(cb);
-			this.stats.fill(cb, this.statsTail, 16L, 0);
+			// Only the reservoir counter; the next word keeps the last mesh's quad count (see buildMesh).
+			this.stats.fill(cb, this.statsTail, 4L, 0);
 			int[] entries = new int[n * 2];
 			for (int i = 0; i < n; i++) {
 				int tile = list[i] >> 2;
@@ -1138,6 +1142,9 @@ final class HfDomain implements AutoCloseable {
 		p[4].push(cb, 0, this.quadCapacity);
 		p[4].dispatch(cb, 1, 1, 1);
 		Vk.barrier(cb);
+		// The quad count asked for, before any capping, for /water hf stats (read back with the solver stats).
+		this.meshCounters.copyTo(cb, this.stats, 4L, this.statsTail + 4L, 4L);
+		Vk.barrier(cb);
 		this.sprayArgs(cb, ubo);
 	}
 
@@ -1174,10 +1181,12 @@ final class HfDomain implements AutoCloseable {
 		double usedMb = (g.usedSpanPages() * (double) this.ps * SPAN_BYTES + g.usedFluxPages() * (double) this.ps * FLUX_BYTES) / 1.0e6;
 		return String.format(
 			(this.reservoirCount > 0 ? "[" + this.reservoirCount + " reservoir cells add/remove water] " : "") + "heightfield (Y " + g.yMin + " to " + g.yMax + "): %d/%d tiles, pages %d/%d + flux %d/%d (%.1f of %.0f MB), %d deep cave cells past layer " + g.layers + " treated as solid  |  volume %,.1f blocks (solver drift %+.3f%%%s)  |  "
-				+ "max depth %.2f  max speed %.2f b/s  |  %s%s%s",
+				+ "max depth %.2f  max speed %.2f b/s  |  %s%s%s%s",
 			g.count, g.maxTiles, g.usedSpanPages(), g.maxPages, g.usedFluxPages(), g.maxFluxPages, usedMb, this.bytes() / 1.0e6, g.droppedSpans(),
 			volume, drift, Math.abs(this.reservoirVolume) >= 0.05 ? String.format(", springs/edges %+,.1f", this.reservoirVolume) : "", maxDepth, g.activeMax(g.maxSpeed), motion,
 			this.hiddenTiles() > 0 ? String.format("  |  %d tiles not drawn (past render distance)", this.hiddenTiles()) : "",
+			String.format("  |  quads %,d/%,d%s", this.lastQuads, this.quadCapacity,
+				this.lastQuads > this.quadCapacity ? " FULL: raise hfMaxQuads, the rest is not drawn" : ""),
 			g.foreignKeptOpen > 0 ? String.format("  |  edits kept %,d non-realistic fluid blocks open", g.foreignKeptOpen) : "");
 	}
 

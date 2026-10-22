@@ -702,3 +702,12 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   rebuilds tiles flagged `blind` (built while a chunk around them was missing; only the /water flood and capture commands can do
   that now). That also removes the burst of CPU rebuilds, since tiles built from loaded terrain do not need one. A chunk whose
   water could not be imported yet goes into `pendingImports` and is rescanned when a chunk next to it loads.
+* **Mesh pass at scale (Oct 22):** at 345-474 tiles (431 awake, kept moving by springs) the mesh pass cost 3.0-3.25 ms, against
+  0.5 ms at 165 tiles: 2-3x the tiles for 6x the time, and 7x the solver. Every wet span reserved its quads with an `atomicAdd`
+  on the one quad counter, hundreds of thousands per frame on a single address, and that contention grows faster than the work.
+  The allocation is now one atomic per subgroup with a prefix sum over the active spans (the pattern `g2p.comp` already uses).
+  The quad count is copied into the stats tail and shown as "quads N/cap", flagged FULL past `hfMaxQuads` (400k), because
+  overflowing quads are simply not drawn. If the mesh pass is still expensive after this, the next step is a pre-pass that packs
+  each span's surface, wet flag, velocity and foam once. Today every corner re-derives them from geo, depth, pageOwner, 8 flux
+  values and foam, for up to 4 neighbors, 4 times per span. The stats also summarize the particle-sim regions (water it still
+  owns, lava, sand), which the GPU timer's "particles" section covers.

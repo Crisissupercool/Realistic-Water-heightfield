@@ -1028,7 +1028,20 @@ public final class WaterWorld {
 		String gpu = String.format("\nframe %.1f ms (%.0f fps) | mod CPU %.2f ms (block sync %.2f) | ", this.frameIntervalMs,
 			1000.0 / Math.max(this.frameIntervalMs, 1.0e-3), this.cpuFrameMs, this.cpuSyncMs)
 			+ (this.gpuTimer != null ? this.gpuTimer.summary() : "no GPU timings yet");
-		return (this.heightfield != null ? this.heightfield.statsLine() : "No heightfield water (use /water flood)") + gpu;
+		String particles = "";
+		if (!this.regions.isEmpty()) {
+			// The "particles" GPU section is these: the original particle simulation (water it still owns, lava, sand).
+			int[] n = new int[3];
+			int[] bodies = new int[3];
+			for (WaterRegion r : this.regions) {
+				int k = r.material.isGranular() ? 2 : r.material == Material.LAVA ? 1 : 0;
+				n[k] += r.lastFluidCount;
+				bodies[k]++;
+			}
+			particles = String.format("\nparticle sim (\"particles\" above): %d water bodies %,d particles | %d lava %,d | %d sand %,d (details: /water stats)",
+				bodies[0], n[0], bodies[1], n[1], bodies[2], n[2]);
+		}
+		return (this.heightfield != null ? this.heightfield.statsLine() : "No heightfield water (use /water flood)") + gpu + particles;
 	}
 
 	/** /water hf column: the heightfield spans where the crosshair points (just in front of the block face it hits). */
