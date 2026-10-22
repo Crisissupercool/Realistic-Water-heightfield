@@ -1109,7 +1109,9 @@ final class HfWorld {
 					p.set(cx * 16 + bx, y, cz * 16 + bz);
 					BlockState state = chunk.getBlockState(p);
 					boolean ours = state.getBlock() == ModContent.REALISTIC_WATER_BLOCK;
-					if (ours && RealisticWaterBlock.isInfinite(state) || !ours && !state.isAir()) {
+					// Replaceable plants count as empty: the server replaces them with the water (HfBlocksPayload, WRITE).
+					boolean plant = !ours && state.canBeReplaced() && state.getFluidState().isEmpty();
+					if (ours && RealisticWaterBlock.isInfinite(state) || !ours && !state.isAir() && !plant) {
 						continue;
 					}
 					long key = p.asLong();

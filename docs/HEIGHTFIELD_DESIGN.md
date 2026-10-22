@@ -744,3 +744,15 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   more than 0.3 b/s (or crossing the surface) go into the stir slots next to the player, with the same plunge rule. Drifting with
   the current moves no water relative to it, so it does not take a slot. The flux pass loops over these bodies per span, so the
   cap bounds its cost.
+* **Boats sank (`AbstractBoatMixin`):** when a boat's top is under the surface, `AbstractBoat.isUnderwater` asks
+  `FluidState.isSource()`. For non-source water it returns UNDER_FLOWING_WATER, and `floatBoat` pushes the boat down each tick
+  (vanilla: waterfalls sink boats). Realistic water is never a source block (a source is an infinite spring), so any boat that
+  dipped under once, landing or riding a wave, kept sinking. A redirect makes realistic water count as a source there, so the
+  boat gets UNDER_WATER and vanilla's buoyancy. Checked against the 26.3 bytecode (javap on the loom-mapped jar): one
+  `isSource` call in `isUnderwater`.
+* **Water that did not reach the ground for entities:** WRITE only replaced air and realistic water. Grass, ferns and flowers
+  have no collision, so the heightfield fills them, but no block was written there. Over grassland the whole ground layer stayed
+  dry for gameplay: mobs walked and zombies burned under drawn water. Replaceable blocks (`BlockState.canBeReplaced()`: grass,
+  ferns, vines, a single snow layer; not torches, rails or redstone) now give way to the water as they do to vanilla water.
+  They drop their loot, a tall plant's top half goes too, and the client write-back no longer skips them. No tile rebuild
+  follows: both have no collision and the write is consumed as our own echo.
