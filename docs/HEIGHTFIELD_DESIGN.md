@@ -691,3 +691,14 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
 * **Composite breakdown:** skipping the reflection trace barely changed composite per water pixel (1.60 ms at about 60% of a
   4K screen looking down, against 0.77 ms at about 25% looking along a river), so the trace is not the main cost.
   `hfCompositeOff` (bitmask: 1 reflection trace, 2 ripples, 4 foam, 8 wake) turns parts off to measure them with /water hf stats.
+* **Leaving and coming back lost water (Oct 22):** a 4070 Ti test went 45,840 blocks out, kept simulating correctly while away
+  (drift -0.003%), then came back at -44.8% drift, with stutters as the chunks streamed in. Every chunk load rebuilt its tile and
+  the 4 next to it. A tile is built over a one-block halo, and an unloaded chunk reads as solid there. So a tile rebuilt while a
+  neighbor chunk was still missing had no links toward that neighbor, while the neighbor (built from loaded terrain) still linked
+  back. Water flowing out through the one-sided links was subtracted on one side and never added on the other.
+  `HfCpuTest` "Chunks streaming back in" reproduces it: one blind rebuild, 819.2 -> 593.1 blocks in 2 s; the same rebuild with
+  the neighbor loaded, 819.2 -> 819.2. Now no tile is built or rebuilt until the chunks of the tile and all 8 around it are loaded
+  (`HfWorld.neighborhoodLoaded`); a deferred rebuild stays queued, and the old topology stays until then. A chunk load only
+  rebuilds tiles flagged `blind` (built while a chunk around them was missing; only the /water flood and capture commands can do
+  that now). That also removes the burst of CPU rebuilds, since tiles built from loaded terrain do not need one. A chunk whose
+  water could not be imported yet goes into `pendingImports` and is rescanned when a chunk next to it loads.

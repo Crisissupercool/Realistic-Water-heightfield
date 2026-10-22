@@ -3,9 +3,11 @@ package me.skaffy.client.water;
 import it.unimi.dsi.fastutil.bytes.ByteArrayList;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import me.skaffy.ModContent;
 import me.skaffy.block.RealisticWaterBlock;
 import me.skaffy.net.HfBlocksPayload;
@@ -42,6 +44,8 @@ final class HfWorld {
 	private int[] realisticAmount;
 	/** Releasing: the solver is paused while every tile is written back as vanilla water, then the heightfield is closed. */
 	boolean releasing;
+	/** Chunks with realistic water whose tile could not be built yet (a chunk around it was not loaded); retried as those load. */
+	private final LongOpenHashSet pendingImports = new LongOpenHashSet();
 
 	HfWorld(WaterWorld world) {
 		this.world = world;
@@ -140,8 +144,9 @@ final class HfWorld {
 		HfTileGrid g = hf.grid;
 		int cx = Math.floorDiv(g.originX, 16) + tx;
 		int cz = Math.floorDiv(g.originZ, 16) + tz;
-		if (!level.hasChunk(cx, cz)) {
-			// An unloaded chunk would read as solid and dry; its water would then be overwritten by the block sync.
+		if (!neighborhoodLoaded(level, g, tx, tz)) {
+			// An unloaded chunk reads as solid: in the tile itself its water would be lost, and in the one-block halo the tile would
+			// get no links toward a neighbor that may link back, so water flowing over that border would vanish.
 			return HfTileGrid.NONE;
 		}
 		HfTileGrid.Tile t = g.build(voxels(level, g, extra), tx, tz);
@@ -253,10 +258,43 @@ final class HfWorld {
 		}
 		int tx = g.tileOfBlockX(pos.x() * 16);
 		int tz = g.tileOfBlockZ(pos.z() * 16);
-		if (g.slotAt(tx, tz) == HfTileGrid.NONE) {
-			this.addTileFromBlocks(level, hf, tx, tz, null);
+		if (g.slotAt(tx, tz) == HfTileGrid.NONE && this.addTileFromBlocks(level, hf, tx, tz, null) == HfTileGrid.NONE
+			&& !neighborhoodLoaded(level, g, tx, tz)) {
+			this.pendingImports.add(chunkKey(pos.x(), pos.z()));
 		}
 		return true;
+	}
+
+	private static long chunkKey(int x, int z) {
+		return (long) x << 32 | (z & 0xFFFFFFFFL);
+	}
+
+	/** Whether the chunks of tile (tx, tz) and of all eight around it are loaded, so building it sees real terrain everywhere. */
+	static boolean neighborhoodLoaded(ClientLevel level, HfTileGrid g, int tx, int tz) {
+		int cx = Math.floorDiv(g.originX, 16) + tx;
+		int cz = Math.floorDiv(g.originZ, 16) + tz;
+		for (int dz = -1; dz <= 1; dz++) {
+			for (int dx = -1; dx <= 1; dx++) {
+				if (!level.hasChunk(cx + dx, cz + dz)) {
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	/** A chunk loaded: queues a rescan of waiting chunks around it (see {@link #pendingImports}). */
+	void retryImports(ChunkPos loaded, Consumer<ChunkPos> rescan) {
+		if (this.pendingImports.isEmpty()) {
+			return;
+		}
+		for (int dz = -1; dz <= 1; dz++) {
+			for (int dx = -1; dx <= 1; dx++) {
+				if (this.pendingImports.remove(chunkKey(loaded.x() + dx, loaded.z() + dz))) {
+					rescan.accept(new ChunkPos(loaded.x() + dx, loaded.z() + dz));
+				}
+			}
+		}
 	}
 
 	/**
@@ -386,10 +424,12 @@ final class HfWorld {
 					}
 				}
 				if (built != null) {
-					if (hf.addTile(tx, tz, built, depth) == HfTileGrid.NONE) {
+					int fresh = hf.addTile(tx, tz, built, depth);
+					if (fresh == HfTileGrid.NONE) {
 						full = true;
 						break;
 					}
+					g.blind[fresh] = !neighborhoodLoaded(level, g, tx, tz);
 					added++;
 				}
 			}
@@ -449,7 +489,9 @@ final class HfWorld {
 			boolean fresh = tile == HfTileGrid.NONE;
 			if (!fresh) {
 				// The tile treated this vanilla water as solid; rebuild it with the captured cells open so the water has room.
-				hf.rebuildTile(tile, g.build(voxels(level, g, water), t[0], t[1]));
+				if (hf.rebuildTile(tile, g.build(voxels(level, g, water), t[0], t[1]))) {
+					g.blind[tile] = !neighborhoodLoaded(level, g, t[0], t[1]);
+				}
 			}
 			if (fresh) {
 				tile = this.addTileFromBlocks(level, hf, t[0], t[1], water);
@@ -580,6 +622,7 @@ final class HfWorld {
 
 	void close() {
 		this.warnedWindow = false;
+		this.pendingImports.clear();
 		if (this.world.heightfield != null) {
 			this.world.heightfield.close();
 			this.world.heightfield = null;

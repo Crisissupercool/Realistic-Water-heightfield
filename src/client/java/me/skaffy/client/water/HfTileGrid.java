@@ -99,6 +99,11 @@ final class HfTileGrid {
 	 * are dry deep cave pockets, not lost water; water reaching one would meet a wall there.
 	 */
 	private final int[] tileDropped;
+	/**
+	 * Per tile: built while a chunk around it was not loaded. An unloaded chunk reads as solid, so such a tile has no links into
+	 * it while its neighbor there may still link back; it is rebuilt once that chunk loads ({@link #markDirtyChunk}).
+	 */
+	final boolean[] blind;
 	private final Set<Integer> dirty = new LinkedHashSet<>();
 	/** CPU copy of each tile's packed geometry ({@code layer * pageSpans + col}), for block sync and placing water. */
 	final int[][] tileGeo;
@@ -153,6 +158,7 @@ final class HfTileGrid {
 		this.nbr = new int[maxTiles * 4];
 		this.layersUsed = new int[maxTiles];
 		this.tileDropped = new int[maxTiles];
+		this.blind = new boolean[maxTiles];
 		this.spanPage = new int[maxTiles * 4];
 		this.fluxPage = new int[maxTiles * 4];
 		this.pageOwner = new int[maxPages];
@@ -363,6 +369,7 @@ final class HfTileGrid {
 		}
 		this.quiet[s] = 0.0F;
 		this.tileDropped[s] = t.dropped;
+		this.blind[s] = false;
 		return s;
 	}
 
@@ -391,6 +398,7 @@ final class HfTileGrid {
 		System.arraycopy(pages, 0, this.spanPage, tile * 4, MAX_LAYERS);
 		this.layersUsed[tile] = t.layersUsed;
 		this.tileDropped[tile] = t.dropped;
+		this.blind[tile] = false;
 		this.tileGeo[tile] = t.geo;
 		this.version[tile]++;
 		// A simulated tile keeps its flux pages through the rebuild (the remap moves each column's flow along with its water), so
@@ -474,13 +482,28 @@ final class HfTileGrid {
 	}
 
 	/** A chunk (re)loaded: the tile on it and its four neighbors (whose halos reach into it) are rebuilt from fresh terrain. */
+	/**
+	 * A chunk loaded: rebuilds only the tiles around it that were built blind (see {@link #blind}). The rest were built from loaded
+	 * terrain and are still right; rebuilding every tile around each chunk that streams in (walking back toward the water) was a
+	 * burst of CPU rebuilds, and a rebuild while a further neighbor was still missing cut links on one side only, which deleted
+	 * the water that flowed through them.
+	 */
 	void markDirtyChunk(int chunkX, int chunkZ) {
 		int tx = this.tileOfBlockX(chunkX * 16);
 		int tz = this.tileOfBlockZ(chunkZ * 16);
-		this.markDirtyTile(tx, tz);
-		for (int d = 0; d < 4; d++) {
-			this.markDirtyTile(tx + DX[d], tz + DZ[d]);
+		for (int dz = -1; dz <= 1; dz++) {
+			for (int dx = -1; dx <= 1; dx++) {
+				int s = this.slotAt(tx + dx, tz + dz);
+				if (s != NONE && this.blind[s]) {
+					this.dirty.add(s);
+				}
+			}
 		}
+	}
+
+	/** Keeps a tile queued for a rebuild that has to wait (a chunk around it is not loaded yet). */
+	void redirty(int s) {
+		this.dirty.add(s);
 	}
 
 	private void markDirtyTile(int tx, int tz) {

@@ -133,6 +133,33 @@ public final class HfCpuTest {
 		return new double[]{before, maxSurface(sim, grid), volume, sim.volume()};
 	}
 
+	/**
+	 * Water flowing from tile 0 into tile 1; then tile 1 is rebuilt once. blind: tile 0's chunk is unloaded during that rebuild, so
+	 * it reads as solid in tile 1's halo (what happened when chunks streamed back in). Returns {volume before, volume 2 s after}.
+	 */
+	static double[] blindRebuild(boolean blind) {
+		boolean[] unloaded = {false};
+		HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 4, 16, 16);
+		long full = (1L << (C * C * C)) - 1L;
+		HfTopology.Voxels vox = (x, y, z) -> unloaded[0] && x < 16 || y < 59 ? full : 0L;
+		HfTiledSim sim = new HfTiledSim(grid, vox);
+		sim.maxNewTiles = 0;
+		sim.addTile(0, 0, (l, c) -> l == 0 ? 3.0 : 0.0);
+		int t1 = sim.addTile(1, 0, (l, c) -> l == 0 ? 0.2 : 0.0);
+		for (int f = 0; f < 30; f++) {
+			sim.frame();
+		}
+		double before = sim.volume();
+		unloaded[0] = blind;
+		grid.redirty(t1);
+		sim.frame();
+		unloaded[0] = false;
+		for (int f = 0; f < 120; f++) {
+			sim.frame();
+		}
+		return new double[]{before, sim.volume()};
+	}
+
 	static double totalFlux(HfTiledSim sim, HfTileGrid grid, int tile) {
 		double sum = 0.0;
 		for (int l = 0; l < grid.layersUsed[tile]; l++) {
@@ -946,6 +973,14 @@ public final class HfCpuTest {
 			check(old[3] < 0.1 * old[2], String.format("old rule (non-realistic fluid is solid): breaking a log on the shore turns the lake solid, water %.1f -> %.1f (the old remap stood it up as a tower instead)", old[2], old[3]));
 			check(Math.abs(now[1] - now[0]) < 0.05 && Math.abs(now[3] - now[2]) < 1.0e-3,
 				String.format("kept open where the heightfield holds it: the lake stays at %.2f -> %.2f, water %.1f -> %.1f", now[0], now[1], now[2], now[3]));
+		}
+
+		System.out.println("Chunks streaming back in: a tile rebuilt while a neighbor chunk is unloaded loses the water flowing over that border");
+		{
+			double[] blind = blindRebuild(true);
+			double[] seen = blindRebuild(false);
+			check(blind[1] < blind[0] - 1.0, String.format("rebuilt blind (neighbor read as solid, it still links back): water %.1f -> %.1f", blind[0], blind[1]));
+			check(Math.abs(seen[1] - seen[0]) < 1.0e-3 * seen[0], String.format("rebuilt once the neighbor is loaded (WaterWorld now waits for that): water %.1f -> %.1f", seen[0], seen[1]));
 		}
 
 		System.out.println("Edits: a block placed into a lake replaces its water and splits the column without lifting the water over it");

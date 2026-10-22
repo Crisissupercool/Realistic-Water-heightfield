@@ -456,9 +456,10 @@ public final class WaterWorld {
 	public void onChunkLoad(ClientLevel level, LevelChunk chunk) {
 		ChunkPos pos = chunk.getPos();
 		if (this.heightfield != null) {
-			// Tiles over unloaded chunks were built as solid; rebuild them now that the terrain is known.
+			// Tiles built while this chunk was missing read it as solid; rebuild those now that the terrain is known.
 			this.heightfield.grid.markDirtyChunk(pos.x(), pos.z());
 		}
+		this.hfWorld.retryImports(pos, this.chunkScanQueue::add);
 		for (SolidCache cache : new SolidCache[]{this.solids, this.sandSolids}) {
 			if (cache != null) {
 				cache.invalidateChunk(pos.x(), pos.z());
@@ -957,11 +958,13 @@ public final class WaterWorld {
 			HfTopology.Voxels voxels = HfWorld.voxels(level, grid);
 			// All dirty tiles in one frame, so both sides of a tile border always use the same topology.
 			for (int tile : dirty) {
-				// Tiles line up with chunks; an unloaded chunk would read as solid and the remap would have nowhere to put the water.
-				int chunkX = Math.floorDiv(grid.originX, 16) + grid.tileX[tile];
-				int chunkZ = Math.floorDiv(grid.originZ, 16) + grid.tileZ[tile];
-				if (level.hasChunk(chunkX, chunkZ)) {
+				// Only once the chunks of the tile and of all eight around it are loaded: an unloaded chunk reads as solid, so in the
+				// tile the remap would have nowhere to put the water, and in its halo the tile would lose its links toward a neighbor
+				// that still links back, which deleted the water flowing over that border. Until then the old topology stays.
+				if (HfWorld.neighborhoodLoaded(level, grid, grid.tileX[tile], grid.tileZ[tile])) {
 					hf.rebuildTile(tile, grid.build(voxels, grid.tileX[tile], grid.tileZ[tile]));
+				} else {
+					grid.redirty(tile);
 				}
 			}
 			for (int[] t : grow) {
