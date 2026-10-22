@@ -71,23 +71,26 @@ void main() {
         r *= s;
     } else if (pc.a.w > 0.0 && pixelR > pc.a.w && !foam && !mist && !drop) {
         r *= pc.a.w / pixelR;
+    } else if (drop && pixelR > 12.0) {
+        // A drop right in front of the camera stays a drop, not a big smear across the view.
+        r *= 12.0 / pixelR;
     }
     if (pc.a.w > 0.0) {
-        alpha *= smoothstep(pc.a.z, pc.a.z + 1.2, dist);
+        alpha *= smoothstep(pc.a.z, pc.a.z + (drop ? 2.0 : 1.2), dist);
     }
     vec2 c = CORNERS[gl_VertexIndex];
     vec2 offset = c * r;
 #ifndef DROPLETS
-    // Heightfield spray and drops (pc.b.w > 0) are drawn motion-blurred: stretched along their velocity across the screen by the
-    // distance they move in about a frame, their light spread over the streak.
+    // Heightfield spray and drops (pc.b.w > 0) are drawn with a little motion blur: stretched along their velocity across the
+    // screen by the distance they move in 12 ms, at most 4x (more read as blurry streaks).
     if (pc.b.w > 0.0 && !mist) {
         vec2 sv = (mat3(G.view) * (p.vel.xyz * G.domainOrigin.w)).xy;
         float sl = length(sv);
         if (sl > 1.0e-3) {
             vec2 ax = sv / sl;
-            float stretch = 1.0 + min(sl * 0.02 / max(r, 1.0e-4), 6.0);
+            float stretch = 1.0 + min(sl * 0.012 / max(r, 1.0e-4), 3.0);
             offset = (ax * c.x * stretch + vec2(-ax.y, ax.x) * c.y) * r;
-            alpha /= sqrt(stretch);
+            alpha *= pow(stretch, -0.3);
         }
     }
 #endif

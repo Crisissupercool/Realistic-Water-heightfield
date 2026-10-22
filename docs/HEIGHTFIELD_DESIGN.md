@@ -652,3 +652,7 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   by the distance moved in 0.02 s (up to 7x), alpha / sqrt(stretch). The sphere path (HF_DROPS, shadeDrop) is gone. The
   particle regions' foam lace is no longer applied over heightfield water, where it cut holes into the spray flying in front.
   Region whitewater draws now push all 8 values (push constants persist between draws).
+* **Drops crisp (same day):** the gaussian sprite and up to 7x stretch read as blur (`scratchpad/preview/drops.py` renders the
+  sprite as whitewater pass + composite draw it, shipped vs candidate). Now a crisp disc (anti-aliased over ~1 px via fwidth),
+  alpha 1.5, a bright core and a bluer rim; motion blur over 12 ms, at most 4x, alpha x stretch^-0.3; a drop is at most 12 px
+  in radius and fades in over 2 blocks from the camera, so drops flying past do not smear across the view.

@@ -31,9 +31,12 @@ void main() {
     float a = vData.z;
     vec3 color = vec3(1.0);
     if (type >= 3.5) {
-        // Splash water drops (heightfield): water catching the light, a soft bright core.
-        a *= 0.85 * exp(-2.2 * r2);
-        color = vec3(0.86, 0.93, 1.0);
+        // Splash water drops (heightfield): a crisp edge (anti-aliased over about a pixel), a bright core and a slightly darker,
+        // bluer rim where light bends around the drop's edge. A soft gaussian here read as blur (scratchpad preview/drops.py).
+        float r = sqrt(r2);
+        float aa = max(fwidth(r), 1.0e-3);
+        a *= 1.5 * (1.0 - smoothstep(1.0 - 1.5 * aa, 1.0, r));
+        color = mix(vec3(0.97, 0.99, 1.0), vec3(0.62, 0.74, 0.86), smoothstep(0.35, 0.95, r));
     } else if (type > 2.5) {
         // Mist (heightfield spray): soft and faint, its alpha set in particle.vert.
         a *= exp(-4.0 * r2);
