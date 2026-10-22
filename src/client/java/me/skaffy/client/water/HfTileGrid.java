@@ -214,6 +214,51 @@ final class HfTileGrid {
 		return s != null ? s : NONE;
 	}
 
+	/** Blocks of fluid that is not ours a rebuild kept open because the heightfield already held that space (diagnostic). */
+	long foreignKeptOpen;
+
+	/**
+	 * Sub-voxels of block (bx, by, bz) (bit layout of {@link HfTopology.Voxels}) inside an open span of the current topology;
+	 * 0 where there is no tile. A fluid that is not ours (vanilla water, kelp, seagrass) keeps this openness through a rebuild:
+	 * cells the heightfield took over (capture lists them as open) must not turn solid when some unrelated edit rebuilds the
+	 * tile, or the remap lifts the water there onto them as a tower that then collapses (the "breaking a block makes the water
+	 * go crazy" bug). Cells it never held stay solid, so it still does not flow into vanilla water.
+	 */
+	long openVoxels(int bx, int by, int bz) {
+		int tx = this.tileOfBlockX(bx);
+		int tz = this.tileOfBlockZ(bz);
+		int s = this.slotAt(tx, tz);
+		if (s == NONE || this.tileGeo[s] == null) {
+			return 0L;
+		}
+		int[] geo = this.tileGeo[s];
+		int c = this.cpb;
+		int lx = bx - this.originX - tx * TILE_BLOCKS;
+		int lz = bz - this.originZ - tz * TILE_BLOCKS;
+		float step = 1.0F / c;
+		long mask = 0L;
+		for (int k = 0; k < c; k++) {
+			for (int i = 0; i < c; i++) {
+				int col = (lz * c + k) * this.tn + lx * c + i;
+				for (int l = 0; l < this.layersUsed[s]; l++) {
+					int g = geo[l * this.pageSpans + col];
+					if (!validGeo(g)) {
+						continue;
+					}
+					float floor = this.floorOf(g);
+					float ceil = this.ceilOf(g);
+					for (int j = 0; j < c; j++) {
+						float y0 = by + j * step;
+						if (y0 >= floor - 1.0e-3F && y0 + step <= ceil + 1.0e-3F) {
+							mask |= 1L << (i + c * (j + c * k));
+						}
+					}
+				}
+			}
+		}
+		return mask;
+	}
+
 	int tileOfBlockX(int bx) {
 		return Math.floorDiv(bx - this.originX, TILE_BLOCKS);
 	}

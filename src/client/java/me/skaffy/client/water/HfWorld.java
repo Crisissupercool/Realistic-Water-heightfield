@@ -104,9 +104,12 @@ final class HfWorld {
 	}
 
 	/**
-	 * Terrain for the heightfield. Any fluid that is not realistic water (vanilla water, waterlogged blocks, kelp, lava) counts as
-	 * solid: it is not the heightfield's water, so the heightfield must neither flow into it nor lose its own water there. Positions
-	 * in {@code open} (vanilla water being captured right now) count as open.
+	 * Terrain for the heightfield. A fluid that is not realistic water (vanilla water, waterlogged blocks, kelp, lava) is not the
+	 * heightfield's water, so where the heightfield does not already hold that space it counts as solid: the heightfield must
+	 * neither flow into it nor lose its own water there. Where the current topology already has it open (water the heightfield
+	 * took over that is still a vanilla block, kelp or seagrass in it, vanilla water that seeped in) it stays open
+	 * ({@link HfTileGrid#openVoxels}); turning it solid on some unrelated rebuild lifted the water there into a tower. Positions in
+	 * {@code open} (vanilla water being captured right now) count as open.
 	 */
 	static HfTopology.Voxels voxels(ClientLevel level, HfTileGrid g, @Nullable Long2IntOpenHashMap open) {
 		SolidCache solids = new SolidCache(g.cpb, false);
@@ -116,7 +119,11 @@ final class HfWorld {
 			BlockState state = level.getBlockState(p.set(bx, by, bz));
 			if (!state.getFluidState().isEmpty() && state.getBlock() != ModContent.REALISTIC_WATER_BLOCK
 				&& (open == null || !open.containsKey(BlockPos.asLong(bx, by, bz)))) {
-				return full;
+				long held = g.openVoxels(bx, by, bz);
+				if (held != 0L) {
+					g.foreignKeptOpen++;
+				}
+				return (full & ~held) | solids.blockVoxels(level, bx, by, bz);
 			}
 			return solids.blockVoxels(level, bx, by, bz);
 		};

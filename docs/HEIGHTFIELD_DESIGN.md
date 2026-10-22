@@ -557,3 +557,12 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   curtainOf / curtainEnd / sheetPoint on a 5-block stream over a 10-block cliff: 10 cells form one curtain, 18 shared ends
   with identical vertices, free ends only at its 2 sides, the ribbon at least 0.012 thick, never inside the cliff, its inner
   surface only going down.
+* **The water tower on block edits (root cause):** `HfWorld.voxels` counted every fluid that is not realistic water (vanilla
+  water, waterlogged blocks, kelp, seagrass) as solid; only a capture passes the captured positions as open. Water the
+  heightfield holds in cells that are still such blocks (kelp and seagrass in a captured lake, water the capture could not
+  convert, vanilla water that seeped in; the block sync never overwrites them) was consistent until any edit rebuilt the tile:
+  then those cells turned solid, the remap moved each column's water whole onto the nearest open span above them, and the lake
+  stood as a tower over them for a frame before collapsing into sloshing waves. Such fluids now keep the current topology's
+  openness (`HfTileGrid.openVoxels`): open where the heightfield already holds the space, solid where it never did, so it still
+  does not flow into vanilla water. Test: a captured lake whose blocks stay vanilla water, a log broken on its shore: the old
+  rule lifts it 64.80 -> 70.80, now it stays at 64.80. `/water hf stats` reports how many such blocks edits kept open.

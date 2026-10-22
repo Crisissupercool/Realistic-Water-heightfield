@@ -79,6 +79,58 @@ public final class HfCpuTest {
 	}
 
 	/** Sum of all outflows of a tile's simulated spans (blocks^3/s). */
+	/** Highest water surface anywhere (spans holding more than 0.01 blocks). */
+	static float maxSurface(HfTiledSim sim, HfTileGrid g) {
+		float m = -1.0e9F;
+		for (int t = 0; t < g.count; t++) {
+			for (int l = 0; l < g.layersUsed[t]; l++) {
+				for (int c = 0; c < g.pageSpans; c++) {
+					int s = g.spanPage[t * 4 + l] * g.pageSpans + c;
+					if (HfTileGrid.validGeo(sim.geo[s]) && sim.depth[s] > 0.01F) {
+						m = Math.max(m, g.floorOf(sim.geo[s]) + sim.depth[s]);
+					}
+				}
+			}
+		}
+		return m;
+	}
+
+	/**
+	 * A lake the heightfield took over whose blocks are still vanilla water (as kelp, seagrass or water the capture could not
+	 * convert stay), next to a shore with a log pillar; the third log is broken. keepOpen: HfWorld.voxels' rule (non-realistic
+	 * fluid keeps the current topology's openness), else the old rule (it is solid). Returns {surface before, highest after}.
+	 */
+	static float[] foreignLake(boolean keepOpen) {
+		boolean[] foreign = {false};
+		boolean[] broken = {false};
+		HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 4, 16, 16);
+		long full = (1L << (C * C * C)) - 1L;
+		HfTopology.Voxels vox = (x, y, z) -> {
+			if (x == 3 && z == 8 && y >= 65 && y <= 70) {
+				return broken[0] && y == 67 ? 0L : full;
+			}
+			if (x < 6 ? y < 65 : y < 59) {
+				return full;
+			}
+			if (foreign[0] && x >= 6 && y < 65) {
+				return keepOpen ? full & ~grid.openVoxels(x, y, z) : full;
+			}
+			return 0L;
+		};
+		HfTiledSim sim = new HfTiledSim(grid, vox);
+		sim.maxNewTiles = 0;
+		sim.addTile(0, 0, (l, c) -> (c % grid.tn) / C >= 6 && l == 0 ? 64.8 - 59.0 : 0.0);
+		for (int f = 0; f < 60; f++) {
+			sim.frame();
+		}
+		float before = maxSurface(sim, grid);
+		foreign[0] = true;
+		broken[0] = true;
+		grid.markDirtyBlock(3, 67, 8);
+		sim.frame();
+		return new float[]{before, maxSurface(sim, grid)};
+	}
+
 	static double totalFlux(HfTiledSim sim, HfTileGrid grid, int tile) {
 		double sum = 0.0;
 		for (int l = 0; l < grid.layersUsed[tile]; l++) {
@@ -873,6 +925,14 @@ public final class HfCpuTest {
 			}
 			double later = totalFlux(tiled, grid, tile);
 			check(later > 0.8 * before && later < 1.25 * before, String.format("and settles back without a surge: flux %.3f a second later", later));
+		}
+
+		System.out.println("Edits: taken-over water that is still a vanilla block (kelp, seagrass, unconverted water) stays put through a rebuild");
+		{
+			float[] old = foreignLake(false);
+			float[] now = foreignLake(true);
+			check(old[1] > old[0] + 3.0F, String.format("old rule (non-realistic fluid is solid): breaking a log on the shore lifts the lake into a tower, %.2f -> %.2f", old[0], old[1]));
+			check(Math.abs(now[1] - now[0]) < 0.05F, String.format("kept open where the heightfield holds it: the lake stays at %.2f -> %.2f", now[0], now[1]));
 		}
 
 		System.out.println("Splashes: an impact's crater and ring scale with its speed, volume exact");
