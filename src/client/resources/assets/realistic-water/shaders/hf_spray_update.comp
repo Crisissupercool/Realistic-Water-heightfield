@@ -1,7 +1,9 @@
 #version 450
-// Moves the heightfield's spray from one half of the buffer into the other (see hf_spray.glsl). Droplets fly ballistically with
-// a little air drag and are gone when they hit the ground or fall back into the water; mist drifts, slows quickly, lifts a little
-// and stays over the water until it fades. Mode 1 instead throws a crown of droplets from a ring around a body hitting the water.
+// Moves one set of the heightfield's spray (SPRAY_SET, see hf_spray.glsl) from one half of the buffer into the other. Droplets
+// and water drops fly ballistically with a little air drag and are gone when they hit the ground or fall back into the water;
+// mist drifts, slows quickly, lifts a little and stays over the water until it fades. Burst modes throw particles from a body
+// hitting the water instead: 1 a crown of white droplets, 2 a crown of water drops (the sheet thrown up around the impact
+// breaking up), 3 a jet of water drops shooting up from the middle when the cavity closes.
 #include "hf_common.glsl"
 layout(local_size_x = 256) in;
 layout(std430, binding = 2) readonly buffer Depth { float depth[]; };
@@ -18,6 +20,7 @@ layout(std430, binding = 19) readonly buffer TileLookup { int tileLookup[]; };
 #define SPRAY_SRC uint(hp.p2.x)
 #define SPRAY_DST uint(hp.p2.y)
 #define SPRAY_SEED uint(hp.p2.z)
+#define SPRAY_SET uint(hp.p2.w)
 
 const int LOOKUP = 64;
 const float TILE_BLOCKS = 16.0;
@@ -62,41 +65,60 @@ int probe(vec3 p, out float surface) {
 
 void main() {
     uint i = GID_U;
-    if (SPRAY_MODE > 0.5) {
-        // A crown: droplets thrown up and out from a ring around the impact, a few slower mist puffs among them.
+    int mode = int(SPRAY_MODE + 0.5);
+    if (mode > 0) {
         if (i >= uint(HF_COUNT)) {
             return;
         }
         uint s = sprayHash(i * 747796405u + SPRAY_SEED);
         float a = sprayRand(s) * 6.2831853;
         vec2 h = vec2(cos(a), sin(a));
-        vec3 p = BURST_AT + vec3(h.x, 0.0, h.y) * BURST_RADIUS * mix(0.5, 1.1, sprayRand(s)) + vec3(0.0, 0.05, 0.0);
-        float el = mix(0.85, 1.45, sprayRand(s));
-        vec3 v = vec3(h.x * cos(el), sin(el), h.y * cos(el)) * BURST_SPEED * mix(0.2, 0.55, sprayRand(s));
-        if (sprayRand(s) < 0.06) {
-            sprayAdd(SPRAY_DST, p, v * 0.2, mix(1.0, 2.0, sprayRand(s)), SPRAY_MIST);
+        if (mode == 1) {
+            // White droplets from a ring around the impact, a few slower mist puffs among them.
+            vec3 p = BURST_AT + vec3(h.x, 0.0, h.y) * BURST_RADIUS * mix(0.5, 1.1, sprayRand(s)) + vec3(0.0, 0.05, 0.0);
+            float el = mix(0.85, 1.45, sprayRand(s));
+            vec3 v = vec3(h.x * cos(el), sin(el), h.y * cos(el)) * BURST_SPEED * mix(0.2, 0.55, sprayRand(s));
+            if (sprayRand(s) < 0.06) {
+                sprayAdd(SPRAY_DST, p, v * 0.2, mix(1.0, 2.0, sprayRand(s)), SPRAY_MIST);
+            } else {
+                sprayAdd(SPRAY_DST, p, v, mix(0.7, 1.4, sprayRand(s)), SPRAY_DROPLET);
+            }
+        } else if (mode == 2) {
+            // The crown: water thrown up and out from the rim of the cavity as a sheet that breaks into drops. Steep (55..80 deg)
+            // and fastest at the rim's top, so the drops trace a widening cylinder; bigger drops lower down.
+            float r = BURST_RADIUS * mix(0.85, 1.15, sprayRand(s));
+            float lift = sprayRand(s);
+            vec3 p = BURST_AT + vec3(h.x, 0.0, h.y) * r + vec3(0.0, 0.05 + 0.15 * lift, 0.0);
+            float el = mix(0.95, 1.4, sprayRand(s));
+            vec3 v = vec3(h.x * cos(el), sin(el), h.y * cos(el)) * BURST_SPEED * mix(0.45, 1.0, lift);
+            dropAdd(SPRAY_DST, p, v, 3.0, mix(1.3, 0.6, lift) * mix(0.8, 1.2, sprayRand(s)));
         } else {
-            sprayAdd(SPRAY_DST, p, v, mix(0.7, 1.4, sprayRand(s)), SPRAY_DROPLET);
+            // The jet: a narrow column of drops shooting up from the middle, the first ones fastest and smallest.
+            float order = sprayRand(s);
+            vec3 p = BURST_AT + vec3(h.x, 0.0, h.y) * 0.08 * sprayRand(s) + vec3(0.0, 0.05, 0.0);
+            vec3 v = vec3(h.x * 0.06, 1.0, h.y * 0.06) * BURST_SPEED * mix(1.0, 0.35, order) + vec3(h.x, 0.0, h.y) * 0.25 * sprayRand(s);
+            dropAdd(SPRAY_DST, p, v, 3.0, mix(0.7, 1.4, order));
         }
         return;
     }
-    uint n = min(sprayCount[SPRAY_SRC], SPRAY_MAX);
+    uint which = SPRAY_SET;
+    uint n = min(sprayCount[which * 2u + SPRAY_SRC], setMax(which));
     if (i >= n) {
         return;
     }
-    Particle pt = spray[SPRAY_SRC * SPRAY_MAX + i];
+    Particle pt = spray[setBase(which, SPRAY_SRC) + i];
     vec3 x = pt.pos.xyz;
     float life = pt.pos.w;
     vec3 v = pt.vel.xyz;
-    float type = pt.vel.w;
     float dt = SPRAY_DT;
-    bool mist = type > 2.5;
+    bool mist = which == SET_SPRAY && pt.vel.w > 2.5;
     if (mist) {
         v.y += 0.4 * dt;
         v *= exp(-2.0 * dt);
     } else {
         v.y -= SPRAY_G * dt;
-        v *= exp(-0.5 * dt);
+        // Small droplets slow down in the air more than the bigger water drops.
+        v *= exp(-(which == SET_SPRAY ? 0.5 : 0.15) * dt);
     }
     life -= dt;
     vec3 xn = x + v * dt;
@@ -109,5 +131,5 @@ void main() {
         xn.y = surface + 0.05;
         v.y = max(v.y, 0.0);
     }
-    sprayAdd(SPRAY_DST, xn, v, life, type);
+    particleAdd(which, SPRAY_DST, xn, v, life, pt.vel.w);
 }

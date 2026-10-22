@@ -55,8 +55,10 @@ uint hfPack(vec3 n, bool wall, float aer) {
     return q.x | (q.y << 12) | (a << 24) | (wall ? 0x40000000u : 0u) | OPEN;
 }
 
+// Foam on a span, fading out on thin films: a few centimetres of water running over a step cannot carry thick foam (it showed as
+// white paint with holes on the terrain).
 float foamOf(HfSpan t) {
-    return t.flux == HF_NONE ? 0.0 : foam[HF_FOAM_READ + hfFoamIndex(t)];
+    return t.flux == HF_NONE ? 0.0 : foam[HF_FOAM_READ + hfFoamIndex(t)] * smoothstep(0.02, 0.15, depth[t.span]);
 }
 
 // Water below this is never drawn; between this and HF_RENDER_DRY it is drawn only while it moves.
@@ -405,8 +407,8 @@ SheetPoint sheetPoint(vec3 e, vec2 outward, vec4 end, float s, vec2 inward, bool
 // more at a free end. Uses only values both sheets at a shared end agree on, so the curtain has no seams.
 float sheetAer(float aerTop, SheetPoint p, vec3 e, vec4 end, bool free) {
     float body = 0.35 + 0.65 * smoothstep(0.02, 0.4, end.y * max(e.y - end.z, 0.0));
-    float w = 1.0 - exp(-p.drop / 1.4);
-    return clamp(mix(aerTop, 0.9 * body, w) + (free ? 0.3 * w : 0.0), 0.0, 1.0);
+    float w = 1.0 - exp(-p.drop / 2.5);
+    return clamp(mix(aerTop, 0.7 * body, w) + (free ? 0.2 * w : 0.0), 0.0, 1.0);
 }
 
 // A sheet vertex. Its flow word carries what composite.frag needs to texture it continuously from the top surface: the
@@ -490,7 +492,8 @@ void emitCurtain(uint q, int d, vec2 outward, vec3 e0, vec3 e1, vec4 end0, vec4 
 // Spray particles per second per unit of energy a sheet brings down (outflow in blocks^3/s x drop in blocks).
 const float SPRAY_SPLASH_RATE = 170.0;
 const float SPRAY_SHEET_RATE = 60.0;
-const float SPRAY_MIST_RATE = 10.0;
+const float SPRAY_MIST_RATE = 6.0;
+const float SPRAY_DROP_RATE = 12.0;
 
 // Spray thrown by a falling sheet: droplets bouncing back up and out where it lands (faster for taller falls), droplets peeling
 // off it as it falls, and mist at its foot. The rates grow with the energy the water brings down (outflow x drop), so trickles
@@ -519,6 +522,17 @@ void emitSpray(uint seed, vec2 outward, vec3 e0, vec3 e1, vec4 end0, vec4 end1, 
         vec3 h = dir * cos(az) + side * sin(az);
         vec3 v = (h * cos(el) + up * sin(el)) * impact * mix(0.1, 0.4, sprayRand(s));
         sprayAdd(HF_SPRAY_INTO, p.top + up * 0.04, v, mix(0.6, 1.5, sprayRand(s)), SPRAY_DROPLET);
+    }
+    // A few bigger water drops (drawn as water) bounce out of the foot too.
+    int drops = int(min(SPRAY_DROP_RATE * energy * dt + sprayRand(s), 4.0));
+    for (int k = 0; k < drops; k++) {
+        float t = sprayRand(s);
+        SheetPoint p = sheetPoint(mix(e0, e1, t), outward, mix(end0, end1, t), 1.0, vec2(0.0), false);
+        float az = (sprayRand(s) - 0.5) * 2.2;
+        float el = mix(0.6, 1.3, sprayRand(s));
+        vec3 h = dir * cos(az) + side * sin(az);
+        vec3 v = (h * cos(el) + up * sin(el)) * min(impact * mix(0.12, 0.3, sprayRand(s)), 6.0);
+        dropAdd(HF_SPRAY_INTO, p.top + up * 0.06, v, 3.0, mix(0.5, 1.1, sprayRand(s)));
     }
     int mist = int(min(SPRAY_MIST_RATE * energy * dt + sprayRand(s), 6.0));
     for (int k = 0; k < mist; k++) {

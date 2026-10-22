@@ -137,8 +137,11 @@ final class HfDomain implements AutoCloseable {
 	 * whitewater pass draws them. Each frame the particles alive in one half move into the other; the sheets emit into it too.
 	 */
 	static final int SPRAY_MAX = 65_536;
-	/** Byte offset of the spray draw arguments (6 vertices, count, 0, first particle) in {@link #sprayCounters}. */
+	/** Water drops (splashes, drawn as water), a second set after the spray: two halves of DROP_MAX. */
+	static final int DROP_MAX = 16_384;
+	/** Byte offsets of the spray and drop draw arguments (6 vertices, count, 0, first particle) in {@link #sprayCounters}. */
 	static final long SPRAY_ARGS = 16;
+	static final long DROP_ARGS = 32;
 	/** Side of the tile lookup grid (tiles), centered on the origin tile. Must match hf_spray_update.comp. */
 	static final int LOOKUP = 64;
 	final VkBuf spray;
@@ -146,7 +149,7 @@ final class HfDomain implements AutoCloseable {
 	private final VkBuf tileLookup;
 	private int sprayCur;
 	private float sprayDt;
-	/** Player splashes waiting to throw droplets: {x, y, z (relative to the origin), speed, radius, count}. */
+	/** Splash bursts waiting: {x, y, z (relative to the origin), speed, radius, count, mode, delay in seconds}. */
 	private final List<float[]> bursts = new ArrayList<>();
 	private final List<Added> added = new ArrayList<>();
 	private final List<Rebuilt> rebuilt = new ArrayList<>();
@@ -226,7 +229,7 @@ final class HfDomain implements AutoCloseable {
 		this.quads = VkBuf.device(this.quadCapacity * 16L, 0);
 		this.meshCounters = VkBuf.device(64, VkBuf.INDIRECT);
 		this.vertFlow = VkBuf.device(this.quadCapacity * 4L * 4L, 0);
-		this.spray = VkBuf.device(2L * SPRAY_MAX * 32L, 0);
+		this.spray = VkBuf.device(2L * (SPRAY_MAX + DROP_MAX) * 32L, 0);
 		this.sprayCounters = VkBuf.device(64, VkBuf.INDIRECT);
 		this.tileLookup = VkBuf.device((long) LOOKUP * LOOKUP * 4L, 0);
 		for (int i = 0; i < Vk.FRAME_RING; i++) {
@@ -246,7 +249,7 @@ final class HfDomain implements AutoCloseable {
 	/** Size of the GPU allocation, for /water hf stats. */
 	long bytes() {
 		return (long) this.grid.maxPages * this.ps * SPAN_BYTES + (long) this.grid.maxFluxPages * this.ps * (FLUX_BYTES + 8L)
-			+ this.quadCapacity * 96L + 2L * SPRAY_MAX * 32L;
+			+ this.quadCapacity * 96L + 2L * (SPRAY_MAX + DROP_MAX) * 32L;
 	}
 
 	private VkBuf stage(HfTileGrid.Tile t, float[] initialDepth) {
@@ -805,10 +808,20 @@ final class HfDomain implements AutoCloseable {
 		this.advanceProbes(cb);
 	}
 
-	/** A body hit the water at (x, y, z) (world) at {@code speed}: a crown of {@code count} droplets is thrown from a ring of {@code radius}. */
-	void sprayBurst(double x, double y, double z, float speed, float radius, int count) {
-		if (count > 0 && this.bursts.size() < 8) {
-			this.bursts.add(new float[]{(float) (x - this.originX), (float) (y - this.originY), (float) (z - this.originZ), speed, radius, count});
+	/** Burst modes of hf_spray_update.comp. */
+	static final int BURST_SPRAY = 1;
+	static final int BURST_CROWN = 2;
+	static final int BURST_JET = 3;
+
+	/**
+	 * A body hit the water at (x, y, z) (world): {@code count} particles are thrown after {@code delay} seconds, as white droplets
+	 * from a ring of {@code radius} (BURST_SPRAY), water drops from the cavity's rim (BURST_CROWN) or a jet of water drops up from
+	 * the middle (BURST_JET), at up to {@code speed}.
+	 */
+	void sprayBurst(int mode, double x, double y, double z, float speed, float radius, int count, float delay) {
+		if (count > 0 && this.bursts.size() < 16) {
+			this.bursts.add(new float[]{(float) (x - this.originX), (float) (y - this.originY), (float) (z - this.originZ), speed, radius, count, mode,
+				delay});
 		}
 	}
 
@@ -818,16 +831,24 @@ final class HfDomain implements AutoCloseable {
 		int src = this.sprayCur;
 		int dst = 1 - src;
 		this.sprayCounters.fill(cb, dst * 4L, 4L, 0);
+		this.sprayCounters.fill(cb, (2L + dst) * 4L, 4L, 0);
 		Vk.barrier(cb);
 		this.bind(p[9], cb, ubo, ring, this.stats);
-		for (float[] b : this.bursts) {
+		for (java.util.Iterator<float[]> it = this.bursts.iterator(); it.hasNext(); ) {
+			float[] b = it.next();
+			b[7] -= frameDt;
+			if (b[7] > 0.0F) {
+				continue;
+			}
+			it.remove();
 			int n = Math.min((int) b[5], 4096);
-			p[9].push(cb, this.push(n, 0.0F, WaterSettings.gravity, b[3], b[4], b[0], b[1], b[2], 1.0F, src, dst, (int) this.frameNo * 7919 + n, 0));
+			p[9].push(cb, this.push(n, 0.0F, WaterSettings.gravity, b[3], b[4], b[0], b[1], b[2], b[6], src, dst, (int) this.frameNo * 7919 + n * 31 + (int) b[6], 0));
 			p[9].dispatch(cb, ComputeProgram.groups(n, 256), 1, 1);
 		}
-		this.bursts.clear();
-		p[9].push(cb, this.push(0, frameDt, WaterSettings.gravity, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, src, dst, (int) this.frameNo, 0));
-		p[9].dispatch(cb, SPRAY_MAX / 256, 1, 1);
+		for (int set = 0; set < 2; set++) {
+			p[9].push(cb, this.push(0, frameDt, WaterSettings.gravity, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, src, dst, (int) this.frameNo, set));
+			p[9].dispatch(cb, (set == 0 ? SPRAY_MAX : DROP_MAX) / 256, 1, 1);
+		}
 		Vk.barrier(cb);
 		this.sprayCur = dst;
 		this.sprayDt = frameDt;

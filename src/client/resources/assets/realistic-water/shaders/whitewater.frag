@@ -32,7 +32,7 @@ void main() {
     vec3 color = vec3(1.0);
     if (type > 2.5) {
         // Mist (heightfield spray): soft and faint, its alpha set in particle.vert.
-        a *= exp(-3.0 * r2);
+        a *= exp(-4.0 * r2);
         color = vec3(0.9, 0.95, 1.0);
     } else if (type < 0.5) {
         a *= G.foamA.w;

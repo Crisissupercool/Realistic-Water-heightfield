@@ -1,15 +1,18 @@
 #version 450
-// Draw arguments for the current half of the heightfield's spray, after the mesh pass added this frame's emission.
+// Draw arguments for the current half of the heightfield's spray and water drops, after the mesh pass added this frame's emission.
 #include "hf_common.glsl"
 layout(local_size_x = 1) in;
 #include "hf_spray.glsl"
 
 void main() {
     uint cur = uint(hp.p2.x);
-    uint n = min(sprayCount[cur], SPRAY_MAX);
-    sprayCount[cur] = n;
-    sprayCount[4] = 6u;
-    sprayCount[5] = n;
-    sprayCount[6] = 0u;
-    sprayCount[7] = cur * SPRAY_MAX;
+    for (uint which = 0u; which < 2u; which++) {
+        uint n = min(sprayCount[which * 2u + cur], setMax(which));
+        sprayCount[which * 2u + cur] = n;
+        uint a = 4u + which * 4u;
+        sprayCount[a] = 6u;
+        sprayCount[a + 1u] = n;
+        sprayCount[a + 2u] = 0u;
+        sprayCount[a + 3u] = setBase(which, cur);
+    }
 }

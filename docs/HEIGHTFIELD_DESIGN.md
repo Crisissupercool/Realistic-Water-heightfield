@@ -604,3 +604,26 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   back into the water (found through the tile lookup and the column's spans); mist slows at 2/s, lifts 0.4 b/s^2 and stays just
   above the water. Mode 1 throws a crown from a player's splash: 150 droplets per block^3 displaced (cap 4,000) from a ring of
   0.6 x the crater radius at 20..55% of the impact speed (capped at 12 b/s), 6% of them mist.
+
+## 21. Splashes with water in the air, foam that reads as foam (as built)
+
+* **Water drops:** a second particle set after the spray in the same buffer (two halves of 16,384; counters [2], [3], draw args
+  at byte 32), vel.w holding each drop's radius as a multiple of `hfDropRadius` (0.07 blocks). Drawn by the regions' droplet
+  passes (`particle.vert` with `HF_DROPS`: no density culling, per-drop radius; sphere impostors into the front and thickness
+  passes), so the composite shades them as water (refraction, reflections, thickness), not white. Same update as the spray
+  (0.15/s drag, gone in the water or on the ground).
+* **Player splash:** besides the crater, ring wave and white droplets, a crown of drops from the cavity's rim (radius
+  max(0.45, 0.55 x crater radius), 55..80 deg, 2.5..7 b/s, 100 per block^3 displaced, 40..900) and, for entries faster than
+  6 b/s, a jet of drops up from the middle 0.18 + 0.03 sqrt(volume) s later (0.55 x impact speed up to 9 b/s, 35 per block^3,
+  10..300). Bursts wait in a queue with their delay. Sizes: 1 block fall ~40 drops 0.3 high; 3 blocks 76 + a 0.9 jet; 10 blocks
+  188 drops ~2 high + a ~3 jet; 30+ blocks ~2.4 crown and ~4 jet (capped). Waterfall feet also throw a few drops (12 per s per
+  unit of energy).
+* **Foam lace:** `foamShape` no longer puts round bubble dots on flat white (they read as a printed, stucco-like texture on
+  sheets, cascades and the splash disk). Up close a patch is a lace: white walls between bubble cells (F2 - F1 of a jittered
+  7-per-block cell pattern) over 30%-white cell interiors, thin at a patch's edge and filling in toward its middle; far away its
+  average.
+* **Sheets:** whiten slower and less (toward 0.7 x body over drop / 2.5, free ends +0.2) and show white in streaks with clearer
+  gaps (two valueNoise streak layers down the fall, 3.5 and 1.3 per block across, gap the foam 0.35..1.25x; total capped at
+  0.82); the streak bump is half as strong and coarser (the fine 7-per-block stripes looked like a comb).
+* **Thin films:** foam fades out under 0.15 blocks of depth (`foamOf`): cascades over steps put white patches with holes on the
+  terrain. **Mist:** fainter and softer (alpha 0.02, radius 0.5, exp(-4 r^2), 6 per s per unit of energy).

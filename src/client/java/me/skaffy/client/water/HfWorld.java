@@ -653,10 +653,21 @@ final class HfWorld {
 		double radius = Math.clamp(0.5 + 0.35 * Math.sqrt(volume), 0.6, 4.0);
 		double craterDepth = Math.min(2.0 * volume / (Math.PI * radius * radius), 0.8 * sm[3]);
 		this.crater(hf, player.getX(), player.getZ(), (float) surface, radius, craterDepth);
-		// A crown of droplets: more and faster the harder the hit (about 60 for a 1-block jump, a few thousand from high up).
+		// Water thrown into the air, more and faster the harder the hit: a crown of water drops from the rim of the cavity, white
+		// droplets with it and, once the cavity closes (a fast entry only), a jet of drops shooting up from the middle.
+		// A 1-block jump throws ~40 drops ~0.3 blocks high; 10 blocks ~190 drops up to ~2 blocks and a ~3 block jet.
 		if (WaterSettings.hfSpray > 0.0F) {
-			int count = (int) Math.min(150.0 * volume * WaterSettings.hfSpray, 4000.0);
-			hf.sprayBurst(player.getX(), surface, player.getZ(), (float) Math.min(speed, 12.0), (float) radius * 0.6F, count);
+			float k = WaterSettings.hfSpray;
+			double x = player.getX();
+			double z = player.getZ();
+			float rim = (float) Math.max(0.45, 0.55 * radius);
+			hf.sprayBurst(HfDomain.BURST_CROWN, x, surface, z, (float) Math.clamp(0.45 * speed, 2.5, 7.0), rim,
+				(int) Math.clamp(100.0 * volume * k, 40.0 * k, 900.0), 0.0F);
+			hf.sprayBurst(HfDomain.BURST_SPRAY, x, surface, z, (float) Math.min(speed, 12.0), rim, (int) Math.min(60.0 * volume * k, 1500.0), 0.0F);
+			if (speed > 6.0) {
+				hf.sprayBurst(HfDomain.BURST_JET, x, surface, z, (float) Math.min(0.55 * speed, 9.0), 0.0F,
+					(int) Math.clamp(35.0 * volume * k, 10.0, 300.0), (float) (0.18 + 0.03 * Math.sqrt(volume)));
+			}
 		}
 		if (this.world.ripples != null) {
 			this.world.ripples.impact(player.getX(), player.getZ(), volume, (float) surface);

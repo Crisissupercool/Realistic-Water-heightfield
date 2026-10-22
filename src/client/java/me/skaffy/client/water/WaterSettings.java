@@ -191,8 +191,10 @@ public final class WaterSettings {
 	/** Radius of a heightfield spray droplet (blocks). */
 	public static float hfSprayRadius = 0.02F;
 	/** Radius of a mist puff (blocks) and how opaque one is. */
-	public static float hfMistSize = 0.35F;
-	public static float hfMistAlpha = 0.05F;
+	public static float hfMistSize = 0.5F;
+	public static float hfMistAlpha = 0.02F;
+	/** Radius of a splash's water drops (blocks; each drop 0.5..1.4 times this), drawn as water. */
+	public static float hfDropRadius = 0.07F;
 	/** Diagnostic: report in chat when a block edit makes heightfield water jump (where, at which stage, how the column changed). */
 	public static boolean hfEditProbe = false;
 	public static int hfMaxStepsPerFrame = 8;

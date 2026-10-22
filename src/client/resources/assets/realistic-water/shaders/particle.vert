@@ -17,7 +17,7 @@ const vec2 CORNERS[6] = vec2[](vec2(-1, -1), vec2(1, -1), vec2(1, 1), vec2(-1, -
 void main() {
     uint id = uint(gl_InstanceIndex);
     Particle p = parts[id];
-#ifdef DROPLETS
+#if defined(DROPLETS) && !defined(HF_DROPS)
     if (p.pos.w < 0.0) {
         gl_Position = vec4(0.0, 0.0, -2.0, 1.0);
         return;
@@ -38,6 +38,14 @@ void main() {
     vec3 rel = G.domainOrigin.xyz + p.pos.xyz * G.domainOrigin.w;
     vec3 center = (G.view * vec4(rel, 1.0)).xyz;
     float r = pc.a.x;
+#ifdef HF_DROPS
+    // Heightfield water drops (splashes): vel.w holds the drop's radius as a multiple of pc.a.x.
+    r *= p.vel.w;
+    if (viewState.x > 0.5) {
+        gl_Position = vec4(0.0, 0.0, -2.0, 1.0);
+        return;
+    }
+#endif
 #ifndef DROPLETS
     bool foam = p.vel.w > 0.5 && p.vel.w < 1.5;
     if (foam) {

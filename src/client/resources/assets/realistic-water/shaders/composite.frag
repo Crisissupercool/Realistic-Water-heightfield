@@ -354,32 +354,40 @@ float foamField(vec2 p, vec2 smear, float footprint) {
     return n1 * 0.45 + n2 * 0.3 + mix(0.5, n3, d1) * 0.17 + mix(0.5, n4, d2) * 0.08;
 }
 
-// Foam: crisp-edged patches of the field whose coverage grows with the foam amount, made of fine round bubbles (the nearest
-// point of a jittered grid). Detail fades out where a pixel would cover it, so it never aliases or turns to mush.
+// Foam: patches of the field whose coverage grows with the foam amount. Up close a patch is a lace, as real foam is: white walls
+// between bubbles (the edges of a jittered cell pattern, F2 - F1) over clearer water inside them, thin at a patch's edge and
+// filling in toward its middle and with more foam. Round bubble dots used to sit on flat white here, which read as a printed
+// texture. Detail fades to its average where a pixel would cover it, so it never aliases.
 float foamShape(float v, vec2 p, float coverage, float footprint) {
     float edge = 0.025 + 1.5 * footprint;
     float cover = smoothstep(1.0 - coverage - edge, 1.0 - coverage + edge, v);
-    float d2 = 1.0 - smoothstep(0.006, 0.025, footprint);
-    if (cover <= 0.0 || d2 <= 0.0) {
-        return cover;
+    if (cover <= 0.0) {
+        return 0.0;
+    }
+    float inside = smoothstep(1.0 - coverage, 1.0 - coverage + 0.3, v);
+    float detail = 1.0 - smoothstep(0.012, 0.05, footprint);
+    if (detail <= 0.0) {
+        return cover * mix(0.75, 1.0, inside * inside);
     }
     float t = G.simB.z;
-    vec2 q = (p + vec2(t * 0.07, -t * 0.05)) * 12.0;
+    vec2 q = (p + vec2(t * 0.07, -t * 0.05)) * 7.0;
     vec2 c = floor(q);
-    float best = 9.0;
-    float radius = 0.0;
+    float f1 = 9.0;
+    float f2 = 9.0;
     for (int k = 0; k < 9; k++) {
         vec2 cell = c + vec2(float(k % 3 - 1), float(k / 3 - 1));
-        vec2 feature = cell + 0.15 + 0.7 * vec2(noiseHash(cell), noiseHash(cell + vec2(17.0, 31.0)));
+        vec2 feature = cell + 0.1 + 0.8 * vec2(noiseHash(cell), noiseHash(cell + vec2(17.0, 31.0)));
         float d = distance(q, feature);
-        if (d < best) {
-            best = d;
-            float hr = noiseHash(cell + vec2(5.0, 11.0));
-            radius = hr < 0.4 ? 0.0 : 0.12 + 0.3 * (hr - 0.4);
+        if (d < f1) {
+            f2 = f1;
+            f1 = d;
+        } else if (d < f2) {
+            f2 = d;
         }
     }
-    float pore = radius > 0.0 ? 1.0 - smoothstep(radius - 0.06, radius + 0.06, best) : 0.0;
-    return cover * (1.0 - 0.25 * d2 * pore);
+    float wall = 1.0 - smoothstep(0.0, 0.07 + 0.45 * inside, f2 - f1);
+    float lace = mix(mix(0.3, 1.0, wall), 1.0, inside * inside * 0.6);
+    return cover * mix(mix(0.75, 1.0, inside * inside), lace, detail);
 }
 
 float foamTexture(vec2 p, float coverage, float footprint) {
@@ -425,6 +433,7 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     float lip = 1.0;
     vec2 nearP = world.xz;
     vec2 farP = world.xz;
+    float streak = 0.5;
     if (sheet) {
         vec2 outward = length(flow) > 1.0e-3 ? normalize(flow) : vec2(1.0, 0.0);
         float fallSpeed = max(length(flow), 1.0);
@@ -435,10 +444,13 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
         float down = dot(farP, outward);
         float across = dot(world.xz, along);
         float t = G.simB.z;
-        float detail = smoothstep(1.0, 3.0, 0.14 / max(footprint, 1.0e-5)) * (1.0 - lip);
-        float s1 = valueNoise(vec2(across * 7.0, (down - t * fallSpeed) * 0.7));
+        // Streaks down the fall, a few per block across it: they bend the surface a little and gap the white (below).
+        float detail = smoothstep(1.0, 3.0, 0.3 / max(footprint, 1.0e-5)) * (1.0 - lip);
+        float s1 = valueNoise(vec2(across * 3.5, (down - t * fallSpeed) * 0.6));
+        float s2 = valueNoise(vec2(across * 1.3 + 5.7, (down - t * fallSpeed * 0.8) * 0.25));
+        streak = mix(0.5, s1 * 0.6 + s2 * 0.4, 1.0 - lip);
         vec3 side = mat3(G.view) * vec3(along.x, 0.0, along.y);
-        n = normalize(n + side * ((s1 - 0.5) * 0.8 * detail));
+        n = normalize(n + side * ((s1 - 0.5) * 0.45 * detail));
     }
     float thickness = max(texture(thicknessTex, uv).r, 0.0);
     vec3 upV = normalize(mat3(G.view) * vec3(0.0, 1.0, 0.0));
@@ -511,7 +523,9 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
         if (near < 1.0) {
             f += (1.0 - near) * flowFoam(farP, flow, coverage, footprint);
         }
-        float cover = 0.15 * aer * fall + (0.7 + 0.1 * fall) * f;
+        // A falling sheet is white in streaks with clearer gaps, never one opaque band.
+        float cover = sheet ? min((0.6 + 0.15 * fall) * f * mix(0.35, 1.25, smoothstep(0.25, 0.75, streak)) + 0.05 * aer * fall, 0.82)
+                            : 0.7 * f;
         color = mix(color, vec3(0.9, 0.94, 0.96) * mix(0.25, 1.0, ambient), clamp(cover, 0.0, 0.95));
     }
     return color;
