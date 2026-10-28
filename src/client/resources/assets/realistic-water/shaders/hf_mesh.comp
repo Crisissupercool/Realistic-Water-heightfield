@@ -70,12 +70,22 @@ const float FLOW_DRY = HF_FILM_DRY;
 // Whether span t has water worth drawing. Still films under HF_RENDER_DRY stay hidden (they shimmered on flat ground), but a
 // thin layer that is moving (running down steps or a slope) is drawn: hiding it punched holes cell by cell into shallow
 // streams, which then looked like scattered pieces instead of a flow.
+// How much of span t's water is in the drawn surface, 0..1: the coverage marching squares interpolates (hf_depth.comp keeps it,
+// see hfPresenceTarget). Corners blend each span between its dry and its wet height by this, so the waterline moves through
+// the cells continuously as water arrives or leaves instead of jumping half a block when a span turns wet. On a tile that is
+// not simulated (asleep, or loaded and never woken) nothing updates it, so there the target is taken as it stands.
+// How deep under the ground a shoreline corner with no water goes (shoreQuad and corner()).
+const float SHORE_BELOW = 0.25;
+float presence(uint t) {
+    uint ps = hfPageSpans();
+    int owner = pageOwner[t / ps];
+    bool simulated = owner >= 0 && tileInfo[uint(owner >> 2) * 4u + 3u][owner & 3] >= 0;
+    float v = air[t * HF_AIR_STRIDE + 3u];
+    return simulated ? hfShown(v) : hfPresenceTarget(depth[t], v >= 2.0);
+}
+
 bool wet(uint t) {
-    float d = depth[t];
-    if (d > HF_RENDER_DRY) {
-        return true;
-    }
-    return d > FLOW_DRY && hfRunningShown(air[t * HF_AIR_STRIDE + 3u]);
+    return presence(t) > 0.0;
 }
 
 float surfaceOf(uint t) {
@@ -154,26 +164,37 @@ bool dryOther(bool ok, bool link, HfSpan t, float lo) {
     return ok && !link && !wet(t.span) && abs(hfGeo(t.span).x - lo) > 0.05;
 }
 
+// The height a sharer of a corner gives it when dry: its floor (within the corner's water), or most of the water's depth over a
+// drop (the water stays up to the brink and pours off there).
+float drySample(float nf, float lo, float level) {
+    return nf < lo - 0.05 ? mix(lo, level, 0.7) : clamp(nf, lo, level);
+}
+
+// What a neighbor at one of our corners adds: a linked span its surface blended toward its dry height by how present its water
+// is, dry ground its dry height. Walls and water at a separate level add nothing (NaN). Everything is relative to the corner's
+// water, not to our own span, so every span sharing the corner gets the same height and the surface has no cracks.
 float cornerSample(bool ok, bool link, HfSpan t, float lo, float level) {
     if (!ok) {
         return uintBitsToFloat(0x7FC00000u);
     }
+    float nf = hfGeo(t.span).x;
     if (link) {
-        return surfaceOf(t.span);
+        return mix(drySample(nf, lo, level), surfaceOf(t.span), presence(t.span));
     }
     if (wet(t.span)) {
         return uintBitsToFloat(0x7FC00000u);
     }
-    float nf = hfGeo(t.span).x;
-    if (nf < lo - 0.05) {
-        return mix(lo, level, 0.7);
-    }
-    return clamp(nf, lo, level);
+    return drySample(nf, lo, level);
+}
+
+// A sharer that is (partly) dry ground at the corner's floor: dry, or linked water only partly there.
+bool flatLike(bool ok, bool link, HfSpan t, float lo) {
+    return ok && (link ? presence(t.span) < 1.0 : !wet(t.span)) && abs(hfGeo(t.span).x - lo) <= 0.05;
 }
 
 // Height, smooth normal and foam at one corner, from the (up to) four spans sharing it: the average over our span, the spans
-// linked to it and shoreline samples from dry neighbors. A ramp corner may lie below our own floor (down to the lowest linked
-// floor); the vanilla-like surface drop uses the corner's water depth.
+// linked to it and shoreline samples from dry neighbors, each linked span weighted by how present its water is. A ramp corner
+// may lie below our own floor (down to the lowest linked floor); the vanilla-like surface drop uses the corner's water depth.
 // Horizontal water velocity of a span from its outflows (blocks/s, capped at 8); zero on tiles that are not simulated.
 vec2 velocityOf(HfSpan t) {
     if (t.flux == HF_NONE) {
@@ -214,90 +235,99 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce, out vec2 fl
     bool lx = eSX || (eSZ && eZD && eXD);
     bool lz = eSZ || (eSX && eXD && eZD);
     bool ld = (eSX && eXD) || (eSZ && eZD);
-    // The corner's water: our span and the spans linked to it.
-    float levelSum = top;
+    // The corner's water: our span and the spans linked to it, each weighted by how present its water is.
+    float pa = presence(a.span);
+    float px = lx ? presence(nx.span) : 0.0;
+    float pz = lz ? presence(nz.span) : 0.0;
+    float pd = ld ? presence(nd.span) : 0.0;
+    float weight = pa + px + pz + pd;
+    float levelSum = pa * top;
     float lo = fl;
     float hiC = ce;
-    float depthSum = top - fl;
-    float aer = foamOf(a);
-    float shares = 1.0;
-    flow = velocityOf(a);
+    float depthSum = pa * (top - fl);
+    float aer = pa * foamOf(a);
+    flow = pa * velocityOf(a);
     if (lx) {
-        flow += velocityOf(nx);
+        flow += px * velocityOf(nx);
         vec2 gx = hfGeo(nx.span);
-        levelSum += surfaceOf(nx.span);
+        levelSum += px * surfaceOf(nx.span);
         lo = min(lo, gx.x);
         hiC = min(hiC, gx.y);
-        depthSum += surfaceOf(nx.span) - gx.x;
-        aer += foamOf(nx);
-        shares += 1.0;
+        depthSum += px * (surfaceOf(nx.span) - gx.x);
+        aer += px * foamOf(nx);
     }
     if (lz) {
-        flow += velocityOf(nz);
+        flow += pz * velocityOf(nz);
         vec2 gz = hfGeo(nz.span);
-        levelSum += surfaceOf(nz.span);
+        levelSum += pz * surfaceOf(nz.span);
         lo = min(lo, gz.x);
         hiC = min(hiC, gz.y);
-        depthSum += surfaceOf(nz.span) - gz.x;
-        aer += foamOf(nz);
-        shares += 1.0;
+        depthSum += pz * (surfaceOf(nz.span) - gz.x);
+        aer += pz * foamOf(nz);
     }
     if (ld) {
-        flow += velocityOf(nd);
+        flow += pd * velocityOf(nd);
         vec2 gd = hfGeo(nd.span);
-        levelSum += surfaceOf(nd.span);
+        levelSum += pd * surfaceOf(nd.span);
         lo = min(lo, gd.x);
         hiC = min(hiC, gd.y);
-        depthSum += surfaceOf(nd.span) - gd.x;
-        aer += foamOf(nd);
-        shares += 1.0;
+        depthSum += pd * (surfaceOf(nd.span) - gd.x);
+        aer += pd * foamOf(nd);
     }
-    float level = levelSum / shares;
+    weight = max(weight, 1.0e-6);
+    float level = levelSum / weight;
+    float hs = mix(drySample(fl, lo, level), top, pa);
     float hx = cornerSample(okX, lx, nx, lo, level);
     float hz = cornerSample(okZ, lz, nz, lo, level);
     float hd = cornerSample(okD, ld, nd, lo, level);
-    // Dry ground at the corner's floor (a shoreline on flat ground), and any other dry neighbor (a bank above, a drop below).
-    bool flatX = dryFlat(okX, lx, nx, lo);
-    bool flatZ = dryFlat(okZ, lz, nz, lo);
-    bool flatD = dryFlat(okD, ld, nd, lo);
+    // Ground at the corner's floor that is (partly) dry (a shoreline on flat ground), and any other dry neighbor (a bank above, a
+    // drop below).
+    bool flatShore = (pa < 1.0 && abs(fl - lo) <= 0.05) || flatLike(okX, lx, nx, lo) || flatLike(okZ, lz, nz, lo) || flatLike(okD, ld, nd, lo);
     bool otherDry = dryOther(okX, lx, nx, lo) || dryOther(okZ, lz, nz, lo) || dryOther(okD, ld, nd, lo);
-    float sum = top;
+    float sum = hs;
     float count = 1.0;
+    // The wet share of the corner: the sharers' presence (dry ground 0).
+    float cover = pa;
     if (!isnan(hx)) {
         sum += hx;
         count += 1.0;
+        cover += px;
     }
     if (!isnan(hz)) {
         sum += hz;
         count += 1.0;
+        cover += pz;
     }
     if (!isnan(hd)) {
         sum += hd;
         count += 1.0;
+        cover += pd;
     }
     float h = sum / count;
     // Missing samples take the corner height, so the slope comes only from what is there (and matches on every side).
-    float hs = top;
     hx = isnan(hx) ? h : hx;
     hz = isnan(hz) ? h : hz;
     hd = isnan(hd) ? h : hd;
     float c = HF_CELL;
     float dhdx = ((hx - hs) + (hd - hz)) * 0.5 / c * float(sx);
     float dhdz = ((hz - hs) + (hd - hx)) * 0.5 / c * float(sz);
-    if ((flatX || flatZ || flatD) && !otherDry && level - lo > 1.0e-4) {
-        // Shoreline on flat ground, as in marching squares: by the share of the corner that is wet, w = (h - lo) / (level - lo),
-        // the corner goes from below the ground (1 of 4 cells wet) through the ground (2 of 4) up to the water level (all 4).
-        // The surface then meets the ground on a line cutting through the cells, not along their half-block edges, and dips
-        // under the ground past it (shoreQuad continues it into the dry cells).
-        float w = clamp((h - lo) / (level - lo), 0.0, 1.0);
-        h = min(lo + (level - lo) * (2.0 * w - 1.0), hiC);
+    if (flatShore && !otherDry && level - lo > 1.0e-4) {
+        // Shoreline on flat ground, as in marching squares: by the share of the corner that is wet, w (the sharers' mean
+        // presence), the corner goes from below the ground (1 of 4 cells wet) through the ground (2 of 4) up to the water level
+        // (all 4). The surface then meets the ground on a line cutting through the cells, not along their half-block edges, and
+        // dips under the ground past it (shoreQuad continues it into the dry cells). Partly present water counts in part, so the
+        // line moves through a cell as its water arrives (by presence, not by height: a 1 cm film's height says nothing).
+        // Under the ground it goes down to SHORE_BELOW, the depth shoreQuad gives corners no water touches, whatever the water's
+        // depth: on a 1 cm film that dip was only 1 cm, so the line sat almost anywhere along the half-block edge.
+        float w = clamp(cover / count, 0.0, 1.0);
+        h = min(lo + (w >= 0.5 ? level - lo : SHORE_BELOW) * (2.0 * w - 1.0), hiC);
     } else {
         h = clamp(h, lo, hiC);
     }
-    h -= HF_SURFACE_DROP * clamp(min(depthSum / shares, h - lo), 0.0, 1.0);
+    h -= HF_SURFACE_DROP * clamp(min(depthSum / weight, h - lo), 0.0, 1.0);
     vec3 n = normalize(vec3(-dhdx, 1.0, -dhdz));
-    flow /= shares;
-    return vec4(n.x, h, n.z, aer / shares);
+    flow /= weight;
+    return vec4(n.x, h, n.z, aer / weight);
 }
 
 vec3 cornerNormal(vec4 c) {
@@ -587,7 +617,6 @@ void emitSpray(uint seed, vec2 outward, vec3 e0, vec3 e1, vec4 end0, vec4 end1, 
 }
 
 // How far below the ground a shore surface reaches at a corner no wet cell touches.
-const float SHORE_BELOW = 0.25;
 
 // Wet span on the same floor as fl (water on flat ground next to it).
 bool wetAt(bool ok, HfSpan t, float fl) {

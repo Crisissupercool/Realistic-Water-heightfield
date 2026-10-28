@@ -155,22 +155,33 @@ uint hfFoamIndex(HfSpan a) {
 
 // Water in the air (hf_depth.comp): water pouring into a span from one whose floor is more than HF_AIR_MIN_DROP above its surface
 // falls for a while before it lands. Per span page span, 4 floats: volume in flight (blocks^3), seconds since it began falling in,
-// its mean drop (blocks), and whether a thin film there is drawn as running water (hfRunningShown: 0..1 how long it has been
-// running or not, plus 2 while shown; hf_depth.comp updates it, hf_mesh.comp reads it). Kept with the span pages, so it
-// survives a tile falling asleep.
+// its mean drop (blocks), and how much of the span's water is in the drawn surface (hfShown: its presence 0..1, plus 2 while
+// it counts as running; hf_depth.comp moves it toward hfPresenceTarget, hf_mesh.comp draws by it). Kept with the span pages,
+// so it survives a tile falling asleep.
 layout(std430, binding = 20) buffer Air { float air[]; };
 const float HF_AIR_MIN_DROP = 1.5;
 const uint HF_AIR_STRIDE = 4u;
 // A thin film (deeper than HF_FILM_DRY, thinner than hfRenderDepth) is drawn while it runs (outflow above HF_FILM_DRAW,
 // blocks^3/s). Its outflow hovers around that on terraces and slopes, and judged frame by frame such spans switched between drawn
-// and hidden up to 2 times a second each (half-block pieces of water popping in and out). A shown film now stays shown down to
-// 0.4 x that outflow, and the switch needs the film to run, or to stop, for a net HF_FILM_SWITCH seconds: 0..1 counts toward the
-// other state, and flips it at the end.
+// and hidden up to 2 times a second each (half-block pieces of water popping in and out). A running film now keeps running
+// down to 0.4 x that outflow (or inflow: a front's edge only fills at first).
+// Presence is the coverage hf_mesh.comp's marching-squares shoreline interpolates: still water from hfRenderDepth (fully
+// STILL_FADE deeper), running water from HF_FILM_DRY (fully at HF_FILM_FULL). It moves toward that by at most 1 per
+// HF_FILM_SWITCH seconds, so the waterline crosses a half-block cell in no less than that: a flood front's edge fills from 0 to
+// 4 cm within a frame or two, and judged by depth alone the line still jumped a quarter block at a time.
 const float HF_FILM_DRY = 0.008;
 const float HF_FILM_DRAW = 0.0005;
+const float HF_FILM_FULL = 0.016;
+const float HF_STILL_FADE = 0.01;
 const float HF_FILM_SWITCH = 0.3;
-bool hfRunningShown(float v) {
-    return v >= 2.0;
+#define HF_RENDER_DEPTH G.simB.w
+float hfPresenceTarget(float d, bool running) {
+    float still = clamp((d - HF_RENDER_DEPTH) / HF_STILL_FADE, 0.0, 1.0);
+    float film = running ? clamp((d - HF_FILM_DRY) / (HF_FILM_FULL - HF_FILM_DRY), 0.0, 1.0) : 0.0;
+    return max(still, film);
+}
+float hfShown(float v) {
+    return v >= 2.0 ? v - 2.0 : v;
 }
 // Falling water breaks up and air holds it back toward a terminal speed (blocks/s); a high fall takes about 3.3 s for 30 blocks
 // instead of 2.5 in free fall, and is never instant.

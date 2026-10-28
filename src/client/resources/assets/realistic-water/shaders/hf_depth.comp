@@ -159,20 +159,18 @@ void main() {
         air[ai] = airVol;
         air[ai + 1u] = airT;
         air[ai + 2u] = airH;
-        // Whether a thin film here is drawn as running water, switched only after it has run (or stopped) for HF_FILM_SWITCH.
-        float sv = air[ai + 3u];
-        bool on = hfRunningShown(sv);
-        float toward = sv - (on ? 2.0 : 0.0);
-        bool runs = old > HF_FILM_DRY && outflow > HF_FILM_DRAW * (on ? 0.4 : 1.0);
-        toward = clamp(toward + (runs != on ? HF_DT : -HF_DT) / HF_FILM_SWITCH, 0.0, 1.0);
-        if (toward >= 1.0) {
-            on = !on;
-            toward = 0.0;
-        }
-        air[ai + 3u] = toward + (on ? 2.0 : 0.0);
         falling += landed / HF_DT * min(airH, 4.0);
         float h = max(old + (HF_DT * (inflow - airIn - outflow) + landed) / area, 0.0);
         depth[a.span] = h;
+        // How much of the water here is in the drawn surface (see hfPresenceTarget), moving at most 1 per HF_FILM_SWITCH seconds.
+        float sv = air[ai + 3u];
+        bool on = sv >= 2.0;
+        float shown = sv - (on ? 2.0 : 0.0);
+        on = max(outflow, inflow - airIn + landed / HF_DT) > HF_FILM_DRAW * (on ? 0.4 : 1.0);
+        float target = hfPresenceTarget(h, on);
+        float step = HF_DT / HF_FILM_SWITCH;
+        shown = target > shown ? min(target, shown + step) : max(target, shown - step);
+        air[ai + 3u] = shown + (on ? 2.0 : 0.0);
         // Thin films give meaningless speeds (flux / tiny depth), so they are left out of the CFL estimate.
         float speed = h > 0.05 ? min(peak / (HF_CELL * h), HF_MAX_SPEED) : 0.0;
 

@@ -1247,7 +1247,8 @@ public final class WaterWorld {
 		putInts(b, o + 32, 0, 0, bodies, this.frameCounter);
 		putInts(b, o + 48, 0, 0, 0, 0);
 		putFloats(b, o + 64, 0.0F, -WaterSettings.gravity, 0.0F, hf.lastDt);
-		putFloats(b, o + 96, WaterSettings.hfMaxSpeed, hf.cell, this.simTime, 0.0F);
+		// simB.w: hfRenderDepth, for the drawn-presence target hf_depth.comp keeps per span (hf_common.glsl).
+		putFloats(b, o + 96, WaterSettings.hfMaxSpeed, hf.cell, this.simTime, WaterSettings.hfRenderDepth);
 		putFloats(b, o + 3184, 0.0F, 0.0F, WaterSettings.nearCull, 0.0F);
 		putFloats(b, o + 3840, Material.WATER.shaderId(), 0.0F, 0.0F, 1.0F);
 	}

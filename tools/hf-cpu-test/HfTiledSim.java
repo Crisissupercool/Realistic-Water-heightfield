@@ -29,7 +29,8 @@ final class HfTiledSim {
 	static final float RUNNING_FLOW = 0.0005F, RUNNING_SPEED = 0.15F;
 	/** Mirror of the Air layout and the drawn-film switch (hf_common.glsl). */
 	static final int AIR_STRIDE = 4;
-	static final float FILM_DRY = 0.008F, FILM_DRAW = 0.0005F, FILM_SWITCH = 0.3F;
+	static final float FILM_DRY = 0.008F, FILM_DRAW = 0.0005F, FILM_SWITCH = 0.3F, FILM_FULL = 0.016F, STILL_FADE = 0.01F;
+	float renderDepth = 0.035F;
 	/** false: films switch frame by frame, as before the switch existed (for comparison). */
 	static boolean filmSwitch = true;
 	static final float AIR_TERMINAL = 12.0F;
@@ -470,26 +471,21 @@ final class HfTiledSim {
 				this.air[s * AIR_STRIDE] = airVol;
 				this.air[s * AIR_STRIDE + 1] = airT;
 				this.air[s * AIR_STRIDE + 2] = airH;
-				{
-					float sv = this.air[s * AIR_STRIDE + 3];
-					boolean on = sv >= 2.0F;
-					float toward = sv - (on ? 2.0F : 0.0F);
-					boolean runs = old > FILM_DRY && out > FILM_DRAW * (on && filmSwitch ? 0.4F : 1.0F);
-					if (!filmSwitch) {
-						on = runs;
-						toward = 0.0F;
-					} else {
-						toward = Math.clamp(toward + (runs != on ? dt : -dt) / FILM_SWITCH, 0.0F, 1.0F);
-						if (toward >= 1.0F) {
-							on = !on;
-							toward = 0.0F;
-						}
-					}
-					this.air[s * AIR_STRIDE + 3] = toward + (on ? 2.0F : 0.0F);
-				}
 				falling += landed / dt * Math.min(airH, 4.0F);
 				float nh = Math.max(old + (dt * (in - airIn - out) + landed) / area, 0.0F);
 				this.depth[s] = nh;
+				{
+					float sv = this.air[s * AIR_STRIDE + 3];
+					boolean on = sv >= 2.0F;
+					float shown = sv - (on ? 2.0F : 0.0F);
+					on = Math.max(out, in - airIn + landed / dt) > FILM_DRAW * (on && filmSwitch ? 0.4F : 1.0F);
+					float still = Math.clamp((nh - this.renderDepth) / STILL_FADE, 0.0F, 1.0F);
+					float film = on ? Math.clamp((nh - FILM_DRY) / (FILM_FULL - FILM_DRY), 0.0F, 1.0F) : 0.0F;
+					float target = Math.max(still, film);
+					float stepS = dt / FILM_SWITCH;
+					shown = !filmSwitch ? target : target > shown ? Math.min(target, shown + stepS) : Math.max(target, shown - stepS);
+					this.air[s * AIR_STRIDE + 3] = shown + (on ? 2.0F : 0.0F);
+				}
 				this.churn[s] = churnSum / area;
 				float speed = nh > 0.05F ? Math.min(peak / (cell * nh), 30.0F) : 0.0F;
 				float mass = foamA * old + dt * (foamIn - out * foamA) / area;

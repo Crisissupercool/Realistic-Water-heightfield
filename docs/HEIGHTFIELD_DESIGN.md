@@ -834,3 +834,16 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   way only after a net 0.3 s (hf_depth.comp updates it, hf_mesh.comp's wet() reads it, the remap carries it through edits).
   Spans switching again after their first switch (the water arriving or leaving): 0.7 a second over the tile, at most 4 times
   a span in 20 s. The open-ground flood test sleeps after 227 s over 36 tiles; the dense solver mirror matches exactly.
+* **Fronts still advanced half a block at a time.** A span was drawn or not, so a flood edge moved in half-block steps (the
+  marching-squares corners only knew wet or dry). Each span now has a presence 0..1 (the 4th Air float): the coverage the
+  shoreline interpolates. Its target is 1 for still water past hfRenderDepth (+1 cm fade) and for running water past 1.6 cm
+  (from 8 mm; water arriving counts as running, since a front's edge only fills at first), and it moves toward that by at most
+  1 per 0.3 s (the edge of a dam-break front fills from 0 to 4 cm within a frame or two, so depth alone still jumped). On a tile
+  that is not simulated nothing updates it, so the mesh takes the target as it stands. In corner() every linked sharer counts
+  by its presence: its sample is blended between its dry height and its surface, the level, depth, foam and flow are
+  presence-weighted, and the shoreline share w is the sharers' mean presence (by height a 1 cm film placed the line almost
+  anywhere). Below the ground a shore corner goes to SHORE_BELOW (0.25) whatever the water depth, the same as shoreQuad's
+  untouched corners. All of it is continuous: a span turning wet at presence 0 gives the very corners it had as dry ground.
+  hfRenderDepth is in the UBO (simB.w) for the depth pass. Mesh mirror, flood front spreading over flat ground: the waterline
+  moved up to 0.50 blocks in a frame (13 frames over 0.2 blocks in 8 s); now at most 0.20 (none over). Still no cracks; the
+  diagonal-front waterline is 0.203 blocks RMS off straight (0.163 before, 0.696 with cell edges).

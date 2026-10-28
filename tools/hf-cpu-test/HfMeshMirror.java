@@ -18,7 +18,18 @@ final class HfMeshMirror {
 	static float depth(S s) { return sim.depth[s.span()]; }
 	static float surface(S s) { return Math.min(floorOf(s) + depth(s), ceilOf(s)); }
 	static float outTotal(S s) { int f = s.flux(); float o = 0; if (f >= 0) for (int k = 0; k < 8; k++) o += sim.flux[f + k]; return o; }
-	static boolean wet(S s) { float d = depth(s); if (d > DRY) return true; return d > FLOW_DRY && sim.air[s.span() * HfTiledSim.AIR_STRIDE + 3] >= 2.0F; }
+	/** The shader's presence() (waterline moving smoothly through cells); false: all or nothing, as before, for comparison. */
+	static boolean smooth = true;
+	static float presence(S s) {
+		float d = depth(s);
+		float v = sim.air[s.span() * HfTiledSim.AIR_STRIDE + 3];
+		if (!smooth) return d > DRY || (d > FLOW_DRY && v >= 2.0F) ? 1.0F : 0.0F;
+		if (s.flux() >= 0) return v >= 2.0F ? v - 2.0F : v;
+		float still = Math.clamp((d - sim.renderDepth) / HfTiledSim.STILL_FADE, 0.0F, 1.0F);
+		float film = v >= 2.0F ? Math.clamp((d - HfTiledSim.FILM_DRY) / (HfTiledSim.FILM_FULL - HfTiledSim.FILM_DRY), 0.0F, 1.0F) : 0.0F;
+		return Math.max(still, film);
+	}
+	static boolean wet(S s) { return presence(s) > 0.0F; }
 	static boolean joined(S a, S t) { return wet(t) && floorOf(t) < surface(a) && floorOf(a) < surface(t); }
 	static float outTo(S a, int dir) { int f = a.flux(); return f < 0 ? 0 : sim.flux[f + dir * 2] + sim.flux[f + dir * 2 + 1]; }
 	static boolean linked(S a, int dir, S t) {
@@ -48,13 +59,16 @@ final class HfMeshMirror {
 		}
 		return found;
 	}
+	static float drySample(float nf, float lo, float level) { return nf < lo - 0.05F ? lo + (level - lo) * 0.7F : Math.clamp(nf, lo, level); }
 	static float sample(boolean ok, boolean link, S t, float lo, float level) {
 		if (!ok) return Float.NaN;
-		if (link) return surface(t);
-		if (wet(t)) return Float.NaN;
 		float nf = floorOf(t);
-		if (nf < lo - 0.05F) return lo + (level - lo) * 0.7F;
-		return Math.clamp(nf, lo, level);
+		if (link) { float p = presence(t); return drySample(nf, lo, level) * (1 - p) + surface(t) * p; }
+		if (wet(t)) return Float.NaN;
+		return drySample(nf, lo, level);
+	}
+	static boolean flatLike(boolean ok, boolean link, S t, float lo) {
+		return ok && (link ? presence(t) < 1.0F : !wet(t)) && Math.abs(floorOf(t) - lo) <= 0.05F;
 	}
 	static boolean dryFlat(boolean ok, boolean link, S t, float lo) { return ok && !link && !wet(t) && Math.abs(floorOf(t) - lo) <= 0.05F; }
 	static boolean dryOther(boolean ok, boolean link, S t, float lo) { return ok && !link && !wet(t) && Math.abs(floorOf(t) - lo) > 0.05F; }
@@ -73,26 +87,31 @@ final class HfMeshMirror {
 		if (okDX && (eXD || !(okDZ && eZD))) { nd = dx; eZD = same && eZD; }
 		else if (okDZ) { nd = dz; eXD = same && eXD; }
 		boolean lx = eSX || (eSZ && eZD && eXD), lz = eSZ || (eSX && eXD && eZD), ld = (eSX && eXD) || (eSZ && eZD);
-		float levelSum = top, lo = fl, hiC = ce, depthSum = top - fl, shares = 1;
+		float pa = presence(a);
+		float levelSum = pa * top, lo = fl, hiC = ce, depthSum = pa * (top - fl), shares = pa;
 		for (Object[] o : new Object[][]{{lx, nx}, {lz, nz}, {ld, nd}}) {
-			if ((Boolean) o[0]) { S t = (S) o[1]; levelSum += surface(t); lo = Math.min(lo, floorOf(t)); hiC = Math.min(hiC, ceilOf(t)); depthSum += surface(t) - floorOf(t); shares++; }
+			if ((Boolean) o[0]) { S t = (S) o[1]; float p = presence(t); levelSum += p * surface(t); lo = Math.min(lo, floorOf(t)); hiC = Math.min(hiC, ceilOf(t)); depthSum += p * (surface(t) - floorOf(t)); shares += p; }
 		}
+		shares = Math.max(shares, 1.0e-6F);
 		float level = levelSum / shares;
-		float sum = top, count = 1;
+		float hs = drySample(fl, lo, level) * (1 - pa) + top * pa;
+		float sum = hs, count = 1;
 		float[] v3 = {sample(okX, lx, nx, lo, level), sample(okZ, lz, nz, lo, level), sample(okD, ld, nd, lo, level)};
-		boolean flat = dryFlat(okX, lx, nx, lo) || dryFlat(okZ, lz, nz, lo) || dryFlat(okD, ld, nd, lo);
+		boolean flat = (pa < 1.0F && Math.abs(fl - lo) <= 0.05F) || flatLike(okX, lx, nx, lo) || flatLike(okZ, lz, nz, lo) || flatLike(okD, ld, nd, lo);
 		boolean other = dryOther(okX, lx, nx, lo) || dryOther(okZ, lz, nz, lo) || dryOther(okD, ld, nd, lo);
-		for (float v : v3) {
-			if (!Float.isNaN(v)) { sum += v; count++; }
+		float[] p3 = {lx ? presence(nx) : 0, lz ? presence(nz) : 0, ld ? presence(nd) : 0};
+		float cover = pa;
+		for (int i = 0; i < 3; i++) {
+			if (!Float.isNaN(v3[i])) { sum += v3[i]; count++; cover += p3[i]; }
 		}
 		float hh = sum / count;
 		float hx = Float.isNaN(v3[0]) ? hh : v3[0], hz = Float.isNaN(v3[1]) ? hh : v3[1], hd = Float.isNaN(v3[2]) ? hh : v3[2];
-		lastGx = ((hx - top) + (hd - hz)) * 0.5F / 0.5F * sx;
-		lastGz = ((hz - top) + (hd - hx)) * 0.5F / 0.5F * sz;
+		lastGx = ((hx - hs) + (hd - hz)) * 0.5F / 0.5F * sx;
+		lastGz = ((hz - hs) + (hd - hx)) * 0.5F / 0.5F * sz;
 		float h;
 		if (shore && flat && !other && level - lo > 1.0e-4F) {
-			float w = Math.clamp((hh - lo) / (level - lo), 0.0F, 1.0F);
-			h = Math.min(lo + (level - lo) * (2.0F * w - 1.0F), hiC);
+			float w = smooth ? Math.clamp(cover / count, 0.0F, 1.0F) : Math.clamp((hh - lo) / (level - lo), 0.0F, 1.0F);
+			h = Math.min(lo + (w >= 0.5F || !smooth ? level - lo : SHORE_BELOW) * (2.0F * w - 1.0F), hiC);
 		} else {
 			h = Math.clamp(hh, lo, hiC);
 		}
@@ -176,6 +195,52 @@ final class HfMeshMirror {
 		double rms = Math.sqrt(sum / Math.max(n, 1));
 		double mean = 0.0;
 		return new double[]{rms, cracks, n, mean};
+	}
+
+	/**
+	 * A flood front spreading over flat ground (a 1.5-block strip 0.3 deep let go across a tile): where the drawn surface meets
+	 * the ground along the middle row of corners, frame by frame for 8 s. Returns {largest jump of the waterline in one frame
+	 * (blocks), frames it jumped more than 0.2 blocks, how far the front got (blocks)}.
+	 */
+	static double[] frontMotion(boolean smoothLine) {
+		smooth = smoothLine;
+		int C = 2;
+		g = new HfTileGrid(0, 0, 0, 96, C, 4, 0.25F, 4, 16, 16);
+		sim = new HfTiledSim(g, HfCpuTest.voxels((x, y, z) -> y < 64));
+		sim.maxNewTiles = 0;
+		int tn = g.tn;
+		sim.addTile(0, 0, (l, c) -> l == 0 && (c % tn) < 3 ? 0.3 : 0.0);
+		double prev = Double.NaN, worst = 0.0, last = 0.0;
+		int big = 0;
+		int row = 15;
+		for (int f = 0; f < 60 * 8; f++) {
+			sim.frame();
+			// Corners (+x, +z) of the cells in the row: the waterline is where they cross the ground going out.
+			double line = Double.NaN;
+			float before = Float.NaN;
+			for (int cx = 0; cx < tn; cx++) {
+				S a = new S(0, 0, row * tn + cx);
+				float h = wet(a) ? corner(a, 1, 1) : nearWater(a) ? shoreCorner(a, 1, 1) : Float.NaN;
+				float above = h - 64.0F;
+				if (!Float.isNaN(before) && before > 0.0F && !(above > 0.0F)) {
+					double t = Float.isNaN(above) ? 1.0 : before / (before - above);
+					line = (cx + t) * 0.5;
+					break;
+				}
+				before = above;
+			}
+			if (!Double.isNaN(line)) {
+				if (!Double.isNaN(prev)) {
+					double jump = Math.abs(line - prev);
+					worst = Math.max(worst, jump);
+					big += jump > 0.2 ? 1 : 0;
+				}
+				prev = line;
+				last = line;
+			}
+		}
+		smooth = true;
+		return new double[]{worst, big, last};
 	}
 
 	static boolean check(String name, HfCpuTest.Solid solid, int resCol, float resLevel, int frames) {
@@ -350,6 +415,11 @@ final class HfMeshMirror {
 		checkCurtains();
 		check("lake with shore", (x, y, z) -> y < 64 + Math.max(0, Math.abs(x - 12) + Math.abs(z - 12) - 8) / 2,
 			(12 * 2) * tn + 12 * 2, 65.3F, 900);
+		double[] jumpy = frontMotion(false);
+		double[] fluid = frontMotion(true);
+		HfCpuTest.check(fluid[0] < 0.5 * jumpy[0] && fluid[1] < 0.25 * Math.max(jumpy[1], 1.0) && fluid[2] > 2.0, String.format(
+			"flood front on flat ground: the waterline moves at most %.2f blocks in a frame, %d frames over 0.2 blocks, front at %.1f blocks (all-or-nothing cells: %.2f, %d frames, %.1f)",
+			fluid[0], (int) fluid[1], fluid[2], jumpy[0], (int) jumpy[1], jumpy[2]));
 		double[] old = diagonalFront(false);
 		double[] now = diagonalFront(true);
 		HfCpuTest.check(now[1] == 0 && now[0] < 0.4 * old[0], String.format(
