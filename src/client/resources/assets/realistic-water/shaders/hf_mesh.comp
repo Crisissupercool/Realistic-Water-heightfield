@@ -258,6 +258,8 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce, out vec2 fl
     // The shallowest water at the corner (each sharer by its presence) limits the vanilla-like surface drop: over a block top a
     // few cm under a lake the full drop put the drawn surface under the block, which stood out dry.
     float shallow = mix(2.0, top - fl, pa);
+    // The highest floor among the corner's water and how present that water is (see the end).
+    float hiF = fl;
     float aer = pa * foamOf(a);
     flow = pa * velocityOf(a);
     if (lx) {
@@ -265,6 +267,7 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce, out vec2 fl
         vec2 gx = hfGeo(nx.span);
         levelSum += px * drawnSurfaceOf(nx.span);
         lo = min(lo, gx.x);
+        hiF = max(hiF, gx.x);
         hiC = min(hiC, gx.y);
         depthSum += px * (drawnSurfaceOf(nx.span) - gx.x);
         shallow = min(shallow, mix(2.0, drawnSurfaceOf(nx.span) - gx.x, px));
@@ -275,6 +278,7 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce, out vec2 fl
         vec2 gz = hfGeo(nz.span);
         levelSum += pz * drawnSurfaceOf(nz.span);
         lo = min(lo, gz.x);
+        hiF = max(hiF, gz.x);
         hiC = min(hiC, gz.y);
         depthSum += pz * (drawnSurfaceOf(nz.span) - gz.x);
         shallow = min(shallow, mix(2.0, drawnSurfaceOf(nz.span) - gz.x, pz));
@@ -285,6 +289,7 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce, out vec2 fl
         vec2 gd = hfGeo(nd.span);
         levelSum += pd * drawnSurfaceOf(nd.span);
         lo = min(lo, gd.x);
+        hiF = max(hiF, gd.x);
         hiC = min(hiC, gd.y);
         depthSum += pd * (drawnSurfaceOf(nd.span) - gd.x);
         shallow = min(shallow, mix(2.0, drawnSurfaceOf(nd.span) - gd.x, pd));
@@ -341,6 +346,18 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce, out vec2 fl
         h = clamp(h, lo, hiC);
     }
     h -= HF_SURFACE_DROP * clamp(min(min(depthSum / weight, shallow), h - lo), 0.0, 1.0);
+    // A ramp over a step (sharers on different floors) never dips under the upper floor: at a brink the averaged corner put the
+    // surface through the edge of the block, so the outer half of the block top stuck out of the water as dry grass (and
+    // switched as the pool below rose and the brink turned from a sheet into a ramp). The water now drapes over the edge.
+    // By the upper water's presence, so the corner moves continuously as it comes and goes.
+    if (hiF > lo + 0.05) {
+        // The most present water on the upper floor (the same for every sharer of the corner, whatever the order).
+        float pHi = fl >= hiF - 0.05 ? pa : 0.0;
+        pHi = max(pHi, lx && hfGeo(nx.span).x >= hiF - 0.05 ? px : 0.0);
+        pHi = max(pHi, lz && hfGeo(nz.span).x >= hiF - 0.05 ? pz : 0.0);
+        pHi = max(pHi, ld && hfGeo(nd.span).x >= hiF - 0.05 ? pd : 0.0);
+        h = min(max(h, mix(lo, hiF + 0.004, pHi)), hiC);
+    }
     vec3 n = normalize(vec3(-dhdx, 1.0, -dhdz));
     flow /= weight;
     return vec4(n.x, h, n.z, aer / weight);

@@ -96,8 +96,9 @@ final class HfMeshMirror {
 		if (smooth) top = Math.max(top, Math.min(fl + FILM_MIN_DRAWN, ce));
 		float levelSum = pa * top, lo = fl, hiC = ce, depthSum = pa * (top - fl), shares = pa;
 		float shallow = 2.0F * (1 - pa) + (top - fl) * pa;
+		float hiF = fl;
 		for (Object[] o : new Object[][]{{lx, nx}, {lz, nz}, {ld, nd}}) {
-			if ((Boolean) o[0]) { S t = (S) o[1]; float p = presence(t); levelSum += p * drawnSurface(t); lo = Math.min(lo, floorOf(t)); hiC = Math.min(hiC, ceilOf(t)); depthSum += p * (drawnSurface(t) - floorOf(t)); shares += p; shallow = Math.min(shallow, 2.0F * (1 - p) + (drawnSurface(t) - floorOf(t)) * p); }
+			if ((Boolean) o[0]) { S t = (S) o[1]; float p = presence(t); hiF = Math.max(hiF, floorOf(t)); levelSum += p * drawnSurface(t); lo = Math.min(lo, floorOf(t)); hiC = Math.min(hiC, ceilOf(t)); depthSum += p * (drawnSurface(t) - floorOf(t)); shares += p; shallow = Math.min(shallow, 2.0F * (1 - p) + (drawnSurface(t) - floorOf(t)) * p); }
 		}
 		shares = Math.max(shares, 1.0e-6F);
 		float level = levelSum / shares;
@@ -123,6 +124,11 @@ final class HfMeshMirror {
 			h = Math.clamp(hh, lo, hiC);
 		}
 		h -= DROP * Math.clamp(Math.min(smooth ? Math.min(depthSum / shares, shallow) : depthSum / shares, h - lo), 0, 1);
+		float pHi = fl >= hiF - 0.05F ? pa : 0.0F;
+		for (Object[] o : new Object[][]{{lx, nx}, {lz, nz}, {ld, nd}}) {
+			if ((Boolean) o[0] && floorOf((S) o[1]) >= hiF - 0.05F) pHi = Math.max(pHi, presence((S) o[1]));
+		}
+		if (smooth && hiF > lo + 0.05F) h = Math.min(Math.max(h, lo + (hiF + 0.004F - lo) * pHi), hiC);
 		return h;
 	}
 
@@ -224,7 +230,9 @@ final class HfMeshMirror {
 		sim.addTile(0, 0, (l, c) -> l == 0 && (c % tn) < 3 ? 0.3 : 0.0);
 		double prev = Double.NaN, worst = 0.0, last = 0.0;
 		int big = 0;
-		int row = 15;
+		// Along the bank, the corners on its edge itself follow the water draping over it from the bank top (it starts filled
+		// too); the row measured is the one next to the foot, whose corners all lie on the lower ground.
+		int row = bank ? 14 : 15;
 		for (int f = 0; f < 60 * 8; f++) {
 			sim.frame();
 			// Corners (+x, +z) of the cells in the row: the waterline is where they cross the ground going out.
@@ -321,6 +329,32 @@ final class HfMeshMirror {
 			}
 		}
 		return new double[]{above / (double) all, pres / n};
+	}
+
+	/** A lake on a plateau pouring over a 1-block step into a pool that fills: the lowest brink corner over the plateau, min over time. */
+	static double lipDip(boolean fixed) {
+		smooth = fixed;
+		int C = 2;
+		g = new HfTileGrid(0, 0, 0, 96, C, 4, 0.25F, 4, 16, 16);
+		sim = new HfTiledSim(g, HfCpuTest.voxels((x, y, z) -> y < (x < 8 ? 64 : 63)));
+		sim.maxNewTiles = 0;
+		int tn = g.tn;
+		sim.addTile(0, 0, (l, c) -> l == 0 && (c % tn) < 16 ? 0.3 : 0.0);
+		float cellA = g.cell * g.cell;
+		double worst = 9.0;
+		for (int f = 0; f < 60 * 15; f++) {
+			for (int z = 0; z < tn; z++) {
+				sim.inject(0, z * tn, 64.5F, 0.05F / 60.0F / cellA);
+			}
+			sim.frame();
+			if (f % 10 != 0) continue;
+			for (int z = 2; z < tn - 2; z++) {
+				S s = new S(0, 0, z * tn + 15);
+				if (wet(s) && presence(s) >= 1.0F) worst = Math.min(worst, corner(s, 1, 1) - 64.0F);
+			}
+		}
+		smooth = true;
+		return worst;
 	}
 
 	static boolean check(String name, HfCpuTest.Solid solid, int resCol, float resLevel, int frames) {
@@ -509,6 +543,9 @@ final class HfMeshMirror {
 			HfCpuTest.check(r[0] > 0.95, String.format("still lake %.0f cm over a 1-block ridge: %.0f%% of the ridge's corners drawn over its top, presence %.2f",
 				cover * 100, 100 * r[0], r[1]));
 		}
+		double before = lipDip(false), after = lipDip(true);
+		HfCpuTest.check(after >= 0.0 && before < 0.0, String.format(
+			"lake pouring over a 1-block step into a filling pool: the brink corner lies %+.3f over the block's top edge (before: %+.3f, inside the block)", after, before));
 		double[] brinkOld = brinkDrawn(false);
 		double[] brinkNow = brinkDrawn(true);
 		HfCpuTest.check(brinkNow[0] > 0.9 && brinkNow[0] > brinkOld[0], String.format(

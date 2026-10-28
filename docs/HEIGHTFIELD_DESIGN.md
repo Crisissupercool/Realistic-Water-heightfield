@@ -873,3 +873,10 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
 * **A light, dry-looking band along every edge water pours over.** At a brink the water thins to a few mm (a free overfall)
   and is drawn 8 mm deep; the wet look faded in over 1.5 cm of water, so the last half block before every edge kept the dry
   ground's colour next to the darkened lake, and flickered as that thin water's thickness changed. Fully wet from 3 mm now.
+* **The dry strip was geometry, not shading.** Where a lake pours over a 1-block step into a pool that fills, the brink and the
+  pool are drawn as one ramp once the pool is deep enough (drop under 1.6 and depth over 0.35 x the drop), and the shared
+  corner on the block's edge was the average of the two surfaces: 0.37 blocks inside the block (mirror). The outer half of the
+  block top stuck out of the water as dry grass, along every edge, switching as the pool rose and the brink turned from a sheet
+  into a ramp. A corner whose sharers lie on different floors now never goes under the highest of them (by that water's
+  presence, the most present on that floor, so every sharer computes the same corner): the water drapes over the edge and
+  slopes down the lower cell. Brink corner now 0.004 over the edge; still no cracks on the staircase and bumpy slope.
