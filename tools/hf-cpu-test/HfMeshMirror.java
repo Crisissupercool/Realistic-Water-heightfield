@@ -4,7 +4,7 @@ package me.skaffy.client.water;
 final class HfMeshMirror {
 	static HfTiledSim sim;
 	static HfTileGrid g;
-	static final float DRY = 0.035F, FLOW_DRY = 0.008F, RAMP_MAX = 1.6F, RAMP_FLOW = 0.02F, DROP = 0.111F, SHORE_BELOW = 0.25F;
+	static final float DRY = 0.035F, FLOW_DRY = 0.008F, RAMP_MAX = 1.6F, RAMP_FLOW = 0.02F, RAMP_DEPTH = 0.35F, FLOW_DRAW = 0.0005F, DROP = 0.111F, SHORE_BELOW = 0.25F;
 	/** The shader's marching-squares shoreline (corner remap and shore quads); false: the old cell-edged one, for comparison. */
 	static boolean shore = true;
 
@@ -18,13 +18,14 @@ final class HfMeshMirror {
 	static float depth(S s) { return sim.depth[s.span()]; }
 	static float surface(S s) { return Math.min(floorOf(s) + depth(s), ceilOf(s)); }
 	static float outTotal(S s) { int f = s.flux(); float o = 0; if (f >= 0) for (int k = 0; k < 8; k++) o += sim.flux[f + k]; return o; }
-	static boolean wet(S s) { float d = depth(s); if (d > DRY) return true; if (d <= FLOW_DRY) return false; return outTotal(s) > 0.002F; }
+	static boolean wet(S s) { float d = depth(s); if (d > DRY) return true; if (d <= FLOW_DRY) return false; return outTotal(s) > FLOW_DRAW; }
 	static boolean joined(S a, S t) { return wet(t) && floorOf(t) < surface(a) && floorOf(a) < surface(t); }
 	static float outTo(S a, int dir) { int f = a.flux(); return f < 0 ? 0 : sim.flux[f + dir * 2] + sim.flux[f + dir * 2 + 1]; }
 	static boolean linked(S a, int dir, S t) {
 		if (!wet(a) || !wet(t)) return false;
 		if (joined(a, t)) return true;
-		if (Math.abs(surface(a) - surface(t)) > RAMP_MAX) return false;
+		float drop = Math.abs(surface(a) - surface(t));
+		if (drop > RAMP_MAX || Math.max(depth(a), depth(t)) < RAMP_DEPTH * drop) return false;
 		return outTo(a, dir) + outTo(t, dir ^ 1) > RAMP_FLOW;
 	}
 	static S neighbor(S a, int k, int nib) {
@@ -219,7 +220,7 @@ final class HfMeshMirror {
 	}
 
 	// ---- Falling sheets (hf_mesh.comp curtainOf, curtainEnd, sheetPoint) ----
-	static final float CURTAIN_MIN = 0.005F, REACH = 0.42F, GRAV = 9.81F;
+	static final float CURTAIN_MIN = 0.0005F, REACH = 0.42F, GRAV = 9.81F;
 	static final float[] CURTAIN_T = {0.0F, 0.05F, 0.13F, 0.26F, 0.45F, 0.7F, 1.0F};
 	static final int[] SIDE0 = {3, 2, 0, 1}, SIDE1 = {2, 3, 1, 0};
 	/** Corner signs (sx, sz) of each edge's two ends, as in hf_mesh.comp's e0s / e1s. */

@@ -63,8 +63,10 @@ float foamOf(HfSpan t) {
     return t.flux == HF_NONE ? 0.0 : foam[HF_FOAM_READ + hfFoamIndex(t)] * smoothstep(0.02, 0.15, depth[t.span]);
 }
 
-// Water below this is never drawn; between this and HF_RENDER_DRY it is drawn only while it moves.
+// Water below this is never drawn; between this and HF_RENDER_DRY it is drawn only while it moves (outflow above FLOW_DRAW,
+// blocks^3/s: as low as the thinnest sheet drawn over an edge, so a film running off a block is drawn up to where it pours).
 const float FLOW_DRY = 0.008;
+const float FLOW_DRAW = 0.0005;
 
 // Whether span t has water worth drawing. Still films under HF_RENDER_DRY stay hidden (they shimmered on flat ground), but a
 // thin layer that is moving (running down steps or a slope) is drawn: hiding it punched holes cell by cell into shallow
@@ -91,7 +93,7 @@ bool wet(uint t) {
     for (uint k = 0u; k < HF_LINKS; k++) {
         outflow += flux[f + k];
     }
-    return outflow > 0.002;
+    return outflow > FLOW_DRAW;
 }
 
 float surfaceOf(uint t) {
@@ -107,8 +109,11 @@ bool joined(uint a, uint t) {
 
 // Spans whose surfaces differ by up to this much and that exchange water are drawn as one sloped surface (a ramp of
 // flowing water over a step) instead of two separate pieces with a sheet between them; bigger drops get a falling sheet.
+// Only water at least RAMP_MIN_DEPTH x the drop deep makes a ramp: a thin film over a step pours off it as a thin sheet down
+// the face (a ramp between 2 cm films a block apart was a slanted glass wedge standing in the air over the edge).
 const float RAMP_MAX_DROP = 1.6;
 const float RAMP_MIN_FLOW = 0.02;
+const float RAMP_MIN_DEPTH = 0.35;
 
 float outflowTo(HfSpan a, int dir) {
     return a.flux == HF_NONE ? 0.0 : flux[a.flux + uint(dir * 2)] + flux[a.flux + uint(dir * 2 + 1)];
@@ -124,7 +129,8 @@ bool linked(HfSpan a, int dir, HfSpan t) {
     if (joined(a.span, t.span)) {
         return true;
     }
-    if (abs(surfaceOf(a.span) - surfaceOf(t.span)) > RAMP_MAX_DROP) {
+    float drop = abs(surfaceOf(a.span) - surfaceOf(t.span));
+    if (drop > RAMP_MAX_DROP || max(depth[a.span], depth[t.span]) < RAMP_MIN_DEPTH * drop) {
         return false;
     }
     return outflowTo(a, dir) + outflowTo(t, dir ^ 1) > RAMP_MIN_FLOW;
@@ -440,8 +446,10 @@ SheetPoint sheetPoint(vec3 e, vec2 outward, vec4 end, float s, vec2 inward, bool
 
 // Foam of a falling sheet: the top surface's foam where it leaves the edge, whitening as it falls (thin trickles less), and
 // more at a free end. Uses only values both sheets at a shared end agree on, so the curtain has no seams.
+// A trickle (outflow per width under ~0.02 blocks^2/s) stays clear: a film running down a block face is not white.
 float sheetAer(float aerTop, SheetPoint p, vec3 e, vec4 end, bool free) {
-    float body = 0.35 + 0.65 * smoothstep(0.02, 0.4, end.y * max(e.y - end.z, 0.0));
+    float unit = end.y * max(e.y - end.z, 0.0);
+    float body = 0.35 * smoothstep(0.0, 0.02, unit) + 0.65 * smoothstep(0.02, 0.4, unit);
     float w = 1.0 - exp(-p.drop / 2.5);
     return clamp(mix(aerTop, 0.65 * body, w) + (free ? 0.2 * w : 0.0), 0.0, 1.0);
 }

@@ -1,0 +1,9 @@
+-nowarn
+-proc:none
+-d
+/tmp/claude-0/-home-claude/e5e2886d-b65c-593d-9525-134f4bc2832b/scratchpad/mixout
+-cp
+/mnt/user-data/uploads/Realistic-Water-heightfield/.gradle/loom-cache/minecraftMaven/net/minecraft/minecraft-common-7e9a32a5b8/26.3/minecraft-common-7e9a32a5b8-26.3.jar
+-sourcepath
+/tmp/claude-0/-home-claude/e5e2886d-b65c-593d-9525-134f4bc2832b/scratchpad/mixstub:src/main/java
+src/main/java/me/skaffy/mixin/AbstractBoatMixin.java

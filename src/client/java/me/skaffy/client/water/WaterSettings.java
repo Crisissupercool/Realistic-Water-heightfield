@@ -184,8 +184,12 @@ public final class WaterSettings {
 	public static float hfEntityRange = 48.0F;
 	/** Entities in water, moving against it or crossing the surface, that stir it like the player (waves, wakes), nearest first. */
 	public static int hfEntityStir = 16;
-	/** Outflow over an edge (blocks^3/s) above which a falling sheet is drawn. */
-	public static float hfCurtainMinFlow = 0.005F;
+	/**
+	 * Outflow over an edge (blocks^3/s) above which a falling sheet is drawn. Low enough for a trickle (0.0005 is half a litre a
+	 * second at 1 block = 1 m): at 0.005 a small stream was drawn pouring off one corner of a block while the water also running
+	 * over the rest of the edge was not drawn at all.
+	 */
+	public static float hfCurtainMinFlow = 0.0005F;
 	/** How hard the player pushes heightfield water when moving through it (bow wave, wake, rings when jumping in); 0 turns it off. */
 	public static float hfStirStrength = 1.0F;
 	/** How strongly the player makes its wake and splash rings on heightfield water (swimming, wading, bobbing, jumping in); 0 off. */
@@ -220,8 +224,12 @@ public final class WaterSettings {
 	/** Tiles whose deepest water is below hfFilmDepth only hold a thin film and may sleep while still creeping slower than this. */
 	public static float hfFilmDepth = 0.1F;
 	public static float hfFilmSleepRate = 0.02F;
-	/** Water thinner than this does not flow out of a cell, so a flood stops spreading once its edge is this thin. */
-	public static float hfMinFlowDepth = 0.03F;
+	/**
+	 * Water thinner than this does not flow sideways out of a cell, so a flood stops spreading once its edge is this thin (it still
+	 * drains over edges). 1 cm: at 3 cm a stream landing on a block top could not spread over it and poured off one corner; a
+	 * bucket now covers about 100 blocks^2 before it stops, close to vanilla water's 7-block reach.
+	 */
+	public static float hfMinFlowDepth = 0.01F;
 
 	public static String ffmpeg = "";
 	public static boolean renderFreezeWorld = true;

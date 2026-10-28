@@ -744,7 +744,7 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   more than 0.3 b/s (or crossing the surface) go into the stir slots next to the player, with the same plunge rule. Drifting with
   the current moves no water relative to it, so it does not take a slot. The flux pass loops over these bodies per span, so the
   cap bounds its cost.
-* **Boats sank (`AbstractBoatMixin`):** when a boat's top is under the surface, `AbstractBoat.isUnderwater` asks
+* **Boats sank (`AbstractBoatMixin`, superseded in section 25):** when a boat's top is under the surface, `AbstractBoat.isUnderwater` asks
   `FluidState.isSource()`. For non-source water it returns UNDER_FLOWING_WATER, and `floatBoat` pushes the boat down each tick
   (vanilla: waterfalls sink boats). Realistic water is never a source block (a source is an infinite spring), so any boat that
   dipped under once, landing or riding a wave, kept sinking. A redirect makes realistic water count as a source there, so the
@@ -787,3 +787,30 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   wet cell touches sit 0.25 under the ground; walls toward flat dry ground are no longer drawn. Banks, drops and steps keep
   the old rule. Mesh mirror on a 45 degree front: the waterline is 0.163 blocks RMS off the straight line (0.696 with cell
   edges), 0 shore corners that miss a wet cell's.
+
+## 25. Boats that ride rising water, small streams that pour off whole edges (as built)
+
+* **Boats still sank: the section 23 fix was wrong.** Checked in the 26.3 bytecode (`floatBoat`): vanilla's UNDER_WATER status
+  does not float a boat, it pulls it down (gravity, then (vy + 0.01 x 0.04 / 0.65) x 0.75: about 2.4 blocks/s), and
+  UNDER_FLOWING_WATER sinks it slowly; neither ever pushes it up. Vanilla only floats a boat (IN_WATER) on the surface of the
+  block its bottom is in, which works for still lakes. On heightfield water a boat went under in two ways: the written top
+  block is 8/9 high, so crossing a block boundary moves the boat-visible surface by 2/9 (8/9 to 1 + 1/9) at once, more than a
+  floating boat's 0.2 block freeboard; and water rising faster than the boat (a flood) closes over it. Once under, nothing
+  lifted it. The mixin now (1) never counts realistic water as over the boat (`isUnderwater`), and (2) floats the boat
+  (`checkInWater`) on the column's surface: block amounts / 8, up to 3 blocks up from the block its bottom is in, lowered by
+  1/9 like the drawn surface. A submerged boat then rises with vanilla's own buoyancy (at most about 5 blocks/s) and rides
+  rising water. Mirror (`HfBoatMirror`, vanilla's boat code on blocks written by `HfBlocks.amountFor`): floods rising 0.5 and
+  2 b/s and 0.3-block waves sank the boat before (bottom 9.5-12 blocks under), now it floats (bottom at most 0.83 under the
+  surface); the mixin compiles against the real 26.3 classes.
+* **A small stream poured off one corner of a block.** Two thresholds hid most of the water: sheets were drawn only above
+  0.005 blocks^3/s per half-block cell, and thin moving films only above 0.002, so a stream that physically ran over several
+  blocks of an edge (CPU: 5.5 blocks for 0.1 b^3/s) was drawn pouring off 2.5 of them, and a trickle not at all. Both are now
+  0.0005, and trickles stay clear instead of 35% white (sheet foam fades in with outflow per width up to 0.02). Water under 3 cm
+  could not spread sideways at all (`hfMinFlowDepth`), so a stream landing on a block top drained straight off the nearest
+  edge; at 1 cm it spreads over the top first (a bucket on flat ground now covers about 100 blocks^2 before it stops, near
+  vanilla's 7-block reach; settled films stay hidden under hfRenderDepth). Stream of 0.05 b^3/s on a 2x2 block top: 8 of 16
+  edge cells drawn pouring and 9 of 16 top cells wet (were 2 and 3). The tiled flood test now spreads into 16 tiles (12) and
+  sleeps after 271 s (242).
+* **Glass wedges over steps.** Two thin films a block apart that exchange water were drawn as one ramp, a slanted sheet
+  standing in the air over the edge. A ramp now needs water at least 0.35 x the drop deep on one side; thinner water pours
+  over the step as a sheet down its face. Mesh mirror: still no cracks (staircase stream 39 ramps instead of 63).

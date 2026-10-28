@@ -24,7 +24,7 @@ final class HfTiledSim {
 	final float[] air;
 	/** Churn per span from the last depth pass (blocks^2/s: inflow x head lost / cell area), for calibration and tests. */
 	final float[] churn;
-	static final float AIR_MIN_DROP = 1.5F;
+	static float AIR_MIN_DROP = 1.5F;
 	static final float AIR_TERMINAL = 12.0F;
 	static final float AIR_G = 9.81F;
 	/** Mirror of the foam buffer: two halves of one float per flux-page span, swapped every step. */

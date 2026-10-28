@@ -8,7 +8,7 @@ public final class HfCpuTest {
 	static final int L = 4;
 	static int failures;
 	/** Mirrors WaterSettings.hfMinFlowDepth: thinner water does not flow out (it stays as a film), so spreading stops. */
-	static float MIN_FLOW = 0.03F;
+	static float MIN_FLOW = 0.01F;
 
 	interface Solid {
 		boolean at(int x, int y, int z);
@@ -198,6 +198,58 @@ public final class HfCpuTest {
 			}
 		}
 		return new double[]{first, v0, lo, hi, sim.volume(), inAir};
+	}
+
+	/**
+	 * A stream of q blocks^3/s landing on one corner cell of a 2x2-block top one block above the ground: {edge cells (of 16)
+	 * pouring off more than the drawn-sheet threshold, top cells (of 16) holding water}.
+	 */
+	static int[] trickleOnBlock(float q, float minFlow, float sheetMin) {
+		float keepMin = MIN_FLOW;
+		MIN_FLOW = minFlow;
+		HfTileGrid g = new HfTileGrid(0, 0, 0, 96, C, L, 0.25F, 4, 16, 16);
+		long full = (1L << (C * C * C)) - 1L;
+		HfTopology.Voxels vox = (x, y, z) -> (x >= 6 && x < 8 && z >= 6 && z < 8 ? y < 12 : y < 11) ? full : 0L;
+		HfTiledSim sim = new HfTiledSim(g, vox);
+		sim.maxNewTiles = 0;
+		int tn = g.tn;
+		sim.addTile(0, 0, (l, c) -> 0.0);
+		float cellA = g.cell * g.cell;
+		double[] out = new double[g.pageSpans * 8];
+		int frames = 60 * 20;
+		for (int f = 0; f < frames; f++) {
+			sim.inject(0, 12 * tn + 12, 12.5F, q / 60.0F / cellA);
+			sim.frame();
+			int base = g.fluxPage[0] * g.pageSpans * 8;
+			if (f >= frames - 300) {
+				for (int i = 0; i < out.length; i++) {
+					out[i] += sim.flux[base + i] / 300.0;
+				}
+			}
+		}
+		int pouring = 0;
+		int wet = 0;
+		int[][] dirs = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+		for (int z = 12; z < 16; z++) {
+			for (int x = 12; x < 16; x++) {
+				int c = z * tn + x;
+				if (sim.depth[g.spanPage[0] * g.pageSpans + c] > 0.008F) {
+					wet++;
+				}
+				for (int d = 0; d < 4; d++) {
+					int nx = x + dirs[d][0];
+					int nz = z + dirs[d][1];
+					if (nx >= 12 && nx < 16 && nz >= 12 && nz < 16) {
+						continue;
+					}
+					if (out[c * 8 + d * 2] + out[c * 8 + d * 2 + 1] > sheetMin) {
+						pouring++;
+					}
+				}
+			}
+		}
+		MIN_FLOW = keepMin;
+		return new int[]{pouring, wet};
 	}
 
 	static double totalFlux(HfTiledSim sim, HfTileGrid grid, int tile) {
@@ -1025,6 +1077,20 @@ public final class HfCpuTest {
 			check(Math.max(r[1] - r[2], r[3] - r[1]) < 1.0e-3 * r[1] && Math.abs(r[4] - r[1]) < 1.0e-3 * r[1],
 				String.format("volume exact with the water in the air counted: %.2f, between %.2f and %.2f, %.2f at the end", r[1], r[2], r[3], r[4]));
 		}
+
+		System.out.println("Small streams: water landing on a block top spreads over it and pours off its edges, and the sheets are drawn");
+		{
+			for (float q : new float[]{0.01F, 0.05F, 0.2F}) {
+				int[] before = trickleOnBlock(q, 0.03F, 0.005F);
+				int[] now = trickleOnBlock(q, MIN_FLOW, HfMeshMirror.CURTAIN_MIN);
+				check(now[0] >= Math.max(2 * before[0], 4) && now[1] >= before[1], String.format(
+					"%.2f blocks^3/s on a 2x2 top: %d of 16 edge cells drawn pouring, %d of 16 top cells wet (before: %d and %d, 3 cm film rule, 0.005 sheets)",
+					q, now[0], now[1], before[0], before[1]));
+			}
+		}
+
+		System.out.println("Boats: vanilla boat buoyancy on the blocks the heightfield writes (AbstractBoatMixin)");
+		HfBoatMirror.run();
 
 		System.out.println("Topology: skipping the open sky above the heightmap gives exactly the same spans and links");
 		{
