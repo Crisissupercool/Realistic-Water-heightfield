@@ -159,6 +159,20 @@ uint hfFoamIndex(HfSpan a) {
 // it counts as running, plus 4 while it is the edge of a deeper body; hf_depth.comp moves it toward hfPresenceTarget,
 // hf_mesh.comp draws by it). Kept with the span pages, so it survives a tile falling asleep.
 layout(std430, binding = 20) buffer Air { float air[]; };
+// Foliage (leaves) in each span's open space (HfTileGrid.Tile#foliage): 0 none, else (top - yMin + 1) << 16 | (bottom - yMin + 1).
+layout(std430, binding = 21) readonly buffer Foliage { uint foliage[]; };
+// Water that drops (hf_spray.glsl) brought down onto each span, in HF_WATER_UNIT; hf_depth.comp adds it and clears it.
+layout(std430, binding = 22) coherent buffer Deposit { uint deposit[]; };
+const float HF_WATER_UNIT = 1.0e-6;
+
+// Foliage in span s as (bottom, top) world heights; bottom >= top when there is none.
+vec2 hfFoliage(uint s) {
+    uint f = foliage[s];
+    if (f == 0u) {
+        return vec2(1.0, 0.0);
+    }
+    return vec2(float(int(f & 0xFFFFu) - 1 + HF_YMIN), float(int(f >> 16) - 1 + HF_YMIN));
+}
 const float HF_AIR_MIN_DROP = 1.5;
 const uint HF_AIR_STRIDE = 4u;
 // A thin film (deeper than HF_FILM_DRY, thinner than hfRenderDepth) is drawn while it runs (outflow above HF_FILM_DRAW,

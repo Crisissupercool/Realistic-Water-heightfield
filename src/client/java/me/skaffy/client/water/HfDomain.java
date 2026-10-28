@@ -20,7 +20,8 @@ import org.lwjgl.vulkan.VkCommandBuffer;
  * 7 tile active flags, 8 stats, 9 verts, 10 quads, 11 mesh counters, 12 view state (probe only), 13 page owners, 14 aux
  * (inject or reservoir entries), 15 foam (two halves per flux page span, swapped every solver step), 16 vertex flow (mesh),
  * 17 spray particles (two halves of {@link #SPRAY_MAX}), 18 spray counters and draw args, 19 tile lookup (slot per tile around
- * the origin, see {@link #LOOKUP}).
+ * the origin, see {@link #LOOKUP}), 20 water in the air, 21 foliage per span (HfTileGrid.Tile#foliage), 22 water deposited by
+ * drops (per span, fixed point {@link #DEPOSIT_UNIT}).
  */
 final class HfDomain implements AutoCloseable {
 	/** Two vec4 per (span page, group of 256 spans): (volume, max depth, max speed, max rate), (border bits, 0, 0, 0). */
@@ -34,7 +35,7 @@ final class HfDomain implements AutoCloseable {
 		if (programs == null) {
 			int U = Desc.UBO;
 			int S = Desc.SSBO;
-			int[] layout = {U, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S};
+			int[] layout = {U, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S};
 			programs = new ComputeProgram[]{
 				new ComputeProgram("hf_flux.comp", layout),
 				new ComputeProgram("hf_depth.comp", layout),
@@ -123,6 +124,11 @@ final class HfDomain implements AutoCloseable {
 	private final VkBuf geo;
 	private final VkBuf depth;
 	/** Water in the air per span page span (3 floats: volume, seconds falling in, mean drop; see hf_depth.comp), binding 20. */
+	/** Foliage per span (binding 21) and water deposited by landing drops, per span in DEPOSIT_UNIT (binding 22). */
+	private final VkBuf foliage;
+	private final VkBuf deposit;
+	/** Volume (blocks^3) per unit of the drop deposits and of a drop's water (hf_spray.glsl WATER_UNIT). */
+	static final double DEPOSIT_UNIT = 1.0e-6;
 	private final VkBuf air;
 	private static final long AIR_BYTES = 16L;
 	private final VkBuf flux;
@@ -239,6 +245,8 @@ final class HfDomain implements AutoCloseable {
 		this.geo = VkBuf.device(spans * 4L, 0);
 		this.depth = VkBuf.device(spans * 4L, 0);
 		this.air = VkBuf.device(spans * AIR_BYTES, 0);
+		this.foliage = VkBuf.device(spans * 4L, 0);
+		this.deposit = VkBuf.device(spans * 4L, 0);
 		this.links = VkBuf.device(spans * 4L, 0);
 		this.flux = VkBuf.device((long) grid.maxFluxPages * this.ps * FLUX_BYTES, 0);
 		this.foamHalf = (long) grid.maxFluxPages * this.ps;
@@ -282,20 +290,21 @@ final class HfDomain implements AutoCloseable {
 
 	/** Size of the GPU allocation, for /water hf stats. */
 	long bytes() {
-		return (long) this.grid.maxPages * this.ps * (SPAN_BYTES + AIR_BYTES) + (long) this.grid.maxFluxPages * this.ps * (FLUX_BYTES + 8L)
+		return (long) this.grid.maxPages * this.ps * (SPAN_BYTES + AIR_BYTES + 8L) + (long) this.grid.maxFluxPages * this.ps * (FLUX_BYTES + 8L)
 			+ this.quadCapacity * 96L + 2L * (SPRAY_MAX + DROP_MAX) * 32L;
 	}
 
 	private VkBuf stage(HfTileGrid.Tile t, float[] initialDepth) {
 		int n = t.layersUsed * this.ps;
-		VkBuf staging = VkBuf.upload(n * 12L, 0);
+		VkBuf staging = VkBuf.upload(n * 16L, 0);
 		ByteBuffer b = staging.mapped();
 		for (int i = 0; i < n; i++) {
 			b.putInt(i * 4, t.geo[i]);
 			b.putInt(n * 4 + i * 4, t.links[i]);
 			b.putFloat(n * 8 + i * 4, initialDepth != null && HfTileGrid.validGeo(t.geo[i]) ? initialDepth[i] : 0.0F);
+			b.putInt(n * 12 + i * 4, t.foliage[i]);
 		}
-		staging.flush(0, n * 12L);
+		staging.flush(0, n * 16L);
 		return staging;
 	}
 
@@ -358,6 +367,9 @@ final class HfDomain implements AutoCloseable {
 			long dst = pages[l] * bytes;
 			staging.copyTo(cb, this.geo, l * bytes, dst, bytes);
 			staging.copyTo(cb, this.links, (n + l) * bytes, dst, bytes);
+			staging.copyTo(cb, this.foliage, (3L * n + l) * bytes, dst, bytes);
+			// Drops landing on the old page's water while it was rebuilt are not carried over (a few drops' worth at most).
+			this.deposit.fill(cb, dst, bytes, 0);
 			if (withDepth) {
 				staging.copyTo(cb, this.depth, (2L * n + l) * bytes, dst, bytes);
 			}
@@ -381,7 +393,8 @@ final class HfDomain implements AutoCloseable {
 		p.bind(cb, ubo, Desc.ssbo(this.geo), Desc.ssbo(this.depth), Desc.ssbo(this.flux), Desc.ssbo(this.links), Desc.ssbo(this.listRing[ring]),
 			Desc.ssbo(this.tileInfo), Desc.ssbo(this.activeRing[ring]), Desc.ssbo(this.stats), Desc.ssbo(this.verts), Desc.ssbo(this.quads),
 			Desc.ssbo(this.meshCounters), Desc.ssbo(view), Desc.ssbo(this.pageOwner), Desc.ssbo(aux), Desc.ssbo(this.foam),
-			Desc.ssbo(this.vertFlow), Desc.ssbo(this.spray), Desc.ssbo(this.sprayCounters), Desc.ssbo(this.tileLookup), Desc.ssbo(this.air));
+			Desc.ssbo(this.vertFlow), Desc.ssbo(this.spray), Desc.ssbo(this.sprayCounters), Desc.ssbo(this.tileLookup), Desc.ssbo(this.air),
+			Desc.ssbo(this.foliage), Desc.ssbo(this.deposit));
 	}
 
 	/**
@@ -870,6 +883,7 @@ final class HfDomain implements AutoCloseable {
 		if (!this.statsCleared) {
 			this.stats.fill(cb, 0);
 			this.air.fill(cb, 0);
+			this.deposit.fill(cb, 0);
 			this.foam.fill(cb, 0);
 			this.sprayCounters.fill(cb, 0);
 			this.statsCleared = true;
@@ -980,6 +994,8 @@ final class HfDomain implements AutoCloseable {
 		int dst = 1 - src;
 		this.sprayCounters.fill(cb, dst * 4L, 4L, 0);
 		this.sprayCounters.fill(cb, (2L + dst) * 4L, 4L, 0);
+		// Word 12: water carried by the drops still flying, summed by this update (HF_WATER_UNIT, for /water hf stats).
+		this.sprayCounters.fill(cb, 48L, 4L, 0);
 		Vk.barrier(cb);
 		this.bind(p[9], cb, ubo, ring, this.stats);
 		for (java.util.Iterator<float[]> it = this.bursts.iterator(); it.hasNext(); ) {
@@ -1320,6 +1336,8 @@ final class HfDomain implements AutoCloseable {
 			this.geo, this.depth, this.flux, this.foam, this.links, this.tileInfo, this.pageOwner, this.stats, this.verts, this.quads, this.meshCounters,
 			this.vertFlow, this.spray, this.sprayCounters, this.tileLookup));
 		all.add(this.air);
+		all.add(this.foliage);
+		all.add(this.deposit);
 		all.add(this.reservoirBuf);
 		all.add(this.sampleBuf);
 		all.add(this.entityOut);

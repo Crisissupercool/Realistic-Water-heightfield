@@ -171,14 +171,14 @@ public final class HfCpuTest {
 		HfTiledSim sim = new HfTiledSim(grid, vox);
 		sim.maxNewTiles = 0;
 		sim.addTile(0, 0, (l, c) -> l == 0 && (c % grid.tn) / C < 5 ? 2.0 : 0.0);
-		double v0 = sim.volume();
+		double v0 = sim.volume() + sim.dropWater();
 		double lo = v0;
 		double hi = v0;
 		double first = -1.0;
 		double inAir = 0.0;
 		for (int f = 0; f < 60 * 8; f++) {
 			sim.frame();
-			double v = sim.volume();
+			double v = sim.volume() + sim.dropWater();
 			lo = Math.min(lo, v);
 			hi = Math.max(hi, v);
 			double airNow = 0.0;
@@ -197,7 +197,7 @@ public final class HfCpuTest {
 				}
 			}
 		}
-		return new double[]{first, v0, lo, hi, sim.volume(), inAir};
+		return new double[]{first, v0, lo, hi, sim.volume() + sim.dropWater(), inAir};
 	}
 
 	/**
@@ -427,6 +427,103 @@ public final class HfCpuTest {
 			if (cu != null) worst = Math.max(worst, cu[0]);
 		}
 		return worst;
+	}
+
+	/**
+	 * Water poured onto a 1x1 pillar 16 blocks above the ground, through a canopy of leaves (x, z 5..9, y 66..70) around it:
+	 * {volume poured, volume now (heightfield + air + drops), water on the ground under the canopy, drops flying at the end,
+	 * lowest end of a drawn falling sheet over the canopy columns (the canopy top is 70)}.
+	 */
+	static HfTiledSim lastSim;
+
+	static double[] rainThroughCanopy(boolean drops) {
+		HfTileGrid g = new HfTileGrid(0, 0, 0, 96, C, L, 0.25F, 4, 16, 16);
+		long full = (1L << (C * C * C)) - 1L;
+		HfTopology.Voxels vox = new HfTopology.Voxels() {
+			public long blockVoxels(int x, int y, int z) {
+				return y < 64 || (x == 7 && z == 7 && y < 80) ? full : 0L;
+			}
+
+			public boolean foliage(int x, int y, int z) {
+				return x >= 5 && x <= 9 && z >= 5 && z <= 9 && y >= 66 && y < 70 && !(x == 7 && z == 7);
+			}
+		};
+		HfTiledSim sim = new HfTiledSim(g, vox);
+		sim.waterDrops = drops;
+		lastSim = sim;
+		sim.maxNewTiles = 0;
+		int tile = sim.addTile(0, 0, (l, c) -> 0.0);
+		int tn = g.tn;
+		float cellA = g.cell * g.cell;
+		double poured = 0.0;
+		float lowest = 999.0F;
+		for (int f = 0; f < 60 * 25; f++) {
+			if (f < 60 * 15) {
+				for (int c : new int[]{14 * tn + 14, 14 * tn + 15, 15 * tn + 14, 15 * tn + 15}) {
+					if (sim.inject(tile, c, 80.5F, 0.05F / 60.0F / cellA)) {
+						poured += 0.05 / 60.0 * 1.0;
+					}
+				}
+			}
+			sim.frame();
+			if (f == 60 * 12) {
+				lowest = lowestSheet(sim, g, tile);
+			}
+		}
+		double ground = 0.0;
+		for (int cz = 8; cz < 22; cz++) {
+			for (int cx = 8; cx < 22; cx++) {
+				ground += sim.depthAt(tile, 0, cz * tn + cx) * cellA;
+			}
+		}
+		return new double[]{poured, sim.volume() + sim.dropWater(), ground, sim.drops.size(), lowest};
+	}
+
+	/** Lowest end of a drawn falling sheet poured from spans whose floor is at 79 or higher. */
+	static float lowestSheet(HfTiledSim sim, HfTileGrid g, int tile) {
+		HfMeshMirror.g = g;
+		HfMeshMirror.sim = sim;
+		float lowest = 999.0F;
+		for (int c = 0; c < g.pageSpans; c++) {
+			for (int l = 0; l < g.layersUsed[tile]; l++) {
+				HfMeshMirror.S a = new HfMeshMirror.S(tile, l, c);
+				if (!HfTileGrid.validGeo(sim.geo[a.span()]) || !HfMeshMirror.wet(a) || HfMeshMirror.floorOf(a) < 79.0F) continue;
+				for (int d = 0; d < 4; d++) {
+					float[] cu = HfMeshMirror.curtainOf(a, d);
+					if (cu != null) lowest = Math.min(lowest, cu[0]);
+				}
+			}
+		}
+		return lowest;
+	}
+
+	/** A 20-block waterfall (0.5 blocks^3/s): {volume poured, volume now, water deposited by drops beyond 1 block of the foot}. */
+	static double[] waterfallSplash() {
+		HfTileGrid g = new HfTileGrid(0, 0, 0, 96, C, L, 0.25F, 4, 16, 16);
+		long full = (1L << (C * C * C)) - 1L;
+		HfTiledSim sim = new HfTiledSim(g, (x, y, z) -> (x < 6 ? y < 40 : y < 20) ? full : 0L);
+		sim.maxNewTiles = 0;
+		int tile = sim.addTile(0, 0, (l, c) -> 0.0);
+		int tn = g.tn;
+		float cellA = g.cell * g.cell;
+		double poured = 0.0;
+		double far = 0.0;
+		for (int f = 0; f < 60 * 20; f++) {
+			for (int z = 14; z < 18; z++) {
+				if (sim.inject(tile, z * tn + 4, 40.5F, 0.5F / 4.0F / 60.0F / cellA)) {
+					poured += 0.5 / 4.0 / 60.0;
+				}
+			}
+			sim.frame();
+			for (int s = 0; s < sim.deposit.length; s++) {
+				// deposits made this frame (taken in during the next frame's steps)
+				if (sim.deposit[s] > 0 && HfTileGrid.validGeo(sim.geo[s])) {
+					int col = s % g.pageSpans;
+					if ((col % tn) * g.cell > 7.0F) far += sim.deposit[s] * HfTiledSim.WATER_UNIT;
+				}
+			}
+		}
+		return new double[]{poured, sim.volume() + sim.dropWater(), far};
 	}
 
 	static double totalFlux(HfTiledSim sim, HfTileGrid grid, int tile) {
@@ -1305,6 +1402,18 @@ public final class HfCpuTest {
 		for (float q : new float[]{0.01F, 0.05F}) {
 			float end = thinFallSheetEnd(q);
 			check(end < 20.5F, String.format("%.2f b^3/s off a 20-block cliff: every falling sheet reaches the ground (highest end %.2f, ground 20)", q, end));
+		}
+
+		System.out.println("Water drops: water falling into leaves rains on through them, a hard landing splashes, the volume stays exact");
+		{
+			double[] r = rainThroughCanopy(true);
+			check(Math.abs(r[1] - r[0]) < 1.0e-3 * r[0] + 1.0e-4, String.format("poured %.4f blocks^3 onto a pillar over a canopy, %.4f now (heightfield, air and drops)", r[0], r[1]));
+			check(r[2] > 0.3 * r[0], String.format("%.3f blocks^3 reached the ground under the canopy", r[2]));
+			check(r[4] >= 69.9F, String.format("falling sheets end at the canopy top (lowest end %.2f, canopy top 70)", r[4]));
+			check(lastSim.lostUnits == 0, String.format("drops that ended where no span could take their water: %.6f blocks^3", lastSim.lostUnits * HfTiledSim.WATER_UNIT));
+			double[] w = waterfallSplash();
+			check(Math.abs(w[1] - w[0]) < 1.0e-3 * w[0], String.format("20-block waterfall: poured %.3f, %.3f now", w[0], w[1]));
+			check(w[2] > 0.005 * w[0], String.format("its splash put %.3f blocks^3 down more than a block from its foot", w[2]));
 		}
 
 		System.out.println("Topology: skipping the open sky above the heightmap gives exactly the same spans and links");

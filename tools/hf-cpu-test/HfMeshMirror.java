@@ -412,6 +412,8 @@ final class HfMeshMirror {
 		if (n == null || linked(t, d, n)) return null;
 		float fl = floorOf(t);
 		float land = wet(n) ? surface(n) : floorOf(n);
+		float[] leaf = sim.foliageOf(n.span());
+		if (leaf[0] < leaf[1] && leaf[1] > land && leaf[0] < fl) land = Math.min(leaf[1], fl);
 		float q = outTo(t, d);
 		if (land >= fl - 0.05F || q <= CURTAIN_MIN) return null;
 		float p = presence(t);

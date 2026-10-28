@@ -35,6 +35,19 @@ final class HfTiledSim {
 	static boolean filmSwitch = true;
 	static final float AIR_TERMINAL = 12.0F;
 	static final float AIR_G = 9.81F;
+	/** Mirror of the Foliage buffer (HfTileGrid.Tile#foliage) and of the Deposit buffer (water drops brought down, in WATER_UNIT). */
+	final int[] foliage;
+	final long[] deposit;
+	/** Mirror of the water-carrying drops (hf_spray.glsl set 1): x, z relative to the grid origin, y relative to yMin, velocity, life, units. */
+	final java.util.ArrayList<float[]> drops = new java.util.ArrayList<>();
+	static final double WATER_UNIT = 1.0e-6;
+	static final int DROP_WATER = 300, DROPS_PER_STEP = 4, DROP_MAX = 16384;
+	static final float SPLASH_SHARE = 0.25F;
+	/** false: no water drops (rain through leaves falls as before, no splash), as with hfSpray 0. */
+	boolean waterDrops = true;
+	/** Water of drops that ended where no span could take it (in the ground, or off the tiles). */
+	long lostUnits;
+	private final java.util.Random dropRng = new java.util.Random(7);
 	/** Mirror of the foam buffer: two halves of one float per flux-page span, swapped every step. */
 	final float[] foam;
 	final int foamHalf;
@@ -58,6 +71,8 @@ final class HfTiledSim {
 		this.depth = new float[g.maxPages * this.ps];
 		this.links = new int[g.maxPages * this.ps];
 		this.air = new float[g.maxPages * this.ps * AIR_STRIDE];
+		this.foliage = new int[g.maxPages * this.ps];
+		this.deposit = new long[g.maxPages * this.ps];
 		this.churn = new float[g.maxPages * this.ps];
 		this.flux = new float[g.maxFluxPages * this.ps * 8];
 		this.foamHalf = g.maxFluxPages * this.ps;
@@ -111,7 +126,107 @@ final class HfTiledSim {
 			int base = this.g.spanPage[tile * 4 + l] * this.ps;
 			System.arraycopy(t.geo, l * this.ps, this.geo, base, this.ps);
 			System.arraycopy(t.links, l * this.ps, this.links, base, this.ps);
+			System.arraycopy(t.foliage, l * this.ps, this.foliage, base, this.ps);
+			Arrays.fill(this.deposit, base, base + this.ps, 0L);
 		}
+	}
+
+	float[] foliageOf(int s) {
+		int f = this.foliage[s];
+		return f == 0 ? new float[]{1.0F, 0.0F} : new float[]{(f & 0xFFFF) - 1 + this.g.yMin, (f >>> 16) - 1 + this.g.yMin};
+	}
+
+	/** Mirror of throwDrops (hf_depth.comp): returns the volume thrown. p relative (x, z to the origin, y to yMin). */
+	double throwDrops(double volume, float px, float py, float pz, float spread, int mode, float speed) {
+		long units = (long) (Math.max(volume, 0.0) / WATER_UNIT);
+		if (units == 0) return 0.0;
+		long n = Math.clamp(units / DROP_WATER, 1, DROPS_PER_STEP);
+		long thrown = 0;
+		java.util.Random r = this.dropRng;
+		for (long k = 0; k < n; k++) {
+			long u = k + 1 == n ? units - (units / n) * (n - 1) : units / n;
+			double az = r.nextDouble() * 2 * Math.PI;
+			float hx = (float) Math.cos(az), hz = (float) Math.sin(az);
+			float qx = px + (r.nextFloat() - 0.5F) * spread, qy = py, qz = pz + (r.nextFloat() - 0.5F) * spread;
+			float vx, vy, vz;
+			if (mode == 0) {
+				qy -= 0.6F * r.nextFloat();
+				vx = hx * 0.3F * r.nextFloat(); vy = -(0.2F + 1.3F * r.nextFloat()); vz = hz * 0.3F * r.nextFloat();
+			} else {
+				float el = 0.6F + 0.65F * r.nextFloat();
+				float sp = Math.min(speed * (0.2F + 0.3F * r.nextFloat()), 6.0F);
+				vx = (float) (hx * Math.cos(el)) * sp; vy = (float) Math.sin(el) * sp; vz = (float) (hz * Math.cos(el)) * sp;
+			}
+			if (this.drops.size() < DROP_MAX) {
+				this.drops.add(new float[]{qx, qy, qz, vx, vy, vz, 10.0F, u});
+				thrown += u;
+			}
+		}
+		return thrown * WATER_UNIT;
+	}
+
+	/** Span containing p (relative coordinates), or -1; out[0] = 1 when p is under that span's water, out[1] = 1 in its foliage. */
+	int probeSpan(float x, float y, float z, int[] out) {
+		out[0] = 0;
+		out[1] = 0;
+		int[] at = this.g.locate(x + this.g.originX, z + this.g.originZ);
+		if (at == null) return -2;
+		float wy = y + this.g.yMin;
+		for (int l = 0; l < 4; l++) {
+			int page = this.g.spanPage[at[0] * 4 + l];
+			if (page < 0) continue;
+			int s = page * this.ps + at[1];
+			int gg = this.geo[s];
+			if (!HfTileGrid.validGeo(gg)) continue;
+			float fl = this.g.floorOf(gg), ce = this.g.ceilOf(gg);
+			if (wy < fl || wy >= ce) continue;
+			float d = this.depth[s];
+			out[0] = d > 0.02F && wy < Math.min(fl + d, ce) ? 1 : 0;
+			float[] leaf = this.foliageOf(s);
+			out[1] = wy >= leaf[0] && wy < leaf[1] ? 1 : 0;
+			return s;
+		}
+		return -1;
+	}
+
+	/** Mirror of hf_spray_update.comp for the water drops (one update per frame). */
+	void updateDrops(float dt) {
+		int[] o0 = new int[2], o1 = new int[2];
+		java.util.ArrayList<float[]> next = new java.util.ArrayList<>();
+		for (float[] d : this.drops) {
+			int s0 = this.probeSpan(d[0], d[1], d[2], o0);
+			d[4] -= 9.81F * dt;
+			float drag = (float) Math.exp(-0.15 * dt);
+			d[3] *= drag; d[4] *= drag; d[5] *= drag;
+			if (o0[1] == 1) {
+				float k = (float) Math.exp(-4.0 * dt);
+				d[3] *= k; d[5] *= k;
+				d[4] = Math.max(d[4], -3.0F);
+			}
+			d[6] -= dt;
+			float nx = d[0] + d[3] * dt, ny = d[1] + d[4] * dt, nz = d[2] + d[5] * dt;
+			int s1 = this.probeSpan(nx, ny, nz, o1);
+			boolean under = s1 >= 0 && o1[0] == 1, solid = s1 == -1;
+			boolean ends = under || solid || d[6] <= 0.0F;
+			int into = under ? s1 : s0;
+			if (!ends && next.size() < DROP_MAX) {
+				d[0] = nx; d[1] = ny; d[2] = nz;
+				d[6] = Math.max(d[6], 0.05F);
+				next.add(d);
+				continue;
+			}
+			if (into >= 0) this.deposit[into] += (long) d[7]; else this.lostUnits += (long) d[7];
+		}
+		this.drops.clear();
+		this.drops.addAll(next);
+	}
+
+	/** Water in the drops still flying and in deposits not yet taken in (blocks^3). */
+	double dropWater() {
+		double v = 0.0;
+		for (float[] d : this.drops) v += d[7] * WATER_UNIT;
+		for (long u : this.deposit) v += u * WATER_UNIT;
+		return v;
 	}
 
 	/** Mirror of hfFallTime (hf_common.glsl). */
@@ -404,6 +519,8 @@ final class HfTiledSim {
 				float foamIn = 0.0F;
 				float falling = 0.0F;
 				float airIn = 0.0F;
+				float rainIn = 0.0F, rainAx = 0.0F, rainAz = 0.0F, rainY = 0.0F;
+				float[] leafA = this.foliageOf(s);
 				boolean lake = false;
 				float airDrop = 0.0F;
 				float churnSum = 0.0F;
@@ -441,7 +558,14 @@ final class HfTiledSim {
 					if (fi > 0.0F) {
 						foamIn += fi * this.foam[read + nbBase / 8];
 						float drop = this.g.floorOf(this.geo[this.span(nb[0], nb[1], nb[2])]) - (floorA + old);
-						if (drop > AIR_MIN_DROP) {
+						float fb = this.g.floorOf(this.geo[this.span(nb[0], nb[1], nb[2])]);
+						float enter = Math.min(leafA[1], fb);
+						if (this.waterDrops && drop > 0.5F && leafA[0] < leafA[1] && enter > floorA + old + 0.5F && leafA[0] < fb) {
+							rainIn += fi;
+							rainAx += fi * HfTileGrid.DX[k >> 1] * 0.2F * cell;
+							rainAz += fi * HfTileGrid.DZ[k >> 1] * 0.2F * cell;
+							rainY += fi * enter;
+						} else if (drop > AIR_MIN_DROP) {
 							airIn += fi;
 							airDrop += fi * drop;
 						} else if (drop > 0.0F) {
@@ -483,7 +607,24 @@ final class HfTiledSim {
 				this.air[s * AIR_STRIDE + 1] = airT;
 				this.air[s * AIR_STRIDE + 2] = airH;
 				falling += landed / dt * Math.min(airH, 4.0F);
-				float nh = Math.max(old + (dt * (in - airIn - out) + landed) / area, 0.0F);
+				float deposited = (float) (this.deposit[s] * WATER_UNIT);
+				this.deposit[s] = 0L;
+				int tc = col % this.g.tn, tr = col / this.g.tn;
+				float cox = (this.g.tileX[tile] * this.g.tn + tc) * cell + 0.5F * cell;
+				float coz = (this.g.tileZ[tile] * this.g.tn + tr) * cell + 0.5F * cell;
+				float rained = 0.0F;
+				if (rainIn > 0.0F) {
+					rained = (float) this.throwDrops(rainIn * dt, cox + rainAx / rainIn, rainY / rainIn - this.g.yMin, coz + rainAz / rainIn, 0.5F * cell, 0, 0.0F);
+				}
+				float splashed = 0.0F;
+				if (this.waterDrops && landed > 0.0F) {
+					float vi = (float) (AIR_TERMINAL * Math.tanh(AIR_G * fallTime(airH) / AIR_TERMINAL));
+					float share = SPLASH_SHARE * smoothstep(3.0F, 10.0F, vi);
+					if (share > 0.0F) {
+						splashed = (float) this.throwDrops(landed * share, cox, floorA + old - this.g.yMin + 0.05F, coz, 0.8F * cell, 1, vi);
+					}
+				}
+				float nh = Math.max(old + (dt * (in - airIn - out) + landed + deposited - splashed - rained) / area, 0.0F);
 				this.depth[s] = nh;
 				{
 					float sv = this.air[s * AIR_STRIDE + 3];
@@ -655,6 +796,7 @@ final class HfTiledSim {
 		}
 		this.pages = act.pages;
 		if (this.pages.length == 0) {
+			this.updateDrops(frameDt);
 			return 0;
 		}
 		float wave = (float) Math.sqrt(9.81F * Math.max(this.g.activeMax(this.g.maxDepth), 0.01F)) + this.g.activeMax(this.g.maxSpeed);
@@ -667,6 +809,7 @@ final class HfTiledSim {
 			this.depthPass(dt);
 			this.applyReservoirs();
 		}
+		this.updateDrops(frameDt);
 		return steps;
 	}
 }

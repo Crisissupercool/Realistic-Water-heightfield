@@ -30,9 +30,12 @@ const int AT_UNDER_WATER = 2;
 const int AT_SOLID = 3;
 
 // What is at p (relative to the origin): air over no heightfield tile, air above a span's water (its surface in `surface`,
-// relative), under a water surface, or solid (no open span contains that height).
-int probe(vec3 p, out float surface) {
+// relative), under a water surface, or solid (no open span contains that height). `span` is the span containing p (HF_NONE
+// when there is none), `inLeaves` whether p is in its foliage.
+int probe(vec3 p, out float surface, out uint span, out bool inLeaves) {
     surface = -1.0e9;
+    span = HF_NONE;
+    inLeaves = false;
     ivec2 tc = ivec2(floor(p.xz / TILE_BLOCKS));
     ivec2 lc = tc + LOOKUP / 2;
     if (any(lessThan(lc, ivec2(0))) || any(greaterThanEqual(lc, ivec2(LOOKUP)))) {
@@ -58,6 +61,9 @@ int probe(vec3 p, out float surface) {
         float d = depth[s];
         float top = min(g.x + d, g.y);
         surface = top - float(HF_YMIN);
+        span = s;
+        vec2 leaf = hfFoliage(s);
+        inLeaves = y >= leaf.x && y < leaf.y;
         return d > 0.02 && y < top ? AT_UNDER_WATER : AT_ABOVE_WATER;
     }
     return AT_SOLID;
@@ -108,6 +114,12 @@ void main() {
     vec3 v = pt.vel.xyz;
     float dt = SPRAY_DT;
     bool mist = which == SET_SPRAY && pt.vel.w > 2.5;
+    uint water = which == SET_DROPS ? dropWater(pt.vel.w) : 0u;
+    float surface0;
+    uint span0;
+    bool leaves0;
+    // Where it is now: a drop carrying water gives it back to this span if it cannot go on.
+    int at0 = water > 0u ? probe(x, surface0, span0, leaves0) : AT_AIR;
     if (mist) {
         v.y += 0.4 * dt;
         v *= exp(-2.0 * dt);
@@ -116,10 +128,31 @@ void main() {
         // Small droplets slow down in the air more than the bigger water drops.
         v *= exp(-(which == SET_SPRAY ? 0.5 : 0.15) * dt);
     }
+    if (water > 0u && leaves0) {
+        // Through leaves a drop is caught and let go again, leaf to leaf: it loses most of its sideways speed and falls slowly.
+        v.xz *= exp(-4.0 * dt);
+        v.y = max(v.y, -3.0);
+    }
     life -= dt;
     vec3 xn = x + v * dt;
     float surface;
-    int at = probe(xn, surface);
+    uint span;
+    bool leaves;
+    int at = probe(xn, surface, span, leaves);
+    if (water > 0u) {
+        // Water drops end in the water or on the ground and give their water to the span they end in (the one they were in, when
+        // the step took them into the ground); out of the heightfield's tiles they fly on until they come back over one.
+        bool ends = at == AT_UNDER_WATER || at == AT_SOLID || life <= 0.0;
+        uint into = at == AT_UNDER_WATER ? span : span0;
+        if (!ends && particleAdd(which, SPRAY_DST, xn, v, max(life, 0.05), pt.vel.w)) {
+            atomicAdd(sprayCount[12], water);
+            return;
+        }
+        if (into != HF_NONE) {
+            atomicAdd(deposit[into], water);
+        }
+        return;
+    }
     if (life <= 0.0 || at == AT_SOLID || !mist && at == AT_UNDER_WATER) {
         return;
     }

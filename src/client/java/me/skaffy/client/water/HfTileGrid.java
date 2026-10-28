@@ -40,12 +40,18 @@ final class HfTileGrid {
 		final int layersUsed;
 		final int[] geo;
 		final int[] links;
+		/**
+		 * Foliage in each span's open space, per {@code layer * pageSpans + col}: 0 none, else (top - yMin + 1) << 16 | (bottom -
+		 * yMin + 1), block heights of the lowest leaf block's bottom and the highest one's top.
+		 */
+		final int[] foliage;
 		final int dropped;
 
-		Tile(int layersUsed, int[] geo, int[] links, int dropped) {
+		Tile(int layersUsed, int[] geo, int[] links, int[] foliage, int dropped) {
 			this.layersUsed = layersUsed;
 			this.geo = geo;
 			this.links = links;
+			this.foliage = foliage;
 			this.dropped = dropped;
 		}
 	}
@@ -330,7 +336,41 @@ final class HfTileGrid {
 		}
 		// HfTopology counts dropped spans over the whole halo build; the tile's own share is close enough for a diagnostic.
 		dropped = (int) Math.round(t.droppedSpans * (double) (this.tn * this.tn) / (t.nx * t.nz));
-		return new Tile(Math.max(used, 1), geo, links, dropped);
+		return new Tile(Math.max(used, 1), geo, links, this.foliage(voxels, tx, tz, geo), dropped);
+	}
+
+	/** Foliage per span (see {@link Tile#foliage}), scanned in each span's block column between its floor and ceiling (or the sky). */
+	private int[] foliage(HfTopology.Voxels voxels, int tx, int tz, int[] geo) {
+		int ps = this.pageSpans;
+		int[] out = new int[geo.length];
+		for (int cz = 0; cz < this.tn; cz++) {
+			for (int cx = 0; cx < this.tn; cx++) {
+				int wx = this.originX + tx * TILE_BLOCKS + cx / this.cpb;
+				int wz = this.originZ + tz * TILE_BLOCKS + cz / this.cpb;
+				int sky = Math.min(voxels.top(wx, wz), this.yMax);
+				for (int l = 0; l < this.layers; l++) {
+					int i = l * ps + cz * this.tn + cx;
+					int g = geo[i];
+					if (!validGeo(g)) {
+						continue;
+					}
+					int lo = Math.max((int) Math.floor(this.floorOf(g)), this.yMin);
+					int hi = Math.min((int) Math.ceil(this.ceilOf(g)), sky);
+					int bottom = Integer.MAX_VALUE;
+					int top = Integer.MIN_VALUE;
+					for (int y = lo; y < hi; y++) {
+						if (voxels.foliage(wx, y, wz)) {
+							bottom = Math.min(bottom, y);
+							top = y + 1;
+						}
+					}
+					if (top > bottom) {
+						out[i] = (top - this.yMin + 1) << 16 | (bottom - this.yMin + 1);
+					}
+				}
+			}
+		}
+		return out;
 	}
 
 	private int[] takeSpanPages(int tile, int n) {

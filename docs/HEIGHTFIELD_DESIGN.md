@@ -907,3 +907,24 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   column whose pour pauses keeps its front (its fall time runs back down instead of resetting), so a pulsing pour does not start
   over from the top; and the wet look only darkens ground within a block behind the water, so a sheet falling in front of a
   cliff no longer paints dark streaks on it.
+
+## 26. Water drops that carry water: rain through leaves, splashes (as built)
+
+* **Leaves.** Tiles record the foliage in each span's open space (`Voxels.foliage`, HfWorld: `BlockTags.LEAVES`; Foliage buffer,
+  binding 21: lowest leaf block's bottom and highest one's top, per span). Water falling into a span (drop over 0.5 blocks)
+  whose leaves lie between its water and the floor it comes from rains on through them: it is thrown out as drops at the
+  height it enters the leaves instead of falling as a sheet, and the sheet the mesh draws ends at the canopy top. Before, it
+  fell as a solid sheet straight through the tree.
+* **Drops carry water.** Splash drops (set 1 of the spray) carry water: vel.w = 4 + radius + 16 x units of 1e-6 blocks^3
+  (`dropSize`, `dropWater`). The water is taken out of the span that throws them; when a drop ends (in water, in the ground, or
+  after 10 s) its water goes to the span it ends in (Deposit buffer, binding 22, fixed point), which hf_depth.comp adds at its
+  next step. In leaves a drop loses most of its sideways speed and falls at most 3 b/s (caught and let go, leaf to leaf). A
+  drop that cannot be stored (set full) leaves its water where it was. About 300 units a drop, at most 4 a span per step.
+* **Splashes.** A landing waterfall throws up to 25% of the water it brings down out as drops, by impact speed (fully from 10
+  b/s: a 20-block fall), at 20-50% of that speed (at most 6 b/s), 35-70 degrees up, so they land around its foot.
+* hfSpray 0 turns water drops off (rain falls as before, no splash). Water in flight is not in the stats volume yet (summed in
+  sprayCounters word 12, not read back).
+* Mirror (HfTiledSim drops, deposits, updateDrops; HfMeshMirror sheets end at leaves): water poured onto a pillar over a canopy
+  stays exactly 3.0000 blocks^3 (heightfield + air + drops), 1.2 of it reached the ground under the canopy, sheets end at the
+  canopy top, nothing lost; a 20-block waterfall of 0.5 b^3/s keeps 10.000 blocks^3 exactly and its splash puts 0.08 blocks^3
+  down more than a block from its foot.

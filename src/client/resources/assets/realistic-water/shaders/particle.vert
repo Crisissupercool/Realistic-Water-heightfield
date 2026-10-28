@@ -51,7 +51,7 @@ void main() {
     // Splash water drops (heightfield, 4 + their size as a multiple of pc.b.w blocks).
     bool drop = p.vel.w >= 3.5;
     if (drop) {
-        r = pc.b.w * (p.vel.w - 4.0);
+        r = pc.b.w * mod(p.vel.w - 4.0, 16.0);
     }
 #else
     bool foam = false;
@@ -76,7 +76,7 @@ void main() {
         // Real splash drops are millimetres, so even right next to the camera they stay specks: a drop stops growing at a few
         // pixels, the cap set by its own size so a near splash keeps its mix of big and small drops. A 12 px cap for every drop
         // made a near splash a heap of equal white ovals ("rice"; scratchpad preview/drops7.py).
-        float cap = 5.0 * pow(clamp((p.vel.w - 4.0) / 1.5, 0.0, 1.0), 1.5);
+        float cap = 5.0 * pow(clamp(mod(p.vel.w - 4.0, 16.0) / 1.5, 0.0, 1.0), 1.5);
         if (pixelR > cap) {
             r *= cap / pixelR;
             pixelR = cap;

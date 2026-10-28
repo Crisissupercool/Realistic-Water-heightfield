@@ -50,7 +50,45 @@ const float SPRAY_CHURN_RATE = 0.12;
 #define HF_SPRAY_INTO uint(hp.p2.z)
 #define HF_SPRAY_SEED uint(hp.p2.w)
 
+// Water drops that carry water (hf_spray.glsl): water falling into leaves rains on through them as drops, and a waterfall's
+// impact throws part of the water it brings down out as drops (more the harder it hits), which land around it. About
+// DROP_WATER units of water each (HF_WATER_UNIT), at most DROPS_PER_STEP a span per step (bigger drops when there is more).
+const uint DROP_WATER = 300u;
+const uint DROPS_PER_STEP = 4u;
+const float SPLASH_SHARE = 0.25;
+const vec2 SPLASH_SPEED = vec2(3.0, 10.0);
+
 shared vec4 reduction[256];
+
+// Throws `volume` (blocks^3) out as water drops; returns the volume thrown (the rest stays with the span). mode 0: rain falling
+// on through leaves from around p; mode 1: a splash thrown up and out around p at up to `speed` blocks/s.
+float throwDrops(float volume, vec3 p, float spread, int mode, float speed, inout uint seed) {
+    uint units = uint(max(volume, 0.0) / HF_WATER_UNIT);
+    if (units == 0u) {
+        return 0.0;
+    }
+    uint n = clamp(units / DROP_WATER, 1u, DROPS_PER_STEP);
+    uint thrown = 0u;
+    for (uint k = 0u; k < n; k++) {
+        uint u = k + 1u == n ? units - (units / n) * (n - 1u) : units / n;
+        float az = sprayRand(seed) * 6.2831853;
+        vec2 h = vec2(cos(az), sin(az));
+        vec3 q = p + vec3((sprayRand(seed) - 0.5) * spread, 0.0, (sprayRand(seed) - 0.5) * spread);
+        vec3 v;
+        if (mode == 0) {
+            q.y -= 0.6 * sprayRand(seed);
+            v = vec3(h.x * 0.3 * sprayRand(seed), -mix(0.2, 1.5, sprayRand(seed)), h.y * 0.3 * sprayRand(seed));
+        } else {
+            float el = mix(0.6, 1.25, sprayRand(seed));
+            float sp = speed * mix(0.2, 0.5, sprayRand(seed));
+            v = vec3(h.x * cos(el), sin(el), h.y * cos(el)) * min(sp, 6.0);
+        }
+        if (waterDropAdd(HF_SPRAY_INTO, q, v, 10.0, mix(0.8, 1.4, sprayRand(seed)), u)) {
+            thrown += u;
+        }
+    }
+    return float(thrown) * HF_WATER_UNIT;
+}
 shared uint borderBits;
 
 // Bit d when span a holds water at its tile's border in direction d, has a link that way, and no tile exists there yet.
@@ -94,6 +132,13 @@ void main() {
         // Water pouring in over a drop of more than HF_AIR_MIN_DROP (blocks^3/s, and times its drop).
         float airIn = 0.0;
         float airDrop = 0.0;
+        // Water falling into leaves (rains on through them as drops): how much, where it comes in (summed edge points weighted
+        // by it) and the height it enters the leaves at.
+        float rainIn = 0.0;
+        vec2 rainAt = vec2(0.0);
+        float rainY = 0.0;
+        vec2 leafA = hfFoliage(a.span);
+        bool drops = HF_SPRAY_SCALE > 0.0;
         float churn = 0.0;
         // Whether a neighbor deeper than hfRenderDepth has its surface at ours (we are the edge of that body).
         bool lake = false;
@@ -134,7 +179,13 @@ void main() {
                 // Water arriving from a span whose floor lies above our surface drops in: a waterfall or a step. Over a real
                 // drop it is in the air first and churns the water where it lands, when it lands (below).
                 float drop = hfGeo(b.span).x - (floorA + old);
-                if (drop > HF_AIR_MIN_DROP) {
+                float enter = min(leafA.y, hfGeo(b.span).x);
+                if (drops && drop > 0.5 && leafA.x < leafA.y && enter > floorA + old + 0.5 && leafA.x < hfGeo(b.span).x) {
+                    rainIn += i;
+                    // Toward the edge it comes in over, but inside our cell: a drop thrown into the neighbor's ground is lost.
+                    rainAt += i * (vec2(HF_DX[k >> 1], HF_DZ[k >> 1]) * 0.2 * HF_CELL);
+                    rainY += i * enter;
+                } else if (drop > HF_AIR_MIN_DROP) {
                     airIn += i;
                     airDrop += i * drop;
                 } else if (drop > 0.0) {
@@ -182,7 +233,33 @@ void main() {
         air[ai + 1u] = airT;
         air[ai + 2u] = airH;
         falling += landed / HF_DT * min(airH, 4.0);
-        float h = max(old + (HF_DT * (inflow - airIn - outflow) + landed) / area, 0.0);
+        // Water drops brought down onto us since the last step.
+        // (A plain read first: an atomic on every span every step would cost more than the rest of this pass.)
+        uint dep = deposit[a.span];
+        if (dep != 0u) {
+            dep = atomicExchange(deposit[a.span], 0u);
+        }
+        float deposited = float(dep) * HF_WATER_UNIT;
+        uint seed = sprayHash(a.span * 2246822519u ^ HF_SPRAY_SEED * 3266489917u);
+        vec2 cellOrigin = vec2(tileInfo[a.tile * 4u + 1u].xy * HF_TN + hfColumn(a.col)) * HF_CELL + 0.5 * HF_CELL;
+        // Rain through leaves: everything that falls into them goes on as drops (what cannot be thrown stays here).
+        float rained = 0.0;
+        if (rainIn > 0.0) {
+            vec3 p = vec3(cellOrigin + rainAt / rainIn, rainY / rainIn - float(HF_YMIN));
+            rained = throwDrops(rainIn * HF_DT, vec3(p.x, p.y, p.z), 0.5 * HF_CELL, 0, 0.0, seed);
+        }
+        // A hard landing throws part of the water out as a splash, more the faster it hits.
+        float splashed = 0.0;
+        if (drops && landed > 0.0) {
+            float vi = HF_AIR_TERMINAL * tanh(HF_AIR_G * hfFallTime(airH) / HF_AIR_TERMINAL);
+            float share = SPLASH_SHARE * smoothstep(SPLASH_SPEED.x, SPLASH_SPEED.y, vi);
+            if (share > 0.0) {
+                vec3 p = vec3(cellOrigin.x, floorA + old - float(HF_YMIN) + 0.05, cellOrigin.y);
+                splashed = throwDrops(landed * share, p, 0.8 * HF_CELL, 1, vi, seed);
+            }
+        }
+        // (Rain the drops could not take stays here: of rainIn x dt, only `rained` left.)
+        float h = max(old + (HF_DT * (inflow - airIn - outflow) + landed + deposited - splashed - rained) / area, 0.0);
         depth[a.span] = h;
         // How much of the water here is in the drawn surface (see hfPresenceTarget), moving at most 1 per HF_FILM_SWITCH seconds.
         float sv = air[ai + 3u];

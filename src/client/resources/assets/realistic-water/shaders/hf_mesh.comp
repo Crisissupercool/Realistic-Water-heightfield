@@ -421,6 +421,12 @@ bool curtainOf(HfSpan t, int d, out float land, out float v0, out float q, out b
         down = false;
         land = max(land, fl - hfFallDistance(fallen));
     }
+    // Falling into leaves, the water rains on through them as drops (hf_depth.comp): the sheet ends where it enters them.
+    vec2 leaf = hfFoliage(n.span);
+    if (leaf.x < leaf.y && leaf.y > land && leaf.x < fl) {
+        land = min(leaf.y, fl);
+        down = false;
+    }
     q = outflowTo(t, d);
     if (land >= fl - 0.05 || q <= HF_CURTAIN_MIN) {
         return false;

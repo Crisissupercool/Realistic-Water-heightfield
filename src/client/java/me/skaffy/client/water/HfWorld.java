@@ -154,6 +154,11 @@ final class HfWorld {
 				return solids.blockVoxels(level, bx, by, bz);
 			}
 
+			@Override
+			public boolean foliage(int bx, int by, int bz) {
+				return level.getBlockState(p.set(bx, by, bz)).is(BlockTags.LEAVES);
+			}
+
 			/** Above the highest non-air block (the client's WORLD_SURFACE heightmap) a column is open sky; unloaded chunks stay solid. */
 			@Override
 			public int top(int bx, int bz) {

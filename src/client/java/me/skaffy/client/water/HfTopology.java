@@ -61,6 +61,14 @@ final class HfTopology {
 		default int top(int bx, int bz) {
 			return Integer.MAX_VALUE;
 		}
+
+		/**
+		 * Whether the open block at (bx, by, bz) is foliage the water passes through (leaves): water falling into it rains on through
+		 * it as drops (HfTileGrid.Tile#foliage).
+		 */
+		default boolean foliage(int bx, int by, int bz) {
+			return false;
+		}
 	}
 
 	/**
