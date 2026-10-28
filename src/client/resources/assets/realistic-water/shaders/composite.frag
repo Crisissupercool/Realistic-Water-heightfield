@@ -89,8 +89,9 @@ bool projectToScreen(vec3 pos, out vec2 suv) {
 // down: without it a ray that overshoots by up to a step "hits" whatever lies there, which drew jagged teeth of the cliff
 // into the water next to it and made reflections jump with every small camera move. A crossing far behind the surface
 // (the ray passed behind an object) is no hit; rays heading back toward the camera and long rays fade out.
-vec3 traceReflection(vec3 origin, vec3 R, out float hit) {
+vec3 traceReflection(vec3 origin, vec3 R, out float hit, out float travelled) {
     hit = 0.0;
+    travelled = 0.0;
     vec3 pos = origin;
     vec3 last = origin;
     float stepLen = 0.15;
@@ -128,6 +129,7 @@ vec3 traceReflection(vec3 origin, vec3 R, out float hit) {
             float travel = 1.0 - smoothstep(0.6, 1.0, float(i) / 48.0);
             float away = 1.0 - smoothstep(0.1, 0.5, R.z);
             hit = edge.x * edge.y * travel * away;
+            travelled = length(b - origin);
             return texture(sceneColor, suv).rgb;
         }
         stepLen *= 1.1;
@@ -512,7 +514,8 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     vec3 ssr = vec3(0.0);
     float ssrWeight = smoothstep(SSR_MIN_F, 2.0 * SSR_MIN_F, F);
     if (ssrWeight > 0.0 && (pc.debugOff & 1) == 0) {
-        ssr = traceReflection(P + n * 0.05, Rv, hit);
+        float travelled;
+        ssr = traceReflection(P + n * 0.05, Rv, hit, travelled);
         hit *= ssrWeight;
     }
     vec3 reflection = mix(skyColor(Rw), ssr, hit);
@@ -560,14 +563,32 @@ vec3 shadeSurfaceFromBelow(vec2 uv, vec3 n, float fd, vec3 deep) {
     float cosI = clamp(dot(n, V), 0.0, 1.0);
     const float ETA = 1.333;
     float sinT2 = ETA * ETA * (1.0 - cosI * cosI);
-    if (sinT2 >= 1.0) {
-        return deep * 1.4;
+    // Seen from below, the surface reflects the water under it: totally outside Snell's window (beyond ~48 degrees), partly
+    // inside it. The reflection was a flat colour, so past the window's edge the surface was an opaque dark slab that cut across
+    // trunks and blocks standing out of the water, with the jagged outline of wherever the surface met the terrain. Now it
+    // mirrors the submerged scene (screen-space trace, fogged over the reflected path), and where the trace finds nothing,
+    // the water's own colour in the distance (the fog colour), so it blends into the fog like the scene does.
+    float F = 1.0;
+    if (sinT2 < 1.0) {
+        float cosT = sqrt(1.0 - sinT2);
+        F = 0.02 + 0.98 * pow(1.0 - cosT, 5.0);
     }
-    float cosT = sqrt(1.0 - sinT2);
-    float F = 0.02 + 0.98 * pow(1.0 - cosT, 5.0);
+    vec3 reflected = deep;
+    if ((pc.debugOff & 1) == 0 && F > 0.05) {
+        vec3 Rv = reflect(-V, n);
+        float hit;
+        float travelled;
+        vec3 ssr = traceReflection(P + n * 0.05, Rv, hit, travelled);
+        float fog = G.scatter.w * G.misc.x;
+        ssr = ssr * exp(-G.absorb.rgb * travelled * G.misc.x) + deep * (1.0 - exp(-fog * travelled));
+        reflected = mix(deep, ssr, hit);
+    }
+    if (sinT2 >= 1.0) {
+        return reflected;
+    }
     vec2 ruv = clamp(uv - n.xy * G.waterA.z * 0.6, vec2(0.0), vec2(1.0));
     vec3 above = texture(sceneColor, ruv).rgb;
-    return mix(above, deep * 1.4, F);
+    return mix(above, reflected, F);
 }
 
 void main() {

@@ -136,7 +136,7 @@ final class HfTiledSim {
 		this.writePages(tile, t);
 		for (int l = 0; l < t.layersUsed; l++) {
 			int base = this.g.spanPage[tile * 4 + l] * this.ps;
-			java.util.Arrays.fill(this.air, base * 3, (base + this.ps) * 3, 0.0F);
+			java.util.Arrays.fill(this.air, base * AIR_STRIDE, (base + this.ps) * AIR_STRIDE, 0.0F);
 		}
 		double vol = 0.0;
 		float md = 0.0F;

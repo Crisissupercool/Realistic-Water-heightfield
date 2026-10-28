@@ -880,3 +880,13 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   into a ramp. A corner whose sharers lie on different floors now never goes under the highest of them (by that water's
   presence, the most present on that floor, so every sharer computes the same corner): the water drapes over the edge and
   slopes down the lower cell. Brink corner now 0.004 over the edge; still no cracks on the staircase and bumpy slope.
+* **Underwater, the surface was an opaque dark slab.** Seen from below past Snell's window (beyond ~48 degrees from straight
+  up) the surface reflects all light back into the water, and that reflection was a flat colour (1.4 x the fog colour). So it
+  cut across trunks and blocks standing out of the water and showed the jagged outline of wherever the surface met the
+  terrain. It now mirrors the submerged scene (the screen-space trace, from just under the surface, fogged over the reflected
+  path), mixed in by Fresnel inside the window too, with the fog colour where the trace finds nothing, so it fades into the
+  distance like the scene does. Ray-traced reflections off (hfCompositeOff 1) fall back to the fog colour.
+* (CPU mirror) addTile cleared only 3 floats per span of the Air mirror since it grew to 4; it now clears AIR_STRIDE.
+* Tried and left out: the velocity head u^2/2g in the flux drive (energy-conserving form, K from the net flow through each
+  face). It is stable and adds the stagnation rise in front of obstacles, but at the speeds the solver reaches (0.3-0.9 b/s in
+  a fed channel, friction and damping hold it down) it changes depths by 1-2 cm, and it slows every accelerating flow.
