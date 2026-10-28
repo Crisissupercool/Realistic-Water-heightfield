@@ -425,8 +425,11 @@ bool curtainOf(HfSpan t, int d, out float land, out float v0, out float q, out b
     if (land >= fl - 0.05 || q <= HF_CURTAIN_MIN) {
         return false;
     }
-    // A sheet grows down from the edge as the water there comes in (its presence), instead of hanging down in full at once.
-    float p = presence(t.span);
+    // A sheet grows down from the edge as the water there comes in (its presence, relative to the presence that water will
+    // settle at: a trickle's thin film never reaches 1, and scaled by its presence alone its sheet stopped in mid-air for good).
+    float v = air[t.span * HF_AIR_STRIDE + 3u];
+    float settle = hfPresenceTarget(depth[t.span], hfRunning(v), q, hfLakeEdge(v));
+    float p = settle > 1.0e-3 ? clamp(presence(t.span) / settle, 0.0, 1.0) : 1.0;
     if (p < 1.0) {
         land = mix(fl - 0.05, land, p);
         down = down && p >= 1.0;

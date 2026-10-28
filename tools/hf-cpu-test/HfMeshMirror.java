@@ -415,6 +415,15 @@ final class HfMeshMirror {
 		float q = outTo(t, d);
 		if (land >= fl - 0.05F || q <= CURTAIN_MIN) return null;
 		float p = presence(t);
+		{
+			float v = sim.air[t.span() * HfTiledSim.AIR_STRIDE + 3];
+			boolean running = (v % 4.0F) >= 2.0F, lake = v >= 4.0F;
+			float dt = depth(t);
+			float still = lake && dt > HfTiledSim.FILM_DRY ? 1.0F : Math.clamp((dt - sim.renderDepth) / HfTiledSim.STILL_FADE, 0.0F, 1.0F);
+			float film = running && dt > 0.0005F ? Math.max(Math.clamp((dt - HfTiledSim.FILM_DRY) / (HfTiledSim.FILM_FULL - HfTiledSim.FILM_DRY), 0.0F, 1.0F), Math.clamp(q / (4.0F * HfTiledSim.FILM_DRAW), 0.0F, 1.0F)) : 0.0F;
+			float settle = Math.max(still, film);
+			p = settle > 1.0e-3F ? Math.clamp(p / settle, 0.0F, 1.0F) : 1.0F;
+		}
 		if (p < 1.0F) land = (fl - 0.05F) * (1 - p) + land * p;
 		return new float[]{land, Math.clamp(q / (0.5F * Math.max(surface(t) - fl, 0.03F)), 0.2F, 4.0F)};
 	}

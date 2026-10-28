@@ -172,9 +172,11 @@ void main() {
             }
         }
         if (airVol <= 0.0) {
-            // Nothing in the air: the next pour starts a new front from the top.
+            // Nothing in the air: the stream's tail falls on, so a pour that resumes within the fall time continues the falling
+            // column instead of starting a new front at the top (a thin, pulsing pour restarted it every pulse, and the sheet
+            // kept ending in mid-air). After a full fall time without water the next pour starts from the top.
             airVol = 0.0;
-            airT = 0.0;
+            airT = max(airT - HF_DT, 0.0);
         }
         air[ai] = airVol;
         air[ai + 1u] = airT;

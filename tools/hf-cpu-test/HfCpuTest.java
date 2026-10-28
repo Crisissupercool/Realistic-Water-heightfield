@@ -366,6 +366,69 @@ public final class HfCpuTest {
 		return new double[]{sim.foamAt(t0, 0, 15 * tn + 22), sim.foamAt(t0, 0, 15 * tn + 26), sim.foamAt(t0, 0, 11 * tn + 22)};
 	}
 
+	/**
+	 * A thin stream (q blocks^3/s) poured onto a plateau and off a 20-block cliff: {times in the last 20 s a cell's falling column
+	 * started over from the top after it had reached the bottom (the sheet ending in mid-air again), cells pouring}.
+	 */
+	static int[] thinFallRestarts(float q) {
+		HfTileGrid grid = new HfTileGrid(0, 0, 0, 96, C, L, 0.25F, 4, 16, 16);
+		long full = (1L << (C * C * C)) - 1L;
+		HfTopology.Voxels vox = (x, y, z) -> (x < 6 ? y < 40 : y < 20) ? full : 0L;
+		HfTiledSim sim = new HfTiledSim(grid, vox);
+		sim.maxNewTiles = 0;
+		int tile = sim.addTile(0, 0, (l, c) -> 0.0);
+		int tn = grid.tn;
+		float cellA = grid.cell * grid.cell;
+		float[] lastT = new float[grid.maxPages * grid.pageSpans];
+		boolean[] down = new boolean[lastT.length];
+		boolean[] seen = new boolean[lastT.length];
+		int restarts = 0;
+		for (int f = 0; f < 60 * 40; f++) {
+			sim.inject(tile, 16 * tn + 4, 40.5F, q / 60.0F / cellA);
+			sim.frame();
+			for (int s = 0; s < lastT.length; s++) {
+				float t = sim.air[s * HfTiledSim.AIR_STRIDE + 1];
+				float h = sim.air[s * HfTiledSim.AIR_STRIDE + 2];
+				if (h <= 0.0F) continue;
+				float tf = HfTiledSim.fallTime(h);
+				if (t >= tf) down[s] = true;
+				if (f >= 60 * 20 && down[s] && t < 0.5F * tf && lastT[s] >= 0.5F * tf) {
+					restarts++;
+				}
+				seen[s] |= t > 0.0F;
+				lastT[s] = t;
+			}
+		}
+		int cells = 0;
+		for (boolean b : seen) cells += b ? 1 : 0;
+		return new int[]{restarts, cells};
+	}
+
+	/** A thin stream (q) off a 20-block cliff after 30 s: the highest point any drawn falling sheet ends at (20 = the ground). */
+	static float thinFallSheetEnd(float q) {
+		HfTileGrid grid = new HfTileGrid(0, 0, 0, 96, C, L, 0.25F, 4, 16, 16);
+		long full = (1L << (C * C * C)) - 1L;
+		HfTiledSim sim = new HfTiledSim(grid, (x, y, z) -> (x < 6 ? y < 40 : y < 20) ? full : 0L);
+		sim.maxNewTiles = 0;
+		int tile = sim.addTile(0, 0, (l, c) -> 0.0);
+		int tn = grid.tn;
+		float cellA = grid.cell * grid.cell;
+		for (int f = 0; f < 60 * 30; f++) {
+			sim.inject(tile, 16 * tn + 4, 40.5F, q / 60.0F / cellA);
+			sim.frame();
+		}
+		HfMeshMirror.g = grid;
+		HfMeshMirror.sim = sim;
+		float worst = 20.0F;
+		for (int c = 0; c < grid.pageSpans; c++) {
+			HfMeshMirror.S a = new HfMeshMirror.S(tile, 0, c);
+			if (!HfMeshMirror.wet(a)) continue;
+			float[] cu = HfMeshMirror.curtainOf(a, 0);
+			if (cu != null) worst = Math.max(worst, cu[0]);
+		}
+		return worst;
+	}
+
 	static double totalFlux(HfTiledSim sim, HfTileGrid grid, int tile) {
 		double sum = 0.0;
 		for (int l = 0; l < grid.layersUsed[tile]; l++) {
@@ -1232,6 +1295,17 @@ public final class HfCpuTest {
 
 		System.out.println("Boats: vanilla boat buoyancy on the blocks the heightfield writes (AbstractBoatMixin)");
 		HfBoatMirror.run();
+
+		System.out.println("Thin waterfalls keep falling: a pulsing trickle does not restart its falling column from the top");
+		for (float q : new float[]{0.01F, 0.02F}) {
+			int[] r = thinFallRestarts(q);
+			check(r[0] == 0 && r[1] > 0, String.format("%.3f b^3/s off a 20-block cliff: %d restarts of a falling column in 20 s (%d cells pouring)", q, r[0], r[1]));
+		}
+
+		for (float q : new float[]{0.01F, 0.05F}) {
+			float end = thinFallSheetEnd(q);
+			check(end < 20.5F, String.format("%.2f b^3/s off a 20-block cliff: every falling sheet reaches the ground (highest end %.2f, ground 20)", q, end));
+		}
 
 		System.out.println("Topology: skipping the open sky above the heightmap gives exactly the same spans and links");
 		{

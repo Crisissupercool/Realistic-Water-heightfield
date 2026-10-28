@@ -490,7 +490,9 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     // Any water at all wets the ground: at a brink the stream thins to a few mm before it pours off (and the drawn film is
     // 8 mm), and fading the wet look in over 1.5 cm left a light, dry-looking band along every edge water ran over, which
     // flickered as the thin water's thickness changed. Fully wet from 3 mm.
-    float wet = G.shadeB.y * smoothstep(0.0, 0.003, max(thickness * G.waterA.y, path));
+    // Only ground the water lies on: a sheet falling in front of a cliff, a block or more away, darkened the cliff behind it into
+    // dark streaks.
+    float wet = G.shadeB.y * smoothstep(0.0, 0.003, max(thickness * G.waterA.y, path)) * (1.0 - smoothstep(0.3, 1.0, refrDist - fd));
     under = pow(max(under, vec3(0.0)), vec3(1.0 + 1.5 * wet)) * (1.0 - 0.5 * wet);
     vec3 transmitted = under * exp(-G.absorb.rgb * path);
     vec3 scattered = G.scatter.rgb * ambient * (1.0 - exp(-G.scatter.w * path));

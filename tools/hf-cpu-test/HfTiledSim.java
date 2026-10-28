@@ -477,7 +477,7 @@ final class HfTiledSim {
 				}
 				if (airVol <= 0.0F) {
 					airVol = 0.0F;
-					airT = 0.0F;
+					airT = Math.max(airT - dt, 0.0F);
 				}
 				this.air[s * AIR_STRIDE] = airVol;
 				this.air[s * AIR_STRIDE + 1] = airT;

@@ -900,3 +900,10 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
 * **Leaves let water through.** The heightfield's terrain treats leaves as open (water is never written into them): water poured
   on a tree rains down through the canopy instead of pooling on top and pouring off the canopy's edges as walls of water (with
   the lower leaves showing through the gaps), and floods rise through bushes and hedges. A leaf wall no longer holds water back.
+* **Thin waterfalls stopped in mid-air.** A sheet grows down from its edge with the pouring span's presence, but a trickle's
+  thin film settles at a presence under 1 (its depth and outflow say it only partly covers the cell), so its sheet stayed
+  that fraction long for good: 0.05 b^3/s off a 20-block cliff ended 6 blocks under the edge (mirror). It now grows by the
+  presence relative to the one the water settles at, so it reaches the ground once the water has come in. Also: a falling
+  column whose pour pauses keeps its front (its fall time runs back down instead of resetting), so a pulsing pour does not start
+  over from the top; and the wet look only darkens ground within a block behind the water, so a sheet falling in front of a
+  cliff no longer paints dark streaks on it.
