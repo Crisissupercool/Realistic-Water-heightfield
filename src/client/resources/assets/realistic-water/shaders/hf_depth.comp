@@ -32,6 +32,11 @@ const vec2 FOAM_STIR = vec2(1.5, 4.0);
 const vec2 FOAM_CHURN = vec2(1.5, 12.0);
 const float FOAM_CHURN_MAX = 0.85;
 const float SPRAY_CHURN_MIN = 8.0;
+// Water counts as running, and keeps its tile awake even when its surface is steady, with an outflow above RUNNING_FLOW
+// (blocks^3/s, the thinnest film and sheet hf_mesh.comp draws) at more than RUNNING_SPEED (blocks/s). The speed keeps a flood
+// edge creeping out over flat ground (a few cm/s) from holding its tiles awake until it stops.
+const float RUNNING_FLOW = 0.0005;
+const float RUNNING_SPEED = 0.15;
 // Droplets per second per span and unit of churn above SPRAY_CHURN_MIN (times hfSpray).
 const float SPRAY_CHURN_RATE = 0.12;
 // hfSpray while the water moves (0: no spray), the spray half to add to and a seed for this step.
@@ -193,8 +198,12 @@ void main() {
             f = max(f, 0.35 * smoothstep(FOAM_STIR.x, FOAM_STIR.y, length(stir.xy)));
         }
         foam[HF_FOAM_WRITE + hfFoamIndex(a)] = h > 0.0 ? f : 0.0;
-        // Water still in the air counts toward the volume, and keeps the tile awake until it has landed.
-        mine = vec4(h * HF_CELL * HF_CELL + airVol, h, speed, max(abs(h - old) / HF_DT, airVol > 1.0e-5 ? 1.0 : 0.0));
+        // Water still in the air counts toward the volume, and keeps the tile awake until it has landed. So does running water: a
+        // steady stream has a still surface, and judged by that alone a tile carrying only a thin stream fell asleep (film tiles
+        // may sleep below 0.02 b/s), stopped waking the tile downstream and dammed the stream at the border; its films and
+        // sheets vanished and popped back whenever a surge woke it.
+        bool busy = airVol > 1.0e-5 || (outflow > RUNNING_FLOW && outflow > RUNNING_SPEED * HF_CELL * max(h, 0.008));
+        mine = vec4(h * HF_CELL * HF_CELL + airVol, h, speed, max(abs(h - old) / HF_DT, busy ? 1.0 : 0.0));
         uint bits = growthBits(a, h);
         if (bits != 0u) {
             atomicOr(borderBits, bits);

@@ -25,6 +25,8 @@ final class HfTiledSim {
 	/** Churn per span from the last depth pass (blocks^2/s: inflow x head lost / cell area), for calibration and tests. */
 	final float[] churn;
 	static float AIR_MIN_DROP = 1.5F;
+	/** Mirror of RUNNING_FLOW (hf_depth.comp): outflow that keeps a tile awake. */
+	static final float RUNNING_FLOW = 0.0005F, RUNNING_SPEED = 0.15F;
 	static final float AIR_TERMINAL = 12.0F;
 	static final float AIR_G = 9.81F;
 	/** Mirror of the foam buffer: two halves of one float per flux-page span, swapped every step. */
@@ -475,7 +477,8 @@ final class HfTiledSim {
 				if (nh > 0.05F) {
 					this.g.maxSpeed[tile] = Math.max(this.g.maxSpeed[tile], Math.min(peak / (cell * nh), 30.0F));
 				}
-				this.g.maxRate[tile] = Math.max(this.g.maxRate[tile], Math.max(Math.abs(nh - old) / dt, airVol > 1.0e-5F ? 1.0F : 0.0F));
+				boolean busy = airVol > 1.0e-5F || (out > RUNNING_FLOW && out > RUNNING_SPEED * cell * Math.max(nh, 0.008F));
+				this.g.maxRate[tile] = Math.max(this.g.maxRate[tile], Math.max(Math.abs(nh - old) / dt, busy ? 1.0F : 0.0F));
 				this.g.border[tile] |= this.growthBits(tile, s, col, nh);
 			}
 		}

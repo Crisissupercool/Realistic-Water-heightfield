@@ -814,3 +814,11 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
 * **Glass wedges over steps.** Two thin films a block apart that exchange water were drawn as one ramp, a slanted sheet
   standing in the air over the edge. A ramp now needs water at least 0.35 x the drop deep on one side; thinner water pours
   over the step as a sheet down its face. Mesh mirror: still no cracks (staircase stream 39 ramps instead of 63).
+* **Small streams moved in jerks.** A tile sleeps when its surface stops changing (film tiles, deepest water under 0.1, already
+  below 0.02 b/s). A steady stream has a still surface, so a tile carrying only a thin stream counted as asleep while the water
+  ran through it. An asleep tile does not wake its neighbors, so the tile downstream stayed off and the stream was dammed at the
+  border; when a neighbor slept too, its flux pages went and with them its moving films and sheets, which vanished and popped
+  back whenever a surge woke it. Running water now keeps its tile awake like water in the air: an outflow above 0.0005
+  blocks^3/s (the thinnest film or sheet drawn) at more than 0.15 blocks/s (so a flood edge creeping over flat ground at a few
+  cm/s still lets its tiles sleep). Stream of 0.2 b^3/s down terraces over 4 tiles: 434 tile-frames a minute with running water
+  left unsimulated before, 0 now. The open-ground flood test now sleeps after 313 s over 42 tiles (271 s, 32).

@@ -252,6 +252,50 @@ public final class HfCpuTest {
 		return new int[]{pouring, wet};
 	}
 
+	/**
+	 * A small stream (0.2 blocks^3/s, a few cm deep) running down 1-block terraces over 4 tiles in a row: {tile-frames in the last
+	 * 60 s in which a tile whose water was running (an outflow above the drawn-film threshold) the last time it was simulated is
+	 * not simulated, volume that reached the last tile}. An asleep tile does not wake its neighbors, so the water stopped at the next tile border, and once its
+	 * neighbors slept too its films and sheets vanished until something woke it again.
+	 */
+	static double[] streamTiles() {
+		HfTileGrid g = new HfTileGrid(0, 0, 0, 96, C, L, 0.25F, 8, 16, 16);
+		long full = (1L << (C * C * C)) - 1L;
+		HfTopology.Voxels vox = (x, y, z) -> y < 40 - Math.floorDiv(Math.max(x, 0), 3) ? full : 0L;
+		HfTiledSim sim = new HfTiledSim(g, vox);
+		sim.maxNewTiles = 0;
+		int[] tiles = new int[4];
+		for (int i = 0; i < 4; i++) {
+			tiles[i] = sim.addTile(i, 0, (l, c) -> 0.0);
+		}
+		float cellA = g.cell * g.cell;
+		int tn = g.tn;
+		int bad = 0;
+		boolean[] running = new boolean[4];
+		for (int f = 0; f < 60 * 180; f++) {
+			sim.inject(tiles[0], 16 * tn + 1, 41.0F, 0.2F / 60.0F / cellA);
+			sim.frame();
+			for (int i = 0; i < 4; i++) {
+				int t = tiles[i];
+				if (!g.active[t]) {
+					// Not simulated: its films and sheets are not drawn and nothing flows in or out.
+					bad += running[i] && f >= 60 * 120 ? 1 : 0;
+					continue;
+				}
+				running[i] = false;
+				int fp = g.fluxPage[t * 4] * g.pageSpans * 8;
+				for (int k = 0; k < g.pageSpans * 8 && !running[i]; k += 8) {
+					float o = 0.0F;
+					for (int j = 0; j < 8; j++) {
+						o += sim.flux[fp + k + j];
+					}
+					running[i] = o > HfMeshMirror.FLOW_DRAW;
+				}
+			}
+		}
+		return new double[]{bad, g.volume[tiles[3]]};
+	}
+
 	static double totalFlux(HfTiledSim sim, HfTileGrid grid, int tile) {
 		double sum = 0.0;
 		for (int l = 0; l < grid.layersUsed[tile]; l++) {
@@ -1087,6 +1131,13 @@ public final class HfCpuTest {
 					"%.2f blocks^3/s on a 2x2 top: %d of 16 edge cells drawn pouring, %d of 16 top cells wet (before: %d and %d, 3 cm film rule, 0.005 sheets)",
 					q, now[0], now[1], before[0], before[1]));
 			}
+		}
+
+		System.out.println("Running water keeps its tile awake: a steady trickle has a still surface, but it must not sleep and freeze");
+		{
+			double[] r = streamTiles();
+			check(r[0] == 0 && r[1] > 1.0, String.format("small stream down terraces over 4 tiles: %d tile-frames with running water left unsimulated (in the last 60 s), %.1f blocks^3 reached the 4th tile",
+				(int) r[0], r[1]));
 		}
 
 		System.out.println("Boats: vanilla boat buoyancy on the blocks the heightfield writes (AbstractBoatMixin)");
