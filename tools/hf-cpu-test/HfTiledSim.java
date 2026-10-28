@@ -27,6 +27,11 @@ final class HfTiledSim {
 	static float AIR_MIN_DROP = 1.5F;
 	/** Mirror of RUNNING_FLOW (hf_depth.comp): outflow that keeps a tile awake. */
 	static final float RUNNING_FLOW = 0.0005F, RUNNING_SPEED = 0.15F;
+	/** Mirror of the Air layout and the drawn-film switch (hf_common.glsl). */
+	static final int AIR_STRIDE = 4;
+	static final float FILM_DRY = 0.008F, FILM_DRAW = 0.0005F, FILM_SWITCH = 0.3F;
+	/** false: films switch frame by frame, as before the switch existed (for comparison). */
+	static boolean filmSwitch = true;
 	static final float AIR_TERMINAL = 12.0F;
 	static final float AIR_G = 9.81F;
 	/** Mirror of the foam buffer: two halves of one float per flux-page span, swapped every step. */
@@ -51,7 +56,7 @@ final class HfTiledSim {
 		this.geo = new int[g.maxPages * this.ps];
 		this.depth = new float[g.maxPages * this.ps];
 		this.links = new int[g.maxPages * this.ps];
-		this.air = new float[g.maxPages * this.ps * 3];
+		this.air = new float[g.maxPages * this.ps * AIR_STRIDE];
 		this.churn = new float[g.maxPages * this.ps];
 		this.flux = new float[g.maxFluxPages * this.ps * 8];
 		this.foamHalf = g.maxFluxPages * this.ps;
@@ -154,14 +159,16 @@ final class HfTiledSim {
 			float[] acc = new float[4];
 			int[] src = {-1, -1, -1, -1};
 			float[] srcAmount = new float[4];
+			float[] shown = new float[4];
 			for (int i = 0; i < 4; i++) {
 				if (oldPages[i] < 0) {
 					continue;
 				}
 				int s = oldPages[i] * this.ps + col;
+				shown[i] = this.air[s * AIR_STRIDE + 3];
 				int gg = this.geo[s];
 				float d = this.depth[s];
-				float inAir = this.air[s * 3];
+				float inAir = this.air[s * AIR_STRIDE];
 				if (HfTileGrid.validGeo(gg) && inAir > 0.0F) {
 					float of = this.g.floorOf(gg);
 					float oc = this.g.ceilOf(gg);
@@ -226,9 +233,10 @@ final class HfTiledSim {
 				if (newPages[j] >= 0) {
 					int ns = newPages[j] * this.ps + col;
 					this.depth[ns] = acc[j];
-					this.air[ns * 3] = 0.0F;
-					this.air[ns * 3 + 1] = 0.0F;
-					this.air[ns * 3 + 2] = 0.0F;
+					this.air[ns * AIR_STRIDE] = 0.0F;
+					this.air[ns * AIR_STRIDE + 1] = 0.0F;
+					this.air[ns * AIR_STRIDE + 2] = 0.0F;
+					this.air[ns * AIR_STRIDE + 3] = src[j] >= 0 ? shown[src[j]] : 0.0F;
 				}
 			}
 			float[][] f = new float[4][8];
@@ -311,7 +319,7 @@ final class HfTiledSim {
 				float fa = this.g.floorOf(ga);
 				float ca = this.g.ceilOf(ga);
 				float headA = fa + hA;
-				boolean film = hA <= HfCpuTest.MIN_FLOW;
+				float filmCarry = Math.clamp(hA / HfCpuTest.MIN_FLOW, 0.0F, 1.0F);
 				float[] st = this.stirAt(tile, col, fa, Math.min(headA, ca));
 				float drag = 1.0F - (float) Math.exp(-this.stirRate * dt);
 				float[] out = new float[8];
@@ -328,10 +336,8 @@ final class HfTiledSim {
 					int b = this.span(nb[0], nb[1], nb[2]);
 					int gb = this.geo[b];
 					float fb = this.g.floorOf(gb);
-					float headB = fb + this.depth[b];
-					if (film && headB >= fa) {
-						continue;
-					}
+					float hB = this.depth[b];
+					float headB = fb + hB;
 					float lo = Math.max(fa, fb);
 					float hi = Math.min(ca, this.g.ceilOf(gb));
 					float wetA = Math.clamp(headA, lo, hi) - lo;
@@ -341,7 +347,14 @@ final class HfTiledSim {
 					float wetB = Math.clamp(headB, lo, hi) - lo;
 					float area = cell * Math.max(wetA, wetB);
 					// Over an edge onto lower water (a free overfall) only the water above the edge drives the flow (see hf_flux.comp).
-					float q = this.flux[base + k] * keep + dt * 9.81F * area * (headA - Math.max(headB, fa)) / cell;
+					float drive = headA - Math.max(headB, fa);
+					float carry = 1.0F;
+					if (headB >= fa) {
+						float m = HfCpuTest.MIN_FLOW;
+						drive = fa + Math.max(hA - m, 0.0F) - Math.max(fb + Math.max(hB - m, 0.0F), fa);
+						carry = filmCarry;
+					}
+					float q = this.flux[base + k] * keep * carry + dt * 9.81F * area * drive / cell;
 					if (st[2] > 0.0F) {
 						int d = k >> 1;
 						float target = (st[0] * HfTileGrid.DX[d] + st[1] * HfTileGrid.DZ[d]) * cell * Math.min(st[2], wetA);
@@ -431,9 +444,9 @@ final class HfTiledSim {
 					}
 				}
 				float area = cell * cell;
-				float airVol = this.air[s * 3];
-				float airT = this.air[s * 3 + 1];
-				float airH = this.air[s * 3 + 2];
+				float airVol = this.air[s * AIR_STRIDE];
+				float airT = this.air[s * AIR_STRIDE + 1];
+				float airH = this.air[s * AIR_STRIDE + 2];
 				if (airIn > 0.0F) {
 					airH = airDrop / airIn;
 					airVol += airIn * dt;
@@ -454,9 +467,26 @@ final class HfTiledSim {
 					airVol = 0.0F;
 					airT = 0.0F;
 				}
-				this.air[s * 3] = airVol;
-				this.air[s * 3 + 1] = airT;
-				this.air[s * 3 + 2] = airH;
+				this.air[s * AIR_STRIDE] = airVol;
+				this.air[s * AIR_STRIDE + 1] = airT;
+				this.air[s * AIR_STRIDE + 2] = airH;
+				{
+					float sv = this.air[s * AIR_STRIDE + 3];
+					boolean on = sv >= 2.0F;
+					float toward = sv - (on ? 2.0F : 0.0F);
+					boolean runs = old > FILM_DRY && out > FILM_DRAW * (on && filmSwitch ? 0.4F : 1.0F);
+					if (!filmSwitch) {
+						on = runs;
+						toward = 0.0F;
+					} else {
+						toward = Math.clamp(toward + (runs != on ? dt : -dt) / FILM_SWITCH, 0.0F, 1.0F);
+						if (toward >= 1.0F) {
+							on = !on;
+							toward = 0.0F;
+						}
+					}
+					this.air[s * AIR_STRIDE + 3] = toward + (on ? 2.0F : 0.0F);
+				}
 				falling += landed / dt * Math.min(airH, 4.0F);
 				float nh = Math.max(old + (dt * (in - airIn - out) + landed) / area, 0.0F);
 				this.depth[s] = nh;
@@ -560,7 +590,7 @@ final class HfTiledSim {
 				int base = this.g.spanPage[tile * 4 + l] * this.ps;
 				for (int c = 0; c < this.ps; c++) {
 					if (HfTileGrid.validGeo(this.geo[base + c])) {
-						v += (double) this.depth[base + c] * this.g.cell * this.g.cell + this.air[(base + c) * 3];
+						v += (double) this.depth[base + c] * this.g.cell * this.g.cell + this.air[(base + c) * AIR_STRIDE];
 					}
 				}
 			}

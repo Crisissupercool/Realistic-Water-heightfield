@@ -35,7 +35,7 @@ const float SPRAY_CHURN_MIN = 8.0;
 // Water counts as running, and keeps its tile awake even when its surface is steady, with an outflow above RUNNING_FLOW
 // (blocks^3/s, the thinnest film and sheet hf_mesh.comp draws) at more than RUNNING_SPEED (blocks/s). The speed keeps a flood
 // edge creeping out over flat ground (a few cm/s) from holding its tiles awake until it stops.
-const float RUNNING_FLOW = 0.0005;
+const float RUNNING_FLOW = HF_FILM_DRAW;
 const float RUNNING_SPEED = 0.15;
 // Droplets per second per span and unit of churn above SPRAY_CHURN_MIN (times hfSpray).
 const float SPRAY_CHURN_RATE = 0.12;
@@ -131,7 +131,7 @@ void main() {
         // Water in the air lands after its fall time (hfFallTime of its mean drop) from when it began falling in, then at a rate
         // that keeps volume x fall time in flight (steady pouring lands as fast as it pours); once the pouring stops the rest
         // lands over the same time. Before, water reached the foot of a high fall the moment it tipped over the edge.
-        uint ai = a.span * 3u;
+        uint ai = a.span * HF_AIR_STRIDE;
         float airVol = air[ai];
         float airT = air[ai + 1u];
         float airH = air[ai + 2u];
@@ -159,6 +159,17 @@ void main() {
         air[ai] = airVol;
         air[ai + 1u] = airT;
         air[ai + 2u] = airH;
+        // Whether a thin film here is drawn as running water, switched only after it has run (or stopped) for HF_FILM_SWITCH.
+        float sv = air[ai + 3u];
+        bool on = hfRunningShown(sv);
+        float toward = sv - (on ? 2.0 : 0.0);
+        bool runs = old > HF_FILM_DRY && outflow > HF_FILM_DRAW * (on ? 0.4 : 1.0);
+        toward = clamp(toward + (runs != on ? HF_DT : -HF_DT) / HF_FILM_SWITCH, 0.0, 1.0);
+        if (toward >= 1.0) {
+            on = !on;
+            toward = 0.0;
+        }
+        air[ai + 3u] = toward + (on ? 2.0 : 0.0);
         falling += landed / HF_DT * min(airH, 4.0);
         float h = max(old + (HF_DT * (inflow - airIn - outflow) + landed) / area, 0.0);
         depth[a.span] = h;

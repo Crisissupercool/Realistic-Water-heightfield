@@ -124,7 +124,7 @@ final class HfDomain implements AutoCloseable {
 	private final VkBuf depth;
 	/** Water in the air per span page span (3 floats: volume, seconds falling in, mean drop; see hf_depth.comp), binding 20. */
 	private final VkBuf air;
-	private static final long AIR_BYTES = 12L;
+	private static final long AIR_BYTES = 16L;
 	private final VkBuf flux;
 	/** Foam per flux-page span, twice: one half is read and the other written each step (see hf_depth.comp). */
 	private final VkBuf foam;

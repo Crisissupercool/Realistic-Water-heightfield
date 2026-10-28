@@ -18,7 +18,7 @@ final class HfMeshMirror {
 	static float depth(S s) { return sim.depth[s.span()]; }
 	static float surface(S s) { return Math.min(floorOf(s) + depth(s), ceilOf(s)); }
 	static float outTotal(S s) { int f = s.flux(); float o = 0; if (f >= 0) for (int k = 0; k < 8; k++) o += sim.flux[f + k]; return o; }
-	static boolean wet(S s) { float d = depth(s); if (d > DRY) return true; if (d <= FLOW_DRY) return false; return outTotal(s) > FLOW_DRAW; }
+	static boolean wet(S s) { float d = depth(s); if (d > DRY) return true; return d > FLOW_DRY && sim.air[s.span() * HfTiledSim.AIR_STRIDE + 3] >= 2.0F; }
 	static boolean joined(S a, S t) { return wet(t) && floorOf(t) < surface(a) && floorOf(a) < surface(t); }
 	static float outTo(S a, int dir) { int f = a.flux(); return f < 0 ? 0 : sim.flux[f + dir * 2] + sim.flux[f + dir * 2 + 1]; }
 	static boolean linked(S a, int dir, S t) {

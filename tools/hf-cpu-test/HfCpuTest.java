@@ -182,7 +182,7 @@ public final class HfCpuTest {
 			lo = Math.min(lo, v);
 			hi = Math.max(hi, v);
 			double airNow = 0.0;
-			for (int i = 0; i < sim.air.length; i += 3) {
+			for (int i = 0; i < sim.air.length; i += HfTiledSim.AIR_STRIDE) {
 				airNow += sim.air[i];
 			}
 			inAir = Math.max(inAir, airNow);
@@ -296,6 +296,56 @@ public final class HfCpuTest {
 		return new double[]{bad, g.volume[tiles[3]]};
 	}
 
+	/**
+	 * A small stream (q blocks^3/s over 2 blocks of width) down 1-block terraces: {switches between drawn and hidden per second
+	 * over a tile's spans after each span's first, the most any one span switched in 20 s, spans drawn on average}.
+	 */
+	static double[] filmFlicker(float q, boolean filmSwitch) {
+		HfTiledSim.filmSwitch = filmSwitch;
+		HfTileGrid g = new HfTileGrid(0, 0, 0, 96, C, L, 0.25F, 8, 16, 16);
+		long full = (1L << (C * C * C)) - 1L;
+		HfTopology.Voxels vox = (x, y, z) -> y < 40 - Math.floorDiv(Math.max(x, 0), 3) ? full : 0L;
+		HfTiledSim sim = new HfTiledSim(g, vox);
+		sim.maxNewTiles = 0;
+		int t0 = sim.addTile(0, 0, (l, c) -> 0.0);
+		sim.addTile(1, 0, (l, c) -> 0.0);
+		HfMeshMirror.g = g;
+		HfMeshMirror.sim = sim;
+		float cellA = g.cell * g.cell;
+		int tn = g.tn;
+		boolean[] prev = new boolean[g.pageSpans];
+		int[] flips = new int[g.pageSpans];
+		double shown = 0.0;
+		int frames = 0;
+		for (int f = 0; f < 60 * 60; f++) {
+			for (int z = 14; z < 18; z++) {
+				sim.inject(t0, z * tn + 1, 41.0F, q / 4.0F / 60.0F / cellA);
+			}
+			sim.frame();
+			if (f < 60 * 40) {
+				continue;
+			}
+			frames++;
+			for (int c = 0; c < g.pageSpans; c++) {
+				boolean w = HfMeshMirror.wet(new HfMeshMirror.S(t0, 0, c));
+				if (f > 60 * 40 && w != prev[c]) {
+					flips[c]++;
+				}
+				prev[c] = w;
+				shown += w ? 1 : 0;
+			}
+		}
+		HfTiledSim.filmSwitch = true;
+		int total = 0;
+		int worst = 0;
+		for (int c = 0; c < g.pageSpans; c++) {
+			// The first switch is the water arriving or leaving; every further one is popping in and out.
+			total += Math.max(flips[c] - 1, 0);
+			worst = Math.max(worst, flips[c]);
+		}
+		return new double[]{total / 20.0, worst, shown / frames};
+	}
+
 	static double totalFlux(HfTiledSim sim, HfTileGrid grid, int tile) {
 		double sum = 0.0;
 		for (int l = 0; l < grid.layersUsed[tile]; l++) {
@@ -344,7 +394,7 @@ public final class HfCpuTest {
 					continue;
 				}
 				float headA = t.floor[s] + hA;
-				boolean film = hA <= MIN_FLOW;
+				float filmCarry = Math.clamp(hA / MIN_FLOW, 0.0F, 1.0F);
 				float[] out = new float[8];
 				float total = 0.0F;
 				for (int k = 0; k < 8; k++) {
@@ -354,9 +404,6 @@ public final class HfCpuTest {
 					}
 					int b = l >>> 3;
 					float headB = t.floor[b] + h[b];
-					if (film && headB >= t.floor[s]) {
-						continue;
-					}
 					float lo = Math.max(t.floor[s], t.floor[b]);
 					float hi = Math.min(t.ceil[s], t.ceil[b]);
 					float wetA = Math.clamp(headA, lo, hi) - lo;
@@ -365,7 +412,14 @@ public final class HfCpuTest {
 					}
 					float wetB = Math.clamp(headB, lo, hi) - lo;
 					float area = cell * Math.max(wetA, wetB);
-					float q = flux[base + k] * keep + dt * 9.81F * area * (headA - headB) / cell;
+					float drive = headA - headB;
+					float carry = 1.0F;
+					if (headB >= t.floor[s]) {
+						float fa = t.floor[s];
+						drive = fa + Math.max(hA - MIN_FLOW, 0.0F) - Math.max(t.floor[b] + Math.max(h[b] - MIN_FLOW, 0.0F), fa);
+						carry = filmCarry;
+					}
+					float q = flux[base + k] * keep * carry + dt * 9.81F * area * drive / cell;
 					out[k] = Math.max(q, 0.0F);
 					total += out[k];
 				}
@@ -1138,6 +1192,15 @@ public final class HfCpuTest {
 			double[] r = streamTiles();
 			check(r[0] == 0 && r[1] > 1.0, String.format("small stream down terraces over 4 tiles: %d tile-frames with running water left unsimulated (in the last 60 s), %.1f blocks^3 reached the 4th tile",
 				(int) r[0], r[1]));
+		}
+
+		System.out.println("Thin running films do not pop in and out: drawn or hidden switches only after 0.3 s of running or standing");
+		for (float q : new float[]{0.05F, 0.2F}) {
+			double[] before = filmFlicker(q, false);
+			double[] now = filmFlicker(q, true);
+			check(now[0] < 0.2 * before[0] + 0.5 && now[1] <= 4 && now[2] > 0.8 * before[2], String.format(
+				"%.2f b^3/s down terraces: %.1f repeated switches a second over the tile, at most %d per span in 20 s, %.0f spans drawn (frame by frame: %.1f, %d, %.0f)",
+				q, now[0], (int) now[1], now[2], before[0], (int) before[1], before[2]));
 		}
 
 		System.out.println("Boats: vanilla boat buoyancy on the blocks the heightfield writes (AbstractBoatMixin)");

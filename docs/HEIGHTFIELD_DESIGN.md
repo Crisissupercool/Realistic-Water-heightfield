@@ -822,3 +822,15 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   blocks^3/s (the thinnest film or sheet drawn) at more than 0.15 blocks/s (so a flood edge creeping over flat ground at a few
   cm/s still lets its tiles sleep). Stream of 0.2 b^3/s down terraces over 4 tiles: 434 tile-frames a minute with running water
   left unsimulated before, 0 now. The open-ground flood test now sleeps after 313 s over 42 tiles (271 s, 32).
+* **Thin water still popped in and out (it advanced in pulses).** Two causes, both measured on a 0.05 b^3/s stream down
+  terraces (one tile, 20 s): every span switched between drawn and hidden 57 times a second in all, one span 34 times.
+  (1) The film rule was a hard cut-off: a span at or under hfMinFlowDepth sent nothing sideways, so thin water advanced cell by
+  cell in pulses (fill to 1 cm, flow, stop, refill). Now the first hfMinFlowDepth of each span just does not count for sideways
+  flow (driving head = floor + max(depth - film, 0) on both sides; over an edge onto lower water the full depth still drains),
+  and the flow a span carries fades out with its depth below the film (x depth / film each step), so it slows smoothly to a
+  stop. The equilibrium (water levels equal, edges stopping at the film depth) is unchanged. Switches fell to 14.5 a second.
+  (2) A film's outflow drifts slowly around the drawn-film threshold. The Air buffer gets a 4th float per span (stride 4, 16
+  bytes): whether the film there is shown as running. It turns on above 0.0005 b^3/s, off only below 0.4 x that, and either
+  way only after a net 0.3 s (hf_depth.comp updates it, hf_mesh.comp's wet() reads it, the remap carries it through edits).
+  Spans switching again after their first switch (the water arriving or leaving): 0.7 a second over the tile, at most 4 times
+  a span in 20 s. The open-ground flood test sleeps after 227 s over 36 tiles; the dense solver mirror matches exactly.

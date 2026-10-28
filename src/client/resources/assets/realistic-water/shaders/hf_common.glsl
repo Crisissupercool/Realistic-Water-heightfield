@@ -154,10 +154,24 @@ uint hfFoamIndex(HfSpan a) {
 }
 
 // Water in the air (hf_depth.comp): water pouring into a span from one whose floor is more than HF_AIR_MIN_DROP above its surface
-// falls for a while before it lands. Per span page span, 3 floats: volume in flight (blocks^3), seconds since it began falling in,
-// and its mean drop (blocks). Kept with the span pages, so it survives a tile falling asleep.
+// falls for a while before it lands. Per span page span, 4 floats: volume in flight (blocks^3), seconds since it began falling in,
+// its mean drop (blocks), and whether a thin film there is drawn as running water (hfRunningShown: 0..1 how long it has been
+// running or not, plus 2 while shown; hf_depth.comp updates it, hf_mesh.comp reads it). Kept with the span pages, so it
+// survives a tile falling asleep.
 layout(std430, binding = 20) buffer Air { float air[]; };
 const float HF_AIR_MIN_DROP = 1.5;
+const uint HF_AIR_STRIDE = 4u;
+// A thin film (deeper than HF_FILM_DRY, thinner than hfRenderDepth) is drawn while it runs (outflow above HF_FILM_DRAW,
+// blocks^3/s). Its outflow hovers around that on terraces and slopes, and judged frame by frame such spans switched between drawn
+// and hidden up to 2 times a second each (half-block pieces of water popping in and out). A shown film now stays shown down to
+// 0.4 x that outflow, and the switch needs the film to run, or to stop, for a net HF_FILM_SWITCH seconds: 0..1 counts toward the
+// other state, and flips it at the end.
+const float HF_FILM_DRY = 0.008;
+const float HF_FILM_DRAW = 0.0005;
+const float HF_FILM_SWITCH = 0.3;
+bool hfRunningShown(float v) {
+    return v >= 2.0;
+}
 // Falling water breaks up and air holds it back toward a terminal speed (blocks/s); a high fall takes about 3.3 s for 30 blocks
 // instead of 2.5 in free fall, and is never instant.
 const float HF_AIR_TERMINAL = 12.0;

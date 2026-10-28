@@ -11,8 +11,11 @@ layout(std430, binding = 3) buffer Flux { float flux[]; };
 #define HF_G hp.p0.y
 #define HF_CELL hp.p0.z
 #define HF_KEEP hp.p0.w
-// Water thinner than this does not spread sideways: it stays as a film, so floods stop spreading over open ground.
-// It still drains over an edge into a neighbor whose water surface lies below its floor (holes, steps, slopes).
+// The first HF_MIN_FLOW of water in a span stays put as a film: it does not push sideways, so floods stop spreading over open
+// ground once their edge is this thin. It still drains over an edge into a neighbor whose water surface lies below its floor
+// (holes, steps, slopes). Only the water above the film drives sideways flow, so the flow fades out smoothly as a span thins
+// to the film (a hard cut-off at the film depth made thin water advance in pulses: fill to 1 cm, flow, stop, refill, which
+// showed as films popping in and out); the flow it still carries fades with it.
 #define HF_MIN_FLOW hp.p1.z
 // How fast (1/s) a body drags the water around it up to its own speed. A drag, not a hard push: the water can still flow back,
 // so a fast body makes a wave rather than shoving a wall of water ahead of it.
@@ -33,7 +36,7 @@ void main() {
         return;
     }
     float headA = ga.x + hA;
-    bool film = hA <= HF_MIN_FLOW;
+    float filmCarry = clamp(hA / HF_MIN_FLOW, 0.0, 1.0);
     vec3 stir = hfStir(a, ga.x, min(headA, ga.y));
     float drag = 1.0 - exp(-HF_STIR_RATE * HF_DT);
     float outflow[8];
@@ -46,10 +49,8 @@ void main() {
             continue;
         }
         vec2 gb = hfGeo(b.span);
-        float headB = gb.x + depth[b.span];
-        if (film && headB >= ga.x) {
-            continue;
-        }
+        float hB = depth[b.span];
+        float headB = gb.x + hB;
         // Only water inside the shared opening can move.
         float lo = max(ga.x, gb.x);
         float hi = min(ga.y, gb.y);
@@ -62,7 +63,14 @@ void main() {
         // Water pouring over an edge onto lower water (a free overfall, like a weir) is driven only by the water above the
         // edge, not by how far it then falls: the full drop as head pulled the edge cell empty every step, so the water at
         // the brink was a near-dry film and the stream's surface ended before the waterfall began.
-        float q = flux[base + k] * HF_KEEP + HF_DT * HF_G * area * (headA - max(headB, ga.x)) / HF_CELL;
+        float drive = headA - max(headB, ga.x);
+        float carry = 1.0;
+        if (headB >= ga.x) {
+            // Sideways: the film on either side does not count.
+            drive = ga.x + max(hA - HF_MIN_FLOW, 0.0) - max(gb.x + max(hB - HF_MIN_FLOW, 0.0), ga.x);
+            carry = filmCarry;
+        }
+        float q = flux[base + k] * HF_KEEP * carry + HF_DT * HF_G * area * drive / HF_CELL;
         if (stir.z > 0.0) {
             uint d = k >> 1;
             float target = dot(stir.xy, vec2(HF_DX[d], HF_DZ[d])) * HF_CELL * min(stir.z, wetA);

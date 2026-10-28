@@ -30,6 +30,7 @@ void main() {
     float acc[4];
     int src[4];
     float srcAmount[4];
+    float shown[4];
     for (int j = 0; j < 4; j++) {
         acc[j] = 0.0;
         src[j] = -1;
@@ -37,13 +38,15 @@ void main() {
         ng[j] = newPages[j] >= 0 ? hfGeo(uint(newPages[j]) * hfPageSpans() + col) : vec2(1.0e30, -1.0e30);
     }
     for (int i = 0; i < 4; i++) {
+        shown[i] = 0.0;
         if (oldPages[i] < 0) {
             continue;
         }
         uint s = uint(oldPages[i]) * hfPageSpans() + col;
         vec2 g = hfGeo(s);
         float d = depth[s];
-        float inAir = air[s * 3u];
+        float inAir = air[s * HF_AIR_STRIDE];
+        shown[i] = air[s * HF_AIR_STRIDE + 3u];
         if (hfValid(g) && inAir > 0.0) {
             int into = -1;
             float most = 0.0;
@@ -121,9 +124,11 @@ void main() {
         if (newPages[j] >= 0) {
             uint ns = uint(newPages[j]) * hfPageSpans() + col;
             depth[ns] = acc[j];
-            air[ns * 3u] = 0.0;
-            air[ns * 3u + 1u] = 0.0;
-            air[ns * 3u + 2u] = 0.0;
+            air[ns * HF_AIR_STRIDE] = 0.0;
+            air[ns * HF_AIR_STRIDE + 1u] = 0.0;
+            air[ns * HF_AIR_STRIDE + 2u] = 0.0;
+            // A film drawn as running stays drawn through the edit.
+            air[ns * HF_AIR_STRIDE + 3u] = src[j] >= 0 ? shown[src[j]] : 0.0;
         }
     }
 }
