@@ -175,9 +175,16 @@ const float HF_FILM_FULL = 0.016;
 const float HF_STILL_FADE = 0.01;
 const float HF_FILM_SWITCH = 0.3;
 #define HF_RENDER_DEPTH G.simB.w
-float hfPresenceTarget(float d, bool running) {
+// Running water also counts in full once it carries 4 x HF_FILM_DRAW, however thin: water pouring over an edge is only a few
+// mm deep at the brink (a free overfall's brink depth is about 0.7 of the critical depth, under 1 cm for a trickle), and judged
+// by depth the edge of every step it ran over stayed dry. hf_mesh.comp draws such water at least HF_FILM_MIN_DRAWN high.
+const float HF_FILM_MIN_DRAWN = 0.008;
+float hfPresenceTarget(float d, bool running, float outflow) {
     float still = clamp((d - HF_RENDER_DEPTH) / HF_STILL_FADE, 0.0, 1.0);
-    float film = running ? clamp((d - HF_FILM_DRY) / (HF_FILM_FULL - HF_FILM_DRY), 0.0, 1.0) : 0.0;
+    float film = 0.0;
+    if (running && d > 0.0005) {
+        film = max(clamp((d - HF_FILM_DRY) / (HF_FILM_FULL - HF_FILM_DRY), 0.0, 1.0), clamp(outflow / (4.0 * HF_FILM_DRAW), 0.0, 1.0));
+    }
     return max(still, film);
 }
 float hfShown(float v) {

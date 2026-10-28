@@ -167,7 +167,7 @@ void main() {
         bool on = sv >= 2.0;
         float shown = sv - (on ? 2.0 : 0.0);
         on = max(outflow, inflow - airIn + landed / HF_DT) > HF_FILM_DRAW * (on ? 0.4 : 1.0);
-        float target = hfPresenceTarget(h, on);
+        float target = hfPresenceTarget(h, on, outflow);
         float step = HF_DT / HF_FILM_SWITCH;
         shown = target > shown ? min(target, shown + step) : max(target, shown - step);
         air[ai + 3u] = shown + (on ? 2.0 : 0.0);

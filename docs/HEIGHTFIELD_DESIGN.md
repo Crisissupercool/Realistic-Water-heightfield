@@ -847,3 +847,13 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   hfRenderDepth is in the UBO (simB.w) for the depth pass. Mesh mirror, flood front spreading over flat ground: the waterline
   moved up to 0.50 blocks in a frame (13 frames over 0.2 blocks in 8 s); now at most 0.20 (none over). Still no cracks; the
   diagonal-front waterline is 0.203 blocks RMS off straight (0.163 before, 0.696 with cell edges).
+* **Still snappy at block edges, and the edges of steps looked dry.** Corners next to dry ground at another height (a bank to
+  meet, a brink to pour over) had a rule of their own (averaged with a bank's height or 70% of the depth over a drop) and the
+  marching-squares shoreline was off there, so a front reaching a bank or a brink switched rules as it arrived. Such ground now
+  adds nothing to a corner (like a wall): the corner is the water's and the shoreline's on our floor only. Front along the foot
+  of a 1-block bank (mirror): at most 0.15 blocks per frame, none over 0.2 (0.44 and 15 frames before). Running water counts in
+  full once it carries 4 x 0.0005 b^3/s however thin (a brink's water is a few mm deep), and a film is drawn at least 8 mm
+  high (drawnSurfaceOf, in the corners only; a few mm z-fights with the ground). A sheet now grows down from its edge with the
+  pouring span's presence (0.3 s) instead of hanging down in full at once. Ground seen through water looks wet from 1 cm of
+  water in the view (was 3 cm) and darker: pow(1 + 1.5 w) x (1 - 0.5 w), w = wetDarkening (0.3) (was pow(1 + w) x (1 - 0.15 w)),
+  so a film down terraces or a sheet down a block face no longer leaves the dirt behind it looking dry.

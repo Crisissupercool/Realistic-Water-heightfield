@@ -480,7 +480,7 @@ final class HfTiledSim {
 					float shown = sv - (on ? 2.0F : 0.0F);
 					on = Math.max(out, in - airIn + landed / dt) > FILM_DRAW * (on && filmSwitch ? 0.4F : 1.0F);
 					float still = Math.clamp((nh - this.renderDepth) / STILL_FADE, 0.0F, 1.0F);
-					float film = on ? Math.clamp((nh - FILM_DRY) / (FILM_FULL - FILM_DRY), 0.0F, 1.0F) : 0.0F;
+					float film = on && nh > 0.0005F ? Math.max(Math.clamp((nh - FILM_DRY) / (FILM_FULL - FILM_DRY), 0.0F, 1.0F), Math.clamp(out / (4.0F * FILM_DRAW), 0.0F, 1.0F)) : 0.0F;
 					float target = Math.max(still, film);
 					float stepS = dt / FILM_SWITCH;
 					shown = !filmSwitch ? target : target > shown ? Math.min(target, shown + stepS) : Math.max(target, shown - stepS);

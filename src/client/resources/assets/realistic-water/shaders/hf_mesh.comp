@@ -81,7 +81,7 @@ float presence(uint t) {
     int owner = pageOwner[t / ps];
     bool simulated = owner >= 0 && tileInfo[uint(owner >> 2) * 4u + 3u][owner & 3] >= 0;
     float v = air[t * HF_AIR_STRIDE + 3u];
-    return simulated ? hfShown(v) : hfPresenceTarget(depth[t], v >= 2.0);
+    return simulated ? hfShown(v) : hfPresenceTarget(depth[t], v >= 2.0, 0.0);
 }
 
 bool wet(uint t) {
@@ -91,6 +91,12 @@ bool wet(uint t) {
 float surfaceOf(uint t) {
     vec2 g = hfGeo(t);
     return min(g.x + depth[t], g.y);
+}
+
+// The surface as drawn: at least HF_FILM_MIN_DRAWN over the floor (a few mm of running water on the ground z-fights with it).
+float drawnSurfaceOf(uint t) {
+    vec2 g = hfGeo(t);
+    return min(g.x + max(depth[t], HF_FILM_MIN_DRAWN), g.y);
 }
 
 // Two wet spans form one water surface only when their water columns overlap in height. A link only says the open spaces
@@ -179,12 +185,15 @@ float cornerSample(bool ok, bool link, HfSpan t, float lo, float level) {
     }
     float nf = hfGeo(t.span).x;
     if (link) {
-        return mix(drySample(nf, lo, level), surfaceOf(t.span), presence(t.span));
+        return mix(drySample(nf, lo, level), drawnSurfaceOf(t.span), presence(t.span));
     }
-    if (wet(t.span)) {
+    // Water at a separate level adds nothing; nor does dry ground at another height (a bank to meet, an edge to pour over): the
+    // corner is the water's and the shoreline's on our floor only, so a front reaching a bank or a brink moves as smoothly as on
+    // open ground (those corners had a rule of their own, which switched over as the water arrived).
+    if (wet(t.span) || abs(nf - lo) > 0.05) {
         return uintBitsToFloat(0x7FC00000u);
     }
-    return drySample(nf, lo, level);
+    return lo;
 }
 
 // A sharer that is (partly) dry ground at the corner's floor: dry, or linked water only partly there.
@@ -240,6 +249,7 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce, out vec2 fl
     float px = lx ? presence(nx.span) : 0.0;
     float pz = lz ? presence(nz.span) : 0.0;
     float pd = ld ? presence(nd.span) : 0.0;
+    top = max(top, min(fl + HF_FILM_MIN_DRAWN, ce));
     float weight = pa + px + pz + pd;
     float levelSum = pa * top;
     float lo = fl;
@@ -250,28 +260,28 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce, out vec2 fl
     if (lx) {
         flow += px * velocityOf(nx);
         vec2 gx = hfGeo(nx.span);
-        levelSum += px * surfaceOf(nx.span);
+        levelSum += px * drawnSurfaceOf(nx.span);
         lo = min(lo, gx.x);
         hiC = min(hiC, gx.y);
-        depthSum += px * (surfaceOf(nx.span) - gx.x);
+        depthSum += px * (drawnSurfaceOf(nx.span) - gx.x);
         aer += px * foamOf(nx);
     }
     if (lz) {
         flow += pz * velocityOf(nz);
         vec2 gz = hfGeo(nz.span);
-        levelSum += pz * surfaceOf(nz.span);
+        levelSum += pz * drawnSurfaceOf(nz.span);
         lo = min(lo, gz.x);
         hiC = min(hiC, gz.y);
-        depthSum += pz * (surfaceOf(nz.span) - gz.x);
+        depthSum += pz * (drawnSurfaceOf(nz.span) - gz.x);
         aer += pz * foamOf(nz);
     }
     if (ld) {
         flow += pd * velocityOf(nd);
         vec2 gd = hfGeo(nd.span);
-        levelSum += pd * surfaceOf(nd.span);
+        levelSum += pd * drawnSurfaceOf(nd.span);
         lo = min(lo, gd.x);
         hiC = min(hiC, gd.y);
-        depthSum += pd * (surfaceOf(nd.span) - gd.x);
+        depthSum += pd * (drawnSurfaceOf(nd.span) - gd.x);
         aer += pd * foamOf(nd);
     }
     weight = max(weight, 1.0e-6);
@@ -283,7 +293,7 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce, out vec2 fl
     // Ground at the corner's floor that is (partly) dry (a shoreline on flat ground), and any other dry neighbor (a bank above, a
     // drop below).
     bool flatShore = (pa < 1.0 && abs(fl - lo) <= 0.05) || flatLike(okX, lx, nx, lo) || flatLike(okZ, lz, nz, lo) || flatLike(okD, ld, nd, lo);
-    bool otherDry = dryOther(okX, lx, nx, lo) || dryOther(okZ, lz, nz, lo) || dryOther(okD, ld, nd, lo);
+    bool otherDry = false;
     float sum = hs;
     float count = 1.0;
     // The wet share of the corner: the sharers' presence (dry ground 0).
@@ -391,6 +401,12 @@ bool curtainOf(HfSpan t, int d, out float land, out float v0, out float q, out b
     q = outflowTo(t, d);
     if (land >= fl - 0.05 || q <= HF_CURTAIN_MIN) {
         return false;
+    }
+    // A sheet grows down from the edge as the water there comes in (its presence), instead of hanging down in full at once.
+    float p = presence(t.span);
+    if (p < 1.0) {
+        land = mix(fl - 0.05, land, p);
+        down = down && p >= 1.0;
     }
     v0 = clamp(q / (HF_CELL * max(surfaceOf(t.span) - fl, 0.03)), 0.2, 4.0);
     return true;
