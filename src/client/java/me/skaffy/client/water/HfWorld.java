@@ -26,6 +26,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LevelChunkSection;
@@ -144,6 +145,11 @@ final class HfWorld {
 						g.foreignKeptOpen++;
 					}
 					return (full & ~held) | solids.blockVoxels(level, bx, by, bz);
+				}
+				// Leaves let water through: poured on a tree it rains down through the canopy instead of pooling on top and pouring off
+				// its edges as walls of water (and a flood rises through bushes and hedges). Water is never written into them.
+				if (state.is(BlockTags.LEAVES)) {
+					return 0L;
 				}
 				return solids.blockVoxels(level, bx, by, bz);
 			}

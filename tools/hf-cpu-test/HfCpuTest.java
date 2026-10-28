@@ -346,6 +346,26 @@ public final class HfCpuTest {
 		return new double[]{total / 20.0, worst, shown / frames};
 	}
 
+	/** A fed channel 8 blocks wide with a 1x1 pillar at x = 10: {foam right behind the pillar, 2 blocks behind, 2 blocks aside}. */
+	static double[] pillarWake(float sourceDepth) {
+		HfTileGrid g = new HfTileGrid(0, 0, 0, 96, C, L, 0.25F, 8, 16, 16);
+		HfTopology.Voxels vox = voxels((x, y, z) -> (z < 4 || z > 11) ? y < 70 : (x == 10 && z == 7) ? y < 70 : y < 64 - (x >= 24 ? 3 : 0));
+		HfTiledSim sim = new HfTiledSim(g, vox);
+		sim.maxNewTiles = 0;
+		int t0 = sim.addTile(0, 0, (l, c) -> 0.0);
+		sim.addTile(1, 0, (l, c) -> 0.0);
+		int tn = g.tn;
+		for (int f = 0; f < 60 * 30; f++) {
+			for (int z = 8; z < 24; z++) {
+				int c = z * tn;
+				float d = sim.depth[g.spanPage[t0 * 4] * g.pageSpans + c];
+				sim.inject(t0, c, 64.5F, Math.max(sourceDepth - d, 0.0F));
+			}
+			sim.frame();
+		}
+		return new double[]{sim.foamAt(t0, 0, 15 * tn + 22), sim.foamAt(t0, 0, 15 * tn + 26), sim.foamAt(t0, 0, 11 * tn + 22)};
+	}
+
 	static double totalFlux(HfTiledSim sim, HfTileGrid grid, int tile) {
 		double sum = 0.0;
 		for (int l = 0; l < grid.layersUsed[tile]; l++) {
@@ -1201,6 +1221,13 @@ public final class HfCpuTest {
 			check(now[0] < 0.2 * before[0] + 0.5 && now[1] <= 4 && now[2] > 0.8 * before[2], String.format(
 				"%.2f b^3/s down terraces: %.1f repeated switches a second over the tile, at most %d per span in 20 s, %.0f spans drawn (frame by frame: %.1f, %d, %.0f)",
 				q, now[0], (int) now[1], now[2], before[0], (int) before[1], before[2]));
+		}
+
+		System.out.println("Wakes: water running past a pillar foams in its lee, and the foam trails downstream");
+		{
+			double[] w = pillarWake(1.5F);
+			check(w[0] > 0.2 && w[1] > 0.03 && w[1] < w[0] && w[2] < 0.01, String.format(
+				"0.7 b/s past a 1x1 pillar: foam %.2f right behind it, %.2f 2 blocks behind, %.2f 2 blocks aside", w[0], w[1], w[2]));
 		}
 
 		System.out.println("Boats: vanilla boat buoyancy on the blocks the heightfield writes (AbstractBoatMixin)");

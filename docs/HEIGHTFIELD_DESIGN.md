@@ -890,3 +890,13 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
 * Tried and left out: the velocity head u^2/2g in the flux drive (energy-conserving form, K from the net flow through each
   face). It is stable and adds the stagnation rise in front of obstacles, but at the speeds the solver reaches (0.3-0.9 b/s in
   a fed channel, friction and damping hold it down) it changes depths by 1-2 cm, and it slows every accelerating flow.
+* **Wakes behind obstacles.** A face with no opening at the water's level (a trunk, a post, a block in a stream: the neighbor's
+  floor above our surface, or no link) is something standing in the water. A span with one upstream of it (behind the obstacle)
+  gets foam up to 0.6 by the speed of the water passing through it (in or out, 0.1-0.9 b/s: right behind an obstacle the water
+  is nearly still, the water rushing past comes in from the sides); one with it downstream (in front) gets up to 0.3 above
+  0.6 b/s. The foam is carried like all foam, so it trails downstream and fades over its life (1.5 s). Banks parallel to the
+  flow add nothing. Mirror, 0.7 b/s past a 1x1 pillar: 0.33 right behind it, 0.05 two blocks on, 0 two blocks aside. A slow
+  flow (0.3 b/s) gives little (0.03), as in reality. Looks only; the solver is unchanged.
+* **Leaves let water through.** The heightfield's terrain treats leaves as open (water is never written into them): water poured
+  on a tree rains down through the canopy instead of pooling on top and pouring off the canopy's edges as walls of water (with
+  the lower leaves showing through the gaps), and floods rise through bushes and hedges. A leaf wall no longer holds water back.

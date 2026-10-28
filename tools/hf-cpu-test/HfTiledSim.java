@@ -407,6 +407,7 @@ final class HfTiledSim {
 				boolean lake = false;
 				float airDrop = 0.0F;
 				float churnSum = 0.0F;
+				int openDirs = 0;
 				float outSum = 0.0F;
 				for (int k = 0; k < 8; k++) {
 					outSum += this.flux[base + k];
@@ -420,7 +421,11 @@ final class HfTiledSim {
 					}
 					int[] nb = this.neighbor(tile, col, k, nib, true);
 					if (nb == null) {
+						openDirs |= 1 << (k >> 1);
 						continue;
+					}
+					if (this.g.floorOf(this.geo[this.span(nb[0], nb[1], nb[2])]) < floorA + old + 0.02F) {
+						openDirs |= 1 << (k >> 1);
 					}
 					float o = this.flux[base + k];
 					int nbBase = this.fluxBase(nb[0], nb[1], nb[2]);
@@ -499,6 +504,27 @@ final class HfTiledSim {
 				f = Math.max(f, 0.9F * smoothstep(0.0F, 6.0F, falling / area));
 				f = Math.max(f, 0.35F * smoothstep(5.0F, 12.0F, speed) * smoothstep(0.05F, 0.2F, nh));
 				f = Math.max(f, 0.85F * smoothstep(1.5F, 12.0F, churnSum / area) * smoothstep(0.02F, 0.1F, nh));
+				if (nh > 0.03F) {
+					// Mirror of the obstacle wake foam (hf_depth.comp).
+					float ox = 0.0F, oz = 0.0F;
+					for (int k = 0; k < 8; k++) {
+						ox += this.flux[base + k] * HfTileGrid.DX[k >> 1];
+						oz += this.flux[base + k] * HfTileGrid.DZ[k >> 1];
+					}
+					float len = (float) Math.hypot(ox, oz);
+					float cs = Math.max(len, in) / (cell * Math.max(nh, 0.05F));
+					if (cs > 0.1F && len > 1.0e-5F) {
+						float lee = 0.0F, bow = 0.0F;
+						for (int d = 0; d < 4; d++) {
+							if ((openDirs & (1 << d)) != 0) continue;
+							float along = (ox * HfTileGrid.DX[d] + oz * HfTileGrid.DZ[d]) / len;
+							lee = Math.max(lee, -along);
+							bow = Math.max(bow, along);
+						}
+						f = Math.max(f, 0.6F * smoothstep(0.5F, 0.9F, lee) * smoothstep(0.1F, 0.9F, cs));
+						f = Math.max(f, 0.3F * smoothstep(0.5F, 0.9F, bow) * smoothstep(0.6F, 2.5F, cs));
+					}
+				}
 				float[] st = this.stirAt(tile, col, floorA, floorA + nh);
 				if (st[2] > 0.0F) {
 					f = Math.max(f, 0.35F * smoothstep(1.5F, 4.0F, (float) Math.hypot(st[0], st[1])));

@@ -32,6 +32,12 @@ const vec2 FOAM_STIR = vec2(1.5, 4.0);
 const vec2 FOAM_CHURN = vec2(1.5, 12.0);
 const float FOAM_CHURN_MAX = 0.85;
 const float SPRAY_CHURN_MIN = 8.0;
+// Water running past something standing in it (a trunk, a post, a block in a stream) foams in its lee and a little against its
+// front; the foam rides the current, so it trails downstream as a wake. Foam by flow speed (blocks/s) in the lee and in front.
+const vec2 WAKE_SPEED = vec2(0.1, 0.9);
+const float WAKE_FOAM = 0.6;
+const vec2 BOW_SPEED = vec2(0.6, 2.5);
+const float BOW_FOAM = 0.3;
 // Water counts as running, and keeps its tile awake even when its surface is steady, with an outflow above RUNNING_FLOW
 // (blocks^3/s, the thinnest film and sheet hf_mesh.comp draws) at more than RUNNING_SPEED (blocks/s). The speed keeps a flood
 // edge creeping out over flat ground (a few cm/s) from holding its tiles awake until it stops.
@@ -100,11 +106,21 @@ void main() {
             outDir += o * vec2(HF_DX[k >> 1], HF_DZ[k >> 1]);
         }
         float ua = outSum / (HF_CELL * max(old, 0.05));
+        // Directions in which the water at our level can go on (an opening whose floor lies below our surface, or a neighbor that is
+        // not simulated); the others are something standing in the water.
+        uint openDirs = 0u;
         for (uint k = 0u; k < HF_LINKS; k++) {
             uint nib = hfLink(a, k);
             HfSpan b;
-            if (nib == HF_LINK_NONE || !hfNeighbor(a, k, nib, true, b)) {
+            if (nib == HF_LINK_NONE) {
                 continue;
+            }
+            if (!hfNeighbor(a, k, nib, true, b)) {
+                openDirs |= 1u << (k >> 1);
+                continue;
+            }
+            if (hfGeo(b.span).x < floorA + old + 0.02) {
+                openDirs |= 1u << (k >> 1);
             }
             float o = flux[a.flux + k];
             float i = flux[b.flux + hfRev(k, nib)];
@@ -204,6 +220,29 @@ void main() {
                         current.y * mix(0.4, 0.9, sprayRand(s)) + sin(az) * spread);
                     sprayAdd(HF_SPRAY_INTO, p, v, mix(0.4, 1.0, sprayRand(s)), SPRAY_DROPLET);
                 }
+            }
+        }
+        if (h > 0.03) {
+            // A face with no opening at our level is something standing in the water. Behind it (it lies upstream of us) the water
+            // separates and churns; in front (downstream of us) it piles against it.
+            // The water right behind an obstacle is nearly still; what churns it is the water rushing past, which comes in from the
+            // sides: the speed is that of the water passing through (in or out), the direction the way it leaves.
+            float od = length(outDir);
+            float cs = max(od, inflow) / (HF_CELL * max(h, 0.05));
+            if (cs > WAKE_SPEED.x && od > 1.0e-5) {
+                vec2 dirv = outDir / od;
+                float lee = 0.0;
+                float bow = 0.0;
+                for (uint d = 0u; d < 4u; d++) {
+                    if ((openDirs & (1u << d)) != 0u) {
+                        continue;
+                    }
+                    float along = dot(dirv, vec2(HF_DX[d], HF_DZ[d]));
+                    lee = max(lee, -along);
+                    bow = max(bow, along);
+                }
+                f = max(f, WAKE_FOAM * smoothstep(0.5, 0.9, lee) * smoothstep(WAKE_SPEED.x, WAKE_SPEED.y, cs));
+                f = max(f, BOW_FOAM * smoothstep(0.5, 0.9, bow) * smoothstep(BOW_SPEED.x, BOW_SPEED.y, cs));
             }
         }
         vec3 stir = hfStir(a, floorA, floorA + h);
