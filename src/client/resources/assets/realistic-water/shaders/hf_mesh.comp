@@ -81,7 +81,7 @@ float presence(uint t) {
     int owner = pageOwner[t / ps];
     bool simulated = owner >= 0 && tileInfo[uint(owner >> 2) * 4u + 3u][owner & 3] >= 0;
     float v = air[t * HF_AIR_STRIDE + 3u];
-    return simulated ? hfShown(v) : hfPresenceTarget(depth[t], v >= 2.0, 0.0);
+    return simulated ? hfShown(v) : hfPresenceTarget(depth[t], hfRunning(v), 0.0, hfLakeEdge(v));
 }
 
 bool wet(uint t) {
@@ -255,6 +255,9 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce, out vec2 fl
     float lo = fl;
     float hiC = ce;
     float depthSum = pa * (top - fl);
+    // The shallowest water at the corner (each sharer by its presence) limits the vanilla-like surface drop: over a block top a
+    // few cm under a lake the full drop put the drawn surface under the block, which stood out dry.
+    float shallow = mix(2.0, top - fl, pa);
     float aer = pa * foamOf(a);
     flow = pa * velocityOf(a);
     if (lx) {
@@ -264,6 +267,7 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce, out vec2 fl
         lo = min(lo, gx.x);
         hiC = min(hiC, gx.y);
         depthSum += px * (drawnSurfaceOf(nx.span) - gx.x);
+        shallow = min(shallow, mix(2.0, drawnSurfaceOf(nx.span) - gx.x, px));
         aer += px * foamOf(nx);
     }
     if (lz) {
@@ -273,6 +277,7 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce, out vec2 fl
         lo = min(lo, gz.x);
         hiC = min(hiC, gz.y);
         depthSum += pz * (drawnSurfaceOf(nz.span) - gz.x);
+        shallow = min(shallow, mix(2.0, drawnSurfaceOf(nz.span) - gz.x, pz));
         aer += pz * foamOf(nz);
     }
     if (ld) {
@@ -282,6 +287,7 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce, out vec2 fl
         lo = min(lo, gd.x);
         hiC = min(hiC, gd.y);
         depthSum += pd * (drawnSurfaceOf(nd.span) - gd.x);
+        shallow = min(shallow, mix(2.0, drawnSurfaceOf(nd.span) - gd.x, pd));
         aer += pd * foamOf(nd);
     }
     weight = max(weight, 1.0e-6);
@@ -334,7 +340,7 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce, out vec2 fl
     } else {
         h = clamp(h, lo, hiC);
     }
-    h -= HF_SURFACE_DROP * clamp(min(depthSum / weight, h - lo), 0.0, 1.0);
+    h -= HF_SURFACE_DROP * clamp(min(min(depthSum / weight, shallow), h - lo), 0.0, 1.0);
     vec3 n = normalize(vec3(-dhdx, 1.0, -dhdz));
     flow /= weight;
     return vec4(n.x, h, n.z, aer / weight);

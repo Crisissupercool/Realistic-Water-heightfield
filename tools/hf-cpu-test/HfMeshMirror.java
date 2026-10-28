@@ -23,10 +23,11 @@ final class HfMeshMirror {
 	static float presence(S s) {
 		float d = depth(s);
 		float v = sim.air[s.span() * HfTiledSim.AIR_STRIDE + 3];
-		if (!smooth) return d > DRY || (d > FLOW_DRY && v >= 2.0F) ? 1.0F : 0.0F;
-		if (s.flux() >= 0) return v >= 2.0F ? v - 2.0F : v;
-		float still = Math.clamp((d - sim.renderDepth) / HfTiledSim.STILL_FADE, 0.0F, 1.0F);
-		float film = v >= 2.0F ? Math.clamp((d - HfTiledSim.FILM_DRY) / (HfTiledSim.FILM_FULL - HfTiledSim.FILM_DRY), 0.0F, 1.0F) : 0.0F;
+		boolean running = (v % 4.0F) >= 2.0F, lake = v >= 4.0F;
+		if (!smooth) return d > DRY || (d > FLOW_DRY && running) ? 1.0F : 0.0F;
+		if (s.flux() >= 0) return v % 2.0F;
+		float still = lake && d > HfTiledSim.FILM_DRY ? 1.0F : Math.clamp((d - sim.renderDepth) / HfTiledSim.STILL_FADE, 0.0F, 1.0F);
+		float film = running ? Math.clamp((d - HfTiledSim.FILM_DRY) / (HfTiledSim.FILM_FULL - HfTiledSim.FILM_DRY), 0.0F, 1.0F) : 0.0F;
 		return Math.max(still, film);
 	}
 	static boolean wet(S s) { return presence(s) > 0.0F; }
@@ -94,8 +95,9 @@ final class HfMeshMirror {
 		float pa = presence(a);
 		if (smooth) top = Math.max(top, Math.min(fl + FILM_MIN_DRAWN, ce));
 		float levelSum = pa * top, lo = fl, hiC = ce, depthSum = pa * (top - fl), shares = pa;
+		float shallow = 2.0F * (1 - pa) + (top - fl) * pa;
 		for (Object[] o : new Object[][]{{lx, nx}, {lz, nz}, {ld, nd}}) {
-			if ((Boolean) o[0]) { S t = (S) o[1]; float p = presence(t); levelSum += p * drawnSurface(t); lo = Math.min(lo, floorOf(t)); hiC = Math.min(hiC, ceilOf(t)); depthSum += p * (drawnSurface(t) - floorOf(t)); shares += p; }
+			if ((Boolean) o[0]) { S t = (S) o[1]; float p = presence(t); levelSum += p * drawnSurface(t); lo = Math.min(lo, floorOf(t)); hiC = Math.min(hiC, ceilOf(t)); depthSum += p * (drawnSurface(t) - floorOf(t)); shares += p; shallow = Math.min(shallow, 2.0F * (1 - p) + (drawnSurface(t) - floorOf(t)) * p); }
 		}
 		shares = Math.max(shares, 1.0e-6F);
 		float level = levelSum / shares;
@@ -120,7 +122,7 @@ final class HfMeshMirror {
 		} else {
 			h = Math.clamp(hh, lo, hiC);
 		}
-		h -= DROP * Math.clamp(Math.min(depthSum / shares, h - lo), 0, 1);
+		h -= DROP * Math.clamp(Math.min(smooth ? Math.min(depthSum / shares, shallow) : depthSum / shares, h - lo), 0, 1);
 		return h;
 	}
 
@@ -285,6 +287,40 @@ final class HfMeshMirror {
 		}
 		smooth = true;
 		return new double[]{drawn / Math.max(all, 1), depthSum / Math.max(all, 1)};
+	}
+
+	/**
+	 * A still lake 1 block deep over flat ground with a 1-block-wide ridge whose top lies 'cover' under the water: {share of the
+	 * ridge's top corners drawn above the ridge top (it shows as covered), presence of the ridge cells}.
+	 */
+	static double[] submergedRidge(float cover) {
+		int C = 2;
+		g = new HfTileGrid(0, 0, 0, 96, C, 4, 0.25F, 4, 16, 16);
+		sim = new HfTiledSim(g, HfCpuTest.voxels((x, y, z) -> y < (x == 8 ? 65 : 64)));
+		sim.maxNewTiles = 0;
+		int tn = g.tn;
+		float level = 65.0F + cover;
+		sim.addTile(0, 0, (l, c) -> l == 0 ? level - g.floorOf(sim.geo[g.spanPage[0] * g.pageSpans + c]) : 0.0);
+		for (int f = 0; f < 60 * 3; f++) {
+			sim.frame();
+		}
+		int above = 0, all = 0;
+		double pres = 0;
+		int n = 0;
+		int[][] sg = {{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
+		for (int cz = 8; cz < 24; cz++) {
+			for (int cx = 16; cx < 18; cx++) {
+				S a = new S(0, 0, cz * tn + cx);
+				pres += presence(a);
+				n++;
+				for (int[] k : sg) {
+					float h = wet(a) ? corner(a, k[0], k[1]) : nearWater(a) ? shoreCorner(a, k[0], k[1]) : Float.NaN;
+					all++;
+					above += h > 65.002F ? 1 : 0;
+				}
+			}
+		}
+		return new double[]{above / (double) all, pres / n};
 	}
 
 	static boolean check(String name, HfCpuTest.Solid solid, int resCol, float resLevel, int frames) {
@@ -467,6 +503,11 @@ final class HfMeshMirror {
 			HfCpuTest.check(fluid[0] < 0.5 * jumpy[0] && fluid[1] < 0.25 * Math.max(jumpy[1], 1.0) && fluid[2] > 2.0, String.format(
 				"flood front on flat ground%s: the waterline moves at most %.2f blocks in a frame, %d frames over 0.2 blocks, front at %.1f blocks (all-or-nothing cells: %.2f, %d frames, %.1f)",
 				bank ? " along the foot of a 1-block bank" : "", fluid[0], (int) fluid[1], fluid[2], jumpy[0], (int) jumpy[1], jumpy[2]));
+		}
+		for (float cover : new float[]{0.02F, 0.1F}) {
+			double[] r = submergedRidge(cover);
+			HfCpuTest.check(r[0] > 0.95, String.format("still lake %.0f cm over a 1-block ridge: %.0f%% of the ridge's corners drawn over its top, presence %.2f",
+				cover * 100, 100 * r[0], r[1]));
 		}
 		double[] brinkOld = brinkDrawn(false);
 		double[] brinkNow = brinkDrawn(true);

@@ -862,3 +862,11 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   cause in the shading: the wet darkening was judged by the water path at the refracted pixel, and the ripples move the
   refraction offset every frame, so at the edge of a thin film (thickness falling to 0 within a few pixels) the ground behind
   switched between wet and dry. It now uses the larger of the pixel's own water and the refracted path, fully from 1.5 cm.
+* **Block tops just under a lake's surface stood out dry.** (The edges marked in the screenshot: ridges and terrace rims a few
+  cm under a settled flood.) Two causes, both reproduced in the mirror (still lake over a 1-block ridge): water there is a still
+  film under hfRenderDepth (3.5 cm), hidden like any still film; and the vanilla-like surface drop (1/9 block from 1 block
+  deep) was taken from the corner's average depth, so the drawn surface sat under the block top even with 5 cm over it (2 cm:
+  0% of the ridge's corners over its top; 5 cm: 50%). Now a still film that is the edge of a deeper body (a neighbor deeper than
+  hfRenderDepth with its surface within 3 cm of ours) is drawn (the 4th Air float: presence + 2 while running + 4 while a lake
+  edge, so asleep tiles keep it), and the drop is limited by the shallowest water at the corner (each sharer by its presence).
+  2, 5, 10 and 20 cm over the ridge: 100% of its corners over its top.

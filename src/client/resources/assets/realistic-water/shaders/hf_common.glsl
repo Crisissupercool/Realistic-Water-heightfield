@@ -156,8 +156,8 @@ uint hfFoamIndex(HfSpan a) {
 // Water in the air (hf_depth.comp): water pouring into a span from one whose floor is more than HF_AIR_MIN_DROP above its surface
 // falls for a while before it lands. Per span page span, 4 floats: volume in flight (blocks^3), seconds since it began falling in,
 // its mean drop (blocks), and how much of the span's water is in the drawn surface (hfShown: its presence 0..1, plus 2 while
-// it counts as running; hf_depth.comp moves it toward hfPresenceTarget, hf_mesh.comp draws by it). Kept with the span pages,
-// so it survives a tile falling asleep.
+// it counts as running, plus 4 while it is the edge of a deeper body; hf_depth.comp moves it toward hfPresenceTarget,
+// hf_mesh.comp draws by it). Kept with the span pages, so it survives a tile falling asleep.
 layout(std430, binding = 20) buffer Air { float air[]; };
 const float HF_AIR_MIN_DROP = 1.5;
 const uint HF_AIR_STRIDE = 4u;
@@ -179,8 +179,10 @@ const float HF_FILM_SWITCH = 0.3;
 // mm deep at the brink (a free overfall's brink depth is about 0.7 of the critical depth, under 1 cm for a trickle), and judged
 // by depth the edge of every step it ran over stayed dry. hf_mesh.comp draws such water at least HF_FILM_MIN_DRAWN high.
 const float HF_FILM_MIN_DRAWN = 0.008;
-float hfPresenceTarget(float d, bool running, float outflow) {
-    float still = clamp((d - HF_RENDER_DEPTH) / HF_STILL_FADE, 0.0, 1.0);
+// A still film that is part of a deeper body of water (a neighbor deeper than hfRenderDepth at the same level: the top of a
+// block just under a lake's surface) is drawn too; hidden, every ridge and terrace edge a few cm under a flood stood out dry.
+float hfPresenceTarget(float d, bool running, float outflow, bool lake) {
+    float still = lake && d > HF_FILM_DRY ? 1.0 : clamp((d - HF_RENDER_DEPTH) / HF_STILL_FADE, 0.0, 1.0);
     float film = 0.0;
     if (running && d > 0.0005) {
         film = max(clamp((d - HF_FILM_DRY) / (HF_FILM_FULL - HF_FILM_DRY), 0.0, 1.0), clamp(outflow / (4.0 * HF_FILM_DRAW), 0.0, 1.0));
@@ -188,7 +190,13 @@ float hfPresenceTarget(float d, bool running, float outflow) {
     return max(still, film);
 }
 float hfShown(float v) {
-    return v >= 2.0 ? v - 2.0 : v;
+    return mod(v, 2.0);
+}
+bool hfRunning(float v) {
+    return mod(v, 4.0) >= 2.0;
+}
+bool hfLakeEdge(float v) {
+    return v >= 4.0;
 }
 // Falling water breaks up and air holds it back toward a terminal speed (blocks/s); a high fall takes about 3.3 s for 30 blocks
 // instead of 2.5 in free fall, and is never instant.

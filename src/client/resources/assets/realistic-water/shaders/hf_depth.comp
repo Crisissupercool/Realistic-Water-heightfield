@@ -89,6 +89,8 @@ void main() {
         float airIn = 0.0;
         float airDrop = 0.0;
         float churn = 0.0;
+        // Whether a neighbor deeper than hfRenderDepth has its surface at ours (we are the edge of that body).
+        bool lake = false;
         // Our water's speed (its outflow over the old depth; the new one is not known yet) and where it goes.
         float outSum = 0.0;
         vec2 outDir = vec2(0.0);
@@ -106,6 +108,8 @@ void main() {
             }
             float o = flux[a.flux + k];
             float i = flux[b.flux + hfRev(k, nib)];
+            float hb = depth[b.span];
+            lake = lake || (hb > HF_RENDER_DEPTH && abs(hfGeo(b.span).x + hb - (floorA + old)) < 0.03);
             outflow += o;
             inflow += i;
             peak = max(peak, max(o, i));
@@ -164,13 +168,13 @@ void main() {
         depth[a.span] = h;
         // How much of the water here is in the drawn surface (see hfPresenceTarget), moving at most 1 per HF_FILM_SWITCH seconds.
         float sv = air[ai + 3u];
-        bool on = sv >= 2.0;
-        float shown = sv - (on ? 2.0 : 0.0);
+        bool on = hfRunning(sv);
+        float shown = hfShown(sv);
         on = max(outflow, inflow - airIn + landed / HF_DT) > HF_FILM_DRAW * (on ? 0.4 : 1.0);
-        float target = hfPresenceTarget(h, on, outflow);
+        float target = hfPresenceTarget(h, on, outflow, lake);
         float step = HF_DT / HF_FILM_SWITCH;
         shown = target > shown ? min(target, shown + step) : max(target, shown - step);
-        air[ai + 3u] = shown + (on ? 2.0 : 0.0);
+        air[ai + 3u] = shown + (on ? 2.0 : 0.0) + (lake ? 4.0 : 0.0);
         // Thin films give meaningless speeds (flux / tiny depth), so they are left out of the CFL estimate.
         float speed = h > 0.05 ? min(peak / (HF_CELL * h), HF_MAX_SPEED) : 0.0;
 

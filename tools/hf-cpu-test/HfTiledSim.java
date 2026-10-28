@@ -404,6 +404,7 @@ final class HfTiledSim {
 				float foamIn = 0.0F;
 				float falling = 0.0F;
 				float airIn = 0.0F;
+				boolean lake = false;
 				float airDrop = 0.0F;
 				float churnSum = 0.0F;
 				float outSum = 0.0F;
@@ -424,6 +425,11 @@ final class HfTiledSim {
 					float o = this.flux[base + k];
 					int nbBase = this.fluxBase(nb[0], nb[1], nb[2]);
 					float fi = this.flux[nbBase + rev(k, nib)];
+					{
+						int bs = this.span(nb[0], nb[1], nb[2]);
+						float hb = this.depth[bs];
+						lake |= hb > this.renderDepth && Math.abs(this.g.floorOf(this.geo[bs]) + hb - (floorA + old)) < 0.03F;
+					}
 					out += o;
 					in += fi;
 					peak = Math.max(peak, Math.max(o, fi));
@@ -476,15 +482,15 @@ final class HfTiledSim {
 				this.depth[s] = nh;
 				{
 					float sv = this.air[s * AIR_STRIDE + 3];
-					boolean on = sv >= 2.0F;
-					float shown = sv - (on ? 2.0F : 0.0F);
+					boolean on = (sv % 4.0F) >= 2.0F;
+					float shown = sv % 2.0F;
 					on = Math.max(out, in - airIn + landed / dt) > FILM_DRAW * (on && filmSwitch ? 0.4F : 1.0F);
-					float still = Math.clamp((nh - this.renderDepth) / STILL_FADE, 0.0F, 1.0F);
+					float still = lake && nh > FILM_DRY ? 1.0F : Math.clamp((nh - this.renderDepth) / STILL_FADE, 0.0F, 1.0F);
 					float film = on && nh > 0.0005F ? Math.max(Math.clamp((nh - FILM_DRY) / (FILM_FULL - FILM_DRY), 0.0F, 1.0F), Math.clamp(out / (4.0F * FILM_DRAW), 0.0F, 1.0F)) : 0.0F;
 					float target = Math.max(still, film);
 					float stepS = dt / FILM_SWITCH;
 					shown = !filmSwitch ? target : target > shown ? Math.min(target, shown + stepS) : Math.max(target, shown - stepS);
-					this.air[s * AIR_STRIDE + 3] = shown + (on ? 2.0F : 0.0F);
+					this.air[s * AIR_STRIDE + 3] = shown + (on ? 2.0F : 0.0F) + (lake ? 4.0F : 0.0F);
 				}
 				this.churn[s] = churnSum / area;
 				float speed = nh > 0.05F ? Math.min(peak / (cell * nh), 30.0F) : 0.0F;
