@@ -480,12 +480,15 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     }
     path *= G.waterA.y;
     vec3 under = texture(sceneColor, ruv).rgb;
-    // Ground under water looks wet: darker and more saturated. Fully from 1.5 cm of water in the view (it was 3 cm, and only
+    // Ground under water looks wet: darker and more saturated. Fully from 3 mm of water in the view (it was 3 cm, and only
     // pow 1.3 x 0.955 at the default 0.3, so a film running down terraces or a sheet down a block face left the ground behind
     // looking dry; wet soil reflects about half the light dry soil does).
     // Judged by this pixel's own water, not by the refracted path: the ripples move the refraction offset every frame, and at the
     // edge of a thin film (thickness falling to 0 within a few pixels) the darkening flickered between wet and dry.
-    float wet = G.shadeB.y * smoothstep(0.0, 0.015, max(thickness * G.waterA.y, path));
+    // Any water at all wets the ground: at a brink the stream thins to a few mm before it pours off (and the drawn film is
+    // 8 mm), and fading the wet look in over 1.5 cm left a light, dry-looking band along every edge water ran over, which
+    // flickered as the thin water's thickness changed. Fully wet from 3 mm.
+    float wet = G.shadeB.y * smoothstep(0.0, 0.003, max(thickness * G.waterA.y, path));
     under = pow(max(under, vec3(0.0)), vec3(1.0 + 1.5 * wet)) * (1.0 - 0.5 * wet);
     vec3 transmitted = under * exp(-G.absorb.rgb * path);
     vec3 scattered = G.scatter.rgb * ambient * (1.0 - exp(-G.scatter.w * path));

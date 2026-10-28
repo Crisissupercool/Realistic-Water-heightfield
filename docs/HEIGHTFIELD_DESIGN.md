@@ -870,3 +870,6 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   hfRenderDepth with its surface within 3 cm of ours) is drawn (the 4th Air float: presence + 2 while running + 4 while a lake
   edge, so asleep tiles keep it), and the drop is limited by the shallowest water at the corner (each sharer by its presence).
   2, 5, 10 and 20 cm over the ridge: 100% of its corners over its top.
+* **A light, dry-looking band along every edge water pours over.** At a brink the water thins to a few mm (a free overfall)
+  and is drawn 8 mm deep; the wet look faded in over 1.5 cm of water, so the last half block before every edge kept the dry
+  ground's colour next to the darkened lake, and flickered as that thin water's thickness changed. Fully wet from 3 mm now.
