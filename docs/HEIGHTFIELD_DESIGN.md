@@ -857,3 +857,8 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   pouring span's presence (0.3 s) instead of hanging down in full at once. Ground seen through water looks wet from 1 cm of
   water in the view (was 3 cm) and darker: pow(1 + 1.5 w) x (1 - 0.5 w), w = wetDarkening (0.3) (was pow(1 + w) x (1 - 0.15 w)),
   so a film down terraces or a sheet down a block face no longer leaves the dirt behind it looking dry.
+* **Edges flickering between wet and dry (in game, not in the mirror).** The mirror shows step brinks steady (stream of 0.1 and
+  0.4 b^3/s down terraces: brink presence constant, sheets never switching on and off after they appear). One frame-to-frame
+  cause in the shading: the wet darkening was judged by the water path at the refracted pixel, and the ripples move the
+  refraction offset every frame, so at the edge of a thin film (thickness falling to 0 within a few pixels) the ground behind
+  switched between wet and dry. It now uses the larger of the pixel's own water and the refracted path, fully from 1.5 cm.
