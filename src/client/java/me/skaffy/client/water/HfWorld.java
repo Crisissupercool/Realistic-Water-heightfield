@@ -29,6 +29,7 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LevelChunkSection;
+import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.Vec3;
 import org.jspecify.annotations.Nullable;
 import org.lwjgl.vulkan.VkCommandBuffer;
@@ -94,8 +95,13 @@ final class HfWorld {
 		// water far above or below where the player (and usually the water they care about) is.
 		net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
 		int refY = mc.player != null ? Mth.floor(mc.player.getY()) : Mth.floor(y);
-		int yMin = Math.max(level.getMinY(), refY - Math.max(8, WaterSettings.hfWindowBelow));
-		int yMax = Math.min(level.getMinY() + level.getHeight(), refY + Math.max(8, WaterSettings.hfWindowAbove));
+		// Below the window everything is solid, so water running far enough downhill stopped on an invisible floor in mid-air. The
+		// bottom is hfWindowBelow under the player or under sea level, whichever is lower (a heightfield started while flying at
+		// Y 127 had its floor at 63, sea level). The top is the build limit unless hfWindowAbove is set (>= 0): the sky above the
+		// terrain costs almost nothing to build (HfTopology skips it using the heightmap).
+		int yMin = Math.max(level.getMinY(), Math.min(refY, level.getSeaLevel()) - Math.max(8, WaterSettings.hfWindowBelow));
+		int top = level.getMinY() + level.getHeight();
+		int yMax = WaterSettings.hfWindowAbove < 0 ? top : Math.min(top, refY + Math.max(8, WaterSettings.hfWindowAbove));
 		// Tiles line up with chunks: tile (0, 0) is the chunk containing (x, z).
 		int originX = Math.floorDiv(Mth.floor(x), HfTileGrid.TILE_BLOCKS) * HfTileGrid.TILE_BLOCKS;
 		int originZ = Math.floorDiv(Mth.floor(z), HfTileGrid.TILE_BLOCKS) * HfTileGrid.TILE_BLOCKS;
@@ -127,17 +133,29 @@ final class HfWorld {
 		SolidCache solids = new SolidCache(g.cpb, false);
 		long full = g.cpb * g.cpb * g.cpb >= 64 ? -1L : (1L << (g.cpb * g.cpb * g.cpb)) - 1L;
 		BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
-		return (bx, by, bz) -> {
-			BlockState state = level.getBlockState(p.set(bx, by, bz));
-			if (!state.getFluidState().isEmpty() && state.getBlock() != ModContent.REALISTIC_WATER_BLOCK
-				&& (open == null || !open.containsKey(BlockPos.asLong(bx, by, bz)))) {
-				long held = g.openVoxels(bx, by, bz);
-				if (held != 0L) {
-					g.foreignKeptOpen++;
+		return new HfTopology.Voxels() {
+			@Override
+			public long blockVoxels(int bx, int by, int bz) {
+				BlockState state = level.getBlockState(p.set(bx, by, bz));
+				if (!state.getFluidState().isEmpty() && state.getBlock() != ModContent.REALISTIC_WATER_BLOCK
+					&& (open == null || !open.containsKey(BlockPos.asLong(bx, by, bz)))) {
+					long held = g.openVoxels(bx, by, bz);
+					if (held != 0L) {
+						g.foreignKeptOpen++;
+					}
+					return (full & ~held) | solids.blockVoxels(level, bx, by, bz);
 				}
-				return (full & ~held) | solids.blockVoxels(level, bx, by, bz);
+				return solids.blockVoxels(level, bx, by, bz);
 			}
-			return solids.blockVoxels(level, bx, by, bz);
+
+			/** Above the highest non-air block (the client's WORLD_SURFACE heightmap) a column is open sky; unloaded chunks stay solid. */
+			@Override
+			public int top(int bx, int bz) {
+				if (!level.hasChunk(bx >> 4, bz >> 4)) {
+					return Integer.MAX_VALUE;
+				}
+				return level.getHeight(Heightmap.Types.WORLD_SURFACE, bx, bz);
+			}
 		};
 	}
 
@@ -158,12 +176,22 @@ final class HfWorld {
 			return HfTileGrid.NONE;
 		}
 		HfTileGrid.Tile t = g.build(voxels(level, g, extra), tx, tz);
+		// Sections without realistic water need no block reads (the window spans the whole world height).
+		LevelChunk chunk = level.getChunk(cx, cz);
+		boolean[] sectionHasWater = new boolean[level.getSectionsCount()];
+		for (int i = 0; i < sectionHasWater.length; i++) {
+			LevelChunkSection section = chunk.getSection(i);
+			sectionHasWater[i] = !section.hasOnlyAir() && section.maybeHas(st -> st.getBlock() == ModContent.REALISTIC_WATER_BLOCK);
+		}
 		float[] depth = HfBlocks.depthFromBlocks(g, tx, tz, t.geo, t.layersUsed, (x, y, z) -> {
 			if (extra != null) {
 				int e = extra.getOrDefault(BlockPos.asLong(x, y, z), 0);
 				if (e > 0) {
 					return e;
 				}
+			}
+			if (!sectionHasWater[level.getSectionIndex(y)]) {
+				return 0;
 			}
 			// Blocks a particle simulation currently owns stay with it.
 			return this.world.ownedByParticles(BlockPos.asLong(x, y, z)) ? 0 : realistic(level, x, y, z);

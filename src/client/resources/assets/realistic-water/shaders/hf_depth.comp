@@ -3,6 +3,7 @@
 // (volume, max depth, max speed, max surface rate, border-growth bits) for mass checks, the CFL step, sleeping and tile growth.
 // Also carries the foam along with the water and adds new foam where water falls in, runs fast or is stirred by a body.
 #include "hf_common.glsl"
+#include "hf_spray.glsl"
 layout(local_size_x = 256) in;
 layout(std430, binding = 2) buffer Depth { float depth[]; };
 layout(std430, binding = 3) readonly buffer Flux { float flux[]; };
@@ -24,6 +25,19 @@ layout(std430, binding = 8) writeonly buffer Stats { vec4 stats[]; };
 const float FOAM_FALL_RATE = 6.0;
 const vec2 FOAM_FAST = vec2(5.0, 12.0);
 const vec2 FOAM_STIR = vec2(1.5, 4.0);
+// Churn (blocks^2/s): water flowing in times the head it loses here (surface drop plus the velocity head it sheds), per cell area.
+// It is what turns water white: rapids down blocky slopes, a fast slope running into a pool (a hydraulic jump), a flood front,
+// water piling against an obstacle. Calm rivers and lakes stay near 0 (HfCpuTest churn calibration: still lake 0, spreading front
+// 3-6, cascading 1/3 slope 20-50, jump up to 90). Foam fades in over FOAM_CHURN, spray is thrown up above SPRAY_CHURN_MIN.
+const vec2 FOAM_CHURN = vec2(1.5, 12.0);
+const float FOAM_CHURN_MAX = 0.85;
+const float SPRAY_CHURN_MIN = 8.0;
+// Droplets per second per span and unit of churn above SPRAY_CHURN_MIN (times hfSpray).
+const float SPRAY_CHURN_RATE = 0.12;
+// hfSpray while the water moves (0: no spray), the spray half to add to and a seed for this step.
+#define HF_SPRAY_SCALE hp.p1.y
+#define HF_SPRAY_INTO uint(hp.p2.z)
+#define HF_SPRAY_SEED uint(hp.p2.w)
 
 shared vec4 reduction[256];
 shared uint borderBits;
@@ -66,6 +80,19 @@ void main() {
         float foamA = foam[HF_FOAM_READ + hfFoamIndex(a)];
         float foamIn = 0.0;
         float falling = 0.0;
+        // Water pouring in over a drop of more than HF_AIR_MIN_DROP (blocks^3/s, and times its drop).
+        float airIn = 0.0;
+        float airDrop = 0.0;
+        float churn = 0.0;
+        // Our water's speed (its outflow over the old depth; the new one is not known yet) and where it goes.
+        float outSum = 0.0;
+        vec2 outDir = vec2(0.0);
+        for (uint k = 0u; k < HF_LINKS; k++) {
+            float o = flux[a.flux + k];
+            outSum += o;
+            outDir += o * vec2(HF_DX[k >> 1], HF_DZ[k >> 1]);
+        }
+        float ua = outSum / (HF_CELL * max(old, 0.05));
         for (uint k = 0u; k < HF_LINKS; k++) {
             uint nib = hfLink(a, k);
             HfSpan b;
@@ -79,15 +106,56 @@ void main() {
             peak = max(peak, max(o, i));
             if (i > 0.0) {
                 foamIn += i * foam[HF_FOAM_READ + hfFoamIndex(b)];
-                // Water arriving from a span whose floor lies above our surface drops in: a waterfall or a step.
+                // Water arriving from a span whose floor lies above our surface drops in: a waterfall or a step. Over a real
+                // drop it is in the air first and churns the water where it lands, when it lands (below).
                 float drop = hfGeo(b.span).x - (floorA + old);
-                if (drop > 0.0) {
+                if (drop > HF_AIR_MIN_DROP) {
+                    airIn += i;
+                    airDrop += i * drop;
+                } else if (drop > 0.0) {
                     falling += i * min(drop, 4.0);
+                } else {
+                    float hb = depth[b.span];
+                    float ub = i / (HF_CELL * max(hb, 0.05));
+                    float loss = hfGeo(b.span).x + hb - (floorA + old) + (ub * ub - ua * ua) / (2.0 * HF_AIR_G);
+                    churn += i * clamp(loss, 0.0, 4.0);
                 }
             }
         }
         float area = HF_CELL * HF_CELL;
-        float h = max(old + HF_DT * (inflow - outflow) / area, 0.0);
+        // Water in the air lands after its fall time (hfFallTime of its mean drop) from when it began falling in, then at a rate
+        // that keeps volume x fall time in flight (steady pouring lands as fast as it pours); once the pouring stops the rest
+        // lands over the same time. Before, water reached the foot of a high fall the moment it tipped over the edge.
+        uint ai = a.span * 3u;
+        float airVol = air[ai];
+        float airT = air[ai + 1u];
+        float airH = air[ai + 2u];
+        if (airIn > 0.0) {
+            airH = airDrop / airIn;
+            airVol += airIn * HF_DT;
+        }
+        float landed = 0.0;
+        if (airVol > 0.0) {
+            float tf = hfFallTime(airH);
+            airT = min(airT + HF_DT, tf + 1000.0);
+            if (airT >= tf) {
+                landed = airVol * (1.0 - exp(-HF_DT / max(tf, 0.05)));
+                if (airVol - landed < 1.0e-6) {
+                    landed = airVol;
+                }
+                airVol -= landed;
+            }
+        }
+        if (airVol <= 0.0) {
+            // Nothing in the air: the next pour starts a new front from the top.
+            airVol = 0.0;
+            airT = 0.0;
+        }
+        air[ai] = airVol;
+        air[ai + 1u] = airT;
+        air[ai + 2u] = airH;
+        falling += landed / HF_DT * min(airH, 4.0);
+        float h = max(old + (HF_DT * (inflow - airIn - outflow) + landed) / area, 0.0);
         depth[a.span] = h;
         // Thin films give meaningless speeds (flux / tiny depth), so they are left out of the CFL estimate.
         float speed = h > 0.05 ? min(peak / (HF_CELL * h), HF_MAX_SPEED) : 0.0;
@@ -98,12 +166,35 @@ void main() {
         f = max(f, 0.9 * smoothstep(0.0, FOAM_FALL_RATE, falling / area));
         // Only water deep enough for its speed to mean something (thin films give huge flux / depth ratios).
         f = max(f, 0.35 * smoothstep(FOAM_FAST.x, FOAM_FAST.y, speed) * smoothstep(0.05, 0.2, h));
+        float churnA = churn / area;
+        f = max(f, FOAM_CHURN_MAX * smoothstep(FOAM_CHURN.x, FOAM_CHURN.y, churnA) * smoothstep(0.02, 0.1, h));
+        if (HF_SPRAY_SCALE > 0.0 && churnA > SPRAY_CHURN_MIN && h > 0.03) {
+            // Churning water throws droplets up and along with the current.
+            uint s = sprayHash(a.span * 2654435761u ^ HF_SPRAY_SEED);
+            int n = int(min(SPRAY_CHURN_RATE * (churnA - SPRAY_CHURN_MIN) * HF_DT * HF_SPRAY_SCALE + sprayRand(s), 4.0));
+            if (n > 0) {
+                vec2 origin = vec2(tileInfo[a.tile * 4u + 1u].xy * HF_TN + hfColumn(a.col)) * HF_CELL;
+                vec2 current = outDir / (HF_CELL * max(h, 0.05));
+                float cs = length(current);
+                current *= cs > 8.0 ? 8.0 / cs : 1.0;
+                float strength = 0.5 + sqrt(clamp((churnA - SPRAY_CHURN_MIN) / 40.0, 0.0, 1.0));
+                for (int k = 0; k < n; k++) {
+                    vec3 p = vec3(origin.x + sprayRand(s) * HF_CELL, floorA + h - float(HF_YMIN) + 0.03, origin.y + sprayRand(s) * HF_CELL);
+                    float az = sprayRand(s) * 6.2831853;
+                    float spread = mix(0.2, 1.0, sprayRand(s)) * strength;
+                    vec3 v = vec3(current.x * mix(0.4, 0.9, sprayRand(s)) + cos(az) * spread, mix(1.0, 3.0, sprayRand(s)) * strength,
+                        current.y * mix(0.4, 0.9, sprayRand(s)) + sin(az) * spread);
+                    sprayAdd(HF_SPRAY_INTO, p, v, mix(0.4, 1.0, sprayRand(s)), SPRAY_DROPLET);
+                }
+            }
+        }
         vec3 stir = hfStir(a, floorA, floorA + h);
         if (stir.z > 0.0) {
             f = max(f, 0.35 * smoothstep(FOAM_STIR.x, FOAM_STIR.y, length(stir.xy)));
         }
         foam[HF_FOAM_WRITE + hfFoamIndex(a)] = h > 0.0 ? f : 0.0;
-        mine = vec4(h * HF_CELL * HF_CELL, h, speed, abs(h - old) / HF_DT);
+        // Water still in the air counts toward the volume, and keeps the tile awake until it has landed.
+        mine = vec4(h * HF_CELL * HF_CELL + airVol, h, speed, max(abs(h - old) / HF_DT, airVol > 1.0e-5 ? 1.0 : 0.0));
         uint bits = growthBits(a, h);
         if (bits != 0u) {
             atomicOr(borderBits, bits);

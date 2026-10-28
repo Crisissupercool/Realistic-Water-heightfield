@@ -153,6 +153,28 @@ uint hfFoamIndex(HfSpan a) {
     return a.flux / HF_LINKS;
 }
 
+// Water in the air (hf_depth.comp): water pouring into a span from one whose floor is more than HF_AIR_MIN_DROP above its surface
+// falls for a while before it lands. Per span page span, 3 floats: volume in flight (blocks^3), seconds since it began falling in,
+// and its mean drop (blocks). Kept with the span pages, so it survives a tile falling asleep.
+layout(std430, binding = 20) buffer Air { float air[]; };
+const float HF_AIR_MIN_DROP = 1.5;
+// Falling water breaks up and air holds it back toward a terminal speed (blocks/s); a high fall takes about 3.3 s for 30 blocks
+// instead of 2.5 in free fall, and is never instant.
+const float HF_AIR_TERMINAL = 12.0;
+const float HF_AIR_G = 9.81;
+
+// Time to fall h blocks with quadratic drag: t = vt/g acosh(e^(g h / vt^2)), written so it cannot overflow for tall drops.
+float hfFallTime(float h) {
+    float a = HF_AIR_G * max(h, 0.0) / (HF_AIR_TERMINAL * HF_AIR_TERMINAL);
+    return HF_AIR_TERMINAL / HF_AIR_G * (a + log(1.0 + sqrt(max(1.0 - exp(-2.0 * a), 0.0))));
+}
+
+// Distance fallen after t seconds: vt^2/g ln cosh(g t / vt), likewise without overflow.
+float hfFallDistance(float t) {
+    float b = HF_AIR_G * max(t, 0.0) / HF_AIR_TERMINAL;
+    return HF_AIR_TERMINAL * HF_AIR_TERMINAL / HF_AIR_G * (b + log(1.0 + exp(-2.0 * b)) - 0.6931472);
+}
+
 // Bodies moving through the water (G.caps.z entries of G.ent, written by HfWorld.stir): x, z relative to the domain origin
 // and y absolute, in blocks; ent[0].w is the radial push speed of a body crossing the surface, ent[1].w the strength.
 // Returns the velocity (blocks/s) they push this column's water at, and in z how much of the column's height they fill.

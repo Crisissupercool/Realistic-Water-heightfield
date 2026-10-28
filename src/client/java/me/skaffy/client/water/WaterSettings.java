@@ -152,9 +152,10 @@ public final class WaterSettings {
 	/** Seconds between block syncs of a tile while its water moves; settled tiles sync once when they fall asleep. */
 	public static float hfSyncInterval = 1.0F;
 	public static int hfSyncTilesPerFrame = 2;
-	/** Height window of a new heightfield, below and above where it starts (water outside it is left alone). */
+	/** How far a new heightfield reaches below the player or sea level, whichever is lower (below it everything is solid). */
 	public static int hfWindowBelow = 64;
-	public static int hfWindowAbove = 96;
+	/** Blocks above the player the heightfield reaches; -1: up to the build limit (the sky over the terrain is skipped cheaply). */
+	public static int hfWindowAbove = -1;
 	/** Debug: 0 normal, 1 draw only water tops (no side walls), 2 draw only side walls. */
 	public static int hfDebugMesh = 0;
 	/** Turns parts of the water shading off to measure their cost (/water hf stats, composite): 1 reflection trace, 2 ripples, 4 foam, 8 wake. Add to combine. */

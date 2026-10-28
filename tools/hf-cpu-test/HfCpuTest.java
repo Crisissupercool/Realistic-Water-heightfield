@@ -160,6 +160,46 @@ public final class HfCpuTest {
 		return new double[]{before, sim.volume()};
 	}
 
+	/**
+	 * A pool on a plateau (floor 40) next to ground 30 blocks lower; the water pours over the edge. Returns {seconds until water
+	 * first lands below, volume at the start, lowest volume seen, highest, end volume, most in the air}.
+	 */
+	static double[] cliffArrival() {
+		HfTileGrid grid = new HfTileGrid(0, 0, 0, 96, C, L, 0.25F, 4, 16, 16);
+		long full = (1L << (C * C * C)) - 1L;
+		HfTopology.Voxels vox = (x, y, z) -> (x < 6 ? y < 40 : y < 10) ? full : 0L;
+		HfTiledSim sim = new HfTiledSim(grid, vox);
+		sim.maxNewTiles = 0;
+		sim.addTile(0, 0, (l, c) -> l == 0 && (c % grid.tn) / C < 5 ? 2.0 : 0.0);
+		double v0 = sim.volume();
+		double lo = v0;
+		double hi = v0;
+		double first = -1.0;
+		double inAir = 0.0;
+		for (int f = 0; f < 60 * 8; f++) {
+			sim.frame();
+			double v = sim.volume();
+			lo = Math.min(lo, v);
+			hi = Math.max(hi, v);
+			double airNow = 0.0;
+			for (int i = 0; i < sim.air.length; i += 3) {
+				airNow += sim.air[i];
+			}
+			inAir = Math.max(inAir, airNow);
+			if (first < 0.0) {
+				int page = grid.spanPage[0];
+				for (int c = 0; c < grid.pageSpans; c++) {
+					int sp = page * grid.pageSpans + c;
+					if (HfTileGrid.validGeo(sim.geo[sp]) && grid.floorOf(sim.geo[sp]) < 20.0F && sim.depth[sp] > 0.01F) {
+						first = (f + 1) / 60.0;
+						break;
+					}
+				}
+			}
+		}
+		return new double[]{first, v0, lo, hi, sim.volume(), inAir};
+	}
+
 	static double totalFlux(HfTiledSim sim, HfTileGrid grid, int tile) {
 		double sum = 0.0;
 		for (int l = 0; l < grid.layersUsed[tile]; l++) {
@@ -973,6 +1013,41 @@ public final class HfCpuTest {
 			check(old[3] < 0.1 * old[2], String.format("old rule (non-realistic fluid is solid): breaking a log on the shore turns the lake solid, water %.1f -> %.1f (the old remap stood it up as a tower instead)", old[2], old[3]));
 			check(Math.abs(now[1] - now[0]) < 0.05 && Math.abs(now[3] - now[2]) < 1.0e-3,
 				String.format("kept open where the heightfield holds it: the lake stays at %.2f -> %.2f, water %.1f -> %.1f", now[0], now[1], now[2], now[3]));
+		}
+
+		System.out.println("Waterfalls: water pouring over a high drop is in the air for its fall time before it lands");
+		{
+			double[] r = cliffArrival();
+			double expect = HfTiledSim.fallTime(30.0F);
+			check(r[0] >= expect && r[0] < expect + 0.6, String.format("30-block drop: first water lands after %.2f s (fall time with air drag %.2f s, free fall %.2f s; was instant)",
+				r[0], expect, Math.sqrt(2.0 * 30.0 / 9.81)));
+			check(r[5] > 0.5, String.format("up to %.1f blocks^3 in the air at once", r[5]));
+			check(Math.max(r[1] - r[2], r[3] - r[1]) < 1.0e-3 * r[1] && Math.abs(r[4] - r[1]) < 1.0e-3 * r[1],
+				String.format("volume exact with the water in the air counted: %.2f, between %.2f and %.2f, %.2f at the end", r[1], r[2], r[3], r[4]));
+		}
+
+		System.out.println("Topology: skipping the open sky above the heightmap gives exactly the same spans and links");
+		{
+			long fullMask = (1L << (C * C * C)) - 1L;
+			HfTopology.Voxels plain = (x, y, z) -> {
+				int surface = 70 + (int) (6 * Math.sin(x * 0.21) + 5 * Math.cos(z * 0.17));
+				boolean cave = Math.sin(x * 0.3 + y * 0.2) * Math.cos(z * 0.25 - y * 0.15) > 0.7 && y < 60;
+				boolean overhang = y == surface + 3 && (x + z) % 5 == 0;
+				return (y < surface && !cave) || overhang ? fullMask : 0L;
+			};
+			HfTopology.Voxels sky = new HfTopology.Voxels() {
+				public long blockVoxels(int x, int y, int z) {
+					return plain.blockVoxels(x, y, z);
+				}
+
+				public int top(int x, int z) {
+					return 70 + (int) (6 * Math.sin(x * 0.21) + 5 * Math.cos(z * 0.17)) + 4;
+				}
+			};
+			HfTopology a = HfTopology.build(plain, -1, -1, 18, 18, -1, 320, C, L, 0.25F);
+			HfTopology b = HfTopology.build(sky, -1, -1, 18, 18, -1, 320, C, L, 0.25F);
+			check(java.util.Arrays.equals(a.floor, b.floor) && java.util.Arrays.equals(a.ceil, b.ceil) && java.util.Arrays.equals(a.links, b.links),
+				"hilly terrain with caves and overhangs, window -1..320: identical with and without the sky skip");
 		}
 
 		System.out.println("Chunks streaming back in: a tile rebuilt while a neighbor chunk is unloaded loses the water flowing over that border");

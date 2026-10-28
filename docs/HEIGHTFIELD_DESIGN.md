@@ -756,3 +756,34 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   ferns, vines, a single snow layer; not torches, rails or redstone) now give way to the water as they do to vanilla water.
   They drop their loot, a tall plant's top half goes too, and the client write-back no longer skips them. No tile rebuild
   follows: both have no collision and the write is consumed as our own echo.
+
+## 24. Window floor, fall time, turbulence foam, smooth shorelines (as built)
+
+* **Invisible floor:** tiles covered `refY - 48 .. refY + 48` around the player when they were built. Water flowing down a
+  long slope or a deep shaft hit the bottom of that window and stopped in the air (and boats there sank: below the window
+  nothing is simulated, so no block is written). The window is now `min(playerY, sea level) - hfWindowBelow` (64) up to the
+  build limit (`hfWindowAbove` -1). To keep the build cheap the topology scan starts at the `WORLD_SURFACE` heightmap
+  (`Voxels.top`): above it a column is open sky, one run with no blocks to test. Sections with no realistic water
+  (`maybeHas`) are skipped when depths are imported. Tile build (CPU bench, hilly 16x16 tile): 3.90 ms for the old window,
+  7.70 ms for full height without the skip, 2.81 ms with it. The sky-skip build matches the full scan cell for cell (test).
+* **Water reached the bottom of a fall at once:** the solver moves water between neighbouring spans each step, so a pour off
+  a 30-block cliff appeared at the bottom the next frame. Inflow from a neighbour whose floor is more than 1.5 blocks above
+  our surface now goes into the air first: per span, 3 floats (`Air`, binding 20) hold the volume in flight, how long the
+  front has been falling and the mean drop. It lands after the fall time of a body with drag (terminal speed 12 b/s):
+  1.5 blocks 0.56 s, 10 blocks 1.59 s, 30 blocks 3.34 s, 100 blocks 9.18 s, then at the rate it arrives. Volume in flight
+  counts in the stats total and keeps the tile awake; a remap lands it at once. The mesh draws the falling sheet only down to
+  where the front has reached (`hfFallDistance`), and splash, drops and mist start when it lands, at the drag-limited impact
+  speed. CPU test: a 30-block drop lands after 3.38 s (expected 3.34 s), up to 149 blocks^3 in the air, volume exact.
+* **Foam and spray where water is churned:** foam used to come only from the brink and the plunge. Each span now measures
+  churn: inflow times the head it loses on the way in (surface drop plus the change in velocity head, (u_b^2 - u_a^2)/2g,
+  clamped 0..4 blocks) per unit area. Calibrated on the CPU sim (p99): a still lake 0, a flood front 2.7-6, rapids down a
+  slope 20-50, a hydraulic jump up to 93. Foam gains 0.85 x smoothstep(1.5, 12, churn), so fronts get a light edge and
+  rapids and jumps go white (checked as foam maps: foam sits at fronts, rapids and the jump, none on still water). Above 8,
+  churn throws spray, 0.12 droplets a second per unit over (at most 4 a step per span), along the current and upward.
+* **Blocky spreading:** the surface met dry ground along cell edges, so a front advancing diagonally drew a half-block
+  staircase. Where a corner touches flat dry ground (same floor, no bank or drop), it is now placed as in marching squares:
+  `lo + (level - lo)(2w - 1)` with w the wet share of the four cells, so the waterline crosses the ground part way along the
+  edge. Dry cells next to water get a shore quad whose corners are the wet neighbour's own corners (no crack), and corners no
+  wet cell touches sit 0.25 under the ground; walls toward flat dry ground are no longer drawn. Banks, drops and steps keep
+  the old rule. Mesh mirror on a 45 degree front: the waterline is 0.163 blocks RMS off the straight line (0.696 with cell
+  edges), 0 shore corners that miss a wet cell's.

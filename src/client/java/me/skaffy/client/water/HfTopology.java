@@ -52,6 +52,15 @@ final class HfTopology {
 	/** Solid sub-voxels of one block, same bit layout as {@link SolidCache#blockVoxels}. Kept free of Minecraft types so the builder can be unit tested. */
 	interface Voxels {
 		long blockVoxels(int bx, int by, int bz);
+
+		/**
+		 * The lowest block y from which the column at (bx, bz) is all open (nothing solid, no fluid) up to the sky, or
+		 * {@link Integer#MAX_VALUE} if not known. The build skips everything above it: with the window reaching the build limit
+		 * most of a column is sky.
+		 */
+		default int top(int bx, int bz) {
+			return Integer.MAX_VALUE;
+		}
 	}
 
 	/**
@@ -70,12 +79,17 @@ final class HfTopology {
 		long[] masks = new long[blocksY];
 		for (int iz = 0; iz < sizeZ; iz++) {
 			for (int ix = 0; ix < sizeX; ix++) {
-				for (int y = 0; y < blocksY; y++) {
+				int top = solids.top(ox + ix, oz + iz);
+				int openFrom = top == Integer.MAX_VALUE ? blocksY : Math.clamp((long) top - yMin, 0, blocksY);
+				for (int y = 0; y < openFrom; y++) {
 					masks[y] = solids.blockVoxels(ox + ix, yMin + y, oz + iz);
+				}
+				for (int y = openFrom; y < blocksY; y++) {
+					masks[y] = 0L;
 				}
 				for (int k = 0; k < cpb; k++) {
 					for (int c = 0; c < cpb; c++) {
-						t.scanColumn(ix * cpb + c, iz * cpb + k, masks, rows, cpb, c, k, yMin, minOpening);
+						t.scanColumn(ix * cpb + c, iz * cpb + k, masks, rows, openFrom * cpb, cpb, c, k, yMin, minOpening);
 					}
 				}
 			}
@@ -91,11 +105,16 @@ final class HfTopology {
 		return ((masks[block] >>> bit) & 1L) != 0L;
 	}
 
-	private void scanColumn(int cx, int cz, long[] masks, int rows, int cpb, int c, int k, int yMin, float minOpening) {
+	/** openRows: rows from here up are known open (see {@link Voxels#top}); the scan starts below them, already in an open run. */
+	private void scanColumn(int cx, int cz, long[] masks, int rows, int openRows, int cpb, int c, int k, int yMin, float minOpening) {
 		int layer = 0;
 		int runTop = -1;
 		boolean topOpen = false;
-		for (int v = rows - 1; v >= -1; v--) {
+		if (openRows < rows) {
+			runTop = rows;
+			topOpen = true;
+		}
+		for (int v = Math.min(rows, openRows) - 1; v >= -1; v--) {
 			boolean isSolid = v < 0 || solid(masks, v, cpb, c, k);
 			if (!isSolid) {
 				if (runTop < 0) {

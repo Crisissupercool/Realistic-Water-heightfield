@@ -4,7 +4,9 @@ package me.skaffy.client.water;
 final class HfMeshMirror {
 	static HfTiledSim sim;
 	static HfTileGrid g;
-	static final float DRY = 0.035F, FLOW_DRY = 0.008F, RAMP_MAX = 1.6F, RAMP_FLOW = 0.02F, DROP = 0.111F;
+	static final float DRY = 0.035F, FLOW_DRY = 0.008F, RAMP_MAX = 1.6F, RAMP_FLOW = 0.02F, DROP = 0.111F, SHORE_BELOW = 0.25F;
+	/** The shader's marching-squares shoreline (corner remap and shore quads); false: the old cell-edged one, for comparison. */
+	static boolean shore = true;
 
 	record S(int tile, int layer, int col) {
 		int span() { return g.spanPage[tile * 4 + layer] * g.pageSpans + col; }
@@ -53,6 +55,8 @@ final class HfMeshMirror {
 		if (nf < lo - 0.05F) return lo + (level - lo) * 0.7F;
 		return Math.clamp(nf, lo, level);
 	}
+	static boolean dryFlat(boolean ok, boolean link, S t, float lo) { return ok && !link && !wet(t) && Math.abs(floorOf(t) - lo) <= 0.05F; }
+	static boolean dryOther(boolean ok, boolean link, S t, float lo) { return ok && !link && !wet(t) && Math.abs(floorOf(t) - lo) > 0.05F; }
 	static float lastGx, lastGz, normalGap;
 	static float corner(S a, int sx, int sz) {
 		float fl = floorOf(a), top = surface(a), ce = ceilOf(a);
@@ -75,6 +79,8 @@ final class HfMeshMirror {
 		float level = levelSum / shares;
 		float sum = top, count = 1;
 		float[] v3 = {sample(okX, lx, nx, lo, level), sample(okZ, lz, nz, lo, level), sample(okD, ld, nd, lo, level)};
+		boolean flat = dryFlat(okX, lx, nx, lo) || dryFlat(okZ, lz, nz, lo) || dryFlat(okD, ld, nd, lo);
+		boolean other = dryOther(okX, lx, nx, lo) || dryOther(okZ, lz, nz, lo) || dryOther(okD, ld, nd, lo);
 		for (float v : v3) {
 			if (!Float.isNaN(v)) { sum += v; count++; }
 		}
@@ -82,9 +88,93 @@ final class HfMeshMirror {
 		float hx = Float.isNaN(v3[0]) ? hh : v3[0], hz = Float.isNaN(v3[1]) ? hh : v3[1], hd = Float.isNaN(v3[2]) ? hh : v3[2];
 		lastGx = ((hx - top) + (hd - hz)) * 0.5F / 0.5F * sx;
 		lastGz = ((hz - top) + (hd - hx)) * 0.5F / 0.5F * sz;
-		float h = Math.clamp(hh, lo, hiC);
+		float h;
+		if (shore && flat && !other && level - lo > 1.0e-4F) {
+			float w = Math.clamp((hh - lo) / (level - lo), 0.0F, 1.0F);
+			h = Math.min(lo + (level - lo) * (2.0F * w - 1.0F), hiC);
+		} else {
+			h = Math.clamp(hh, lo, hiC);
+		}
 		h -= DROP * Math.clamp(Math.min(depthSum / shares, h - lo), 0, 1);
 		return h;
+	}
+
+	static boolean wetAt(S t, float fl) { return t != null && wet(t) && Math.abs(floorOf(t) - fl) <= 0.05F; }
+
+	/** Mirror of shoreQuad's corner for dry span a at (sx, sz): a wet sharer's own corner(), else under the ground; null: no quad. */
+	static float shoreCorner(S a, int sx, int sz) {
+		float fl = floorOf(a);
+		int dirX = sx > 0 ? 0 : 1, dirZ = sz > 0 ? 2 : 3;
+		S x = pick(a, dirX), z = pick(a, dirZ);
+		if (wetAt(x, fl)) return corner(x, -sx, sz);
+		if (wetAt(z, fl)) return corner(z, sx, -sz);
+		S d = x != null ? pick(x, dirZ) : null;
+		if (d == null && z != null) d = pick(z, dirX);
+		if (wetAt(d, fl)) return corner(d, -sx, -sz);
+		return fl - SHORE_BELOW;
+	}
+
+	static boolean nearWater(S a) {
+		float fl = floorOf(a);
+		for (int d = 0; d < 4; d++) if (wetAt(pick(a, d), fl)) return true;
+		return false;
+	}
+
+	/**
+	 * A flood front on flat ground running diagonally (cells with i + j < 24 wet, 0.4 deep, still): where the drawn surface crosses
+	 * the ground. Returns {RMS distance of the waterline from the straight diagonal (blocks), shore quads that crack against a
+	 * wet neighbor}.
+	 */
+	static double[] diagonalFront(boolean marching) {
+		shore = marching;
+		int C = 2;
+		g = new HfTileGrid(0, 0, 40, 96, C, 4, 0.25F, 4, 16, 16);
+		sim = new HfTiledSim(g, HfCpuTest.voxels((x, y, z) -> y < 64));
+		int tn = g.tn;
+		sim.addTile(0, 0, (l, c) -> l == 0 && (c % tn) + (c / tn) < 24 ? 0.4 : 0.0);
+		float[][] h = new float[tn + 1][tn + 1];
+		boolean[][] has = new boolean[tn + 1][tn + 1];
+		int cracks = 0;
+		int[][] sg = {{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
+		for (int col = 0; col < g.pageSpans; col++) {
+			S a = new S(0, 0, col);
+			int cx = col % tn, cz = col / tn;
+			boolean w = wet(a);
+			if (!w && !(marching && nearWater(a))) continue;
+			for (int[] k : sg) {
+				int px = cx + (k[0] > 0 ? 1 : 0), pz = cz + (k[1] > 0 ? 1 : 0);
+				float v = w ? corner(a, k[0], k[1]) : shoreCorner(a, k[0], k[1]);
+				if (has[px][pz] && Math.abs(h[px][pz] - v) > 1.0e-4F) cracks++;
+				h[px][pz] = has[px][pz] ? h[px][pz] : v;
+				has[px][pz] = true;
+			}
+		}
+		// Waterline: along each grid line between corners that both have a surface, where it crosses the ground (64); a corner with no
+		// surface (outside the water and the shore) counts as the edge of the water.
+		double sum = 0.0;
+		int n = 0;
+		float ground = 64.0F;
+		for (int i = 0; i <= tn; i++) {
+			for (int j = 0; j <= tn; j++) {
+				for (int[] dd : new int[][]{{1, 0}, {0, 1}}) {
+					int i2 = i + dd[0], j2 = j + dd[1];
+					if (i2 > tn || j2 > tn || i + j < 14 || i + j > 34) continue;
+					boolean in1 = has[i][j] && h[i][j] > ground, in2 = has[i2][j2] && h[i2][j2] > ground;
+					if (in1 == in2) continue;
+					double t;
+					if (has[i][j] && has[i2][j2]) t = (h[i][j] - ground) / (h[i][j] - h[i2][j2]);
+					else t = in1 ? 1.0 : 0.0;
+					double px = (i + dd[0] * t) * 0.5, pz = (j + dd[1] * t) * 0.5;
+					double dist = (px + pz - 12.0) / Math.sqrt(2.0);
+					sum += dist * dist;
+					n++;
+				}
+			}
+		}
+		shore = true;
+		double rms = Math.sqrt(sum / Math.max(n, 1));
+		double mean = 0.0;
+		return new double[]{rms, cracks, n, mean};
 	}
 
 	static boolean check(String name, HfCpuTest.Solid solid, int resCol, float resLevel, int frames) {
@@ -259,5 +349,10 @@ final class HfMeshMirror {
 		checkCurtains();
 		check("lake with shore", (x, y, z) -> y < 64 + Math.max(0, Math.abs(x - 12) + Math.abs(z - 12) - 8) / 2,
 			(12 * 2) * tn + 12 * 2, 65.3F, 900);
+		double[] old = diagonalFront(false);
+		double[] now = diagonalFront(true);
+		HfCpuTest.check(now[1] == 0 && now[0] < 0.4 * old[0], String.format(
+			"diagonal flood front on flat ground: waterline %.3f blocks RMS off the straight line with the marching-squares shore (%.3f with cell edges), %d shore corners that do not meet a wet cell's",
+			now[0], old[0], (int) now[1]));
 	}
 }

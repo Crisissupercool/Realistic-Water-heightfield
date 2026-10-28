@@ -157,6 +157,15 @@ bool pick(HfSpan a, int dir, out HfSpan r) {
 // within the corner's water; over a drop most of the water depth stays up to the brink, where it pours off). Walls and water
 // at a separate level add nothing (NaN). Everything is relative to the corner's water, not to our own span, so every span
 // sharing the corner gets the same height and the surface has no cracks.
+// Neighbor t at a corner is dry ground at the corner's floor (flat shoreline), or dry at another height.
+bool dryFlat(bool ok, bool link, HfSpan t, float lo) {
+    return ok && !link && !wet(t.span) && abs(hfGeo(t.span).x - lo) <= 0.05;
+}
+
+bool dryOther(bool ok, bool link, HfSpan t, float lo) {
+    return ok && !link && !wet(t.span) && abs(hfGeo(t.span).x - lo) > 0.05;
+}
+
 float cornerSample(bool ok, bool link, HfSpan t, float lo, float level) {
     if (!ok) {
         return uintBitsToFloat(0x7FC00000u);
@@ -259,6 +268,11 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce, out vec2 fl
     float hx = cornerSample(okX, lx, nx, lo, level);
     float hz = cornerSample(okZ, lz, nz, lo, level);
     float hd = cornerSample(okD, ld, nd, lo, level);
+    // Dry ground at the corner's floor (a shoreline on flat ground), and any other dry neighbor (a bank above, a drop below).
+    bool flatX = dryFlat(okX, lx, nx, lo);
+    bool flatZ = dryFlat(okZ, lz, nz, lo);
+    bool flatD = dryFlat(okD, ld, nd, lo);
+    bool otherDry = dryOther(okX, lx, nx, lo) || dryOther(okZ, lz, nz, lo) || dryOther(okD, ld, nd, lo);
     float sum = top;
     float count = 1.0;
     if (!isnan(hx)) {
@@ -282,7 +296,16 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce, out vec2 fl
     float c = HF_CELL;
     float dhdx = ((hx - hs) + (hd - hz)) * 0.5 / c * float(sx);
     float dhdz = ((hz - hs) + (hd - hx)) * 0.5 / c * float(sz);
-    h = clamp(h, lo, hiC);
+    if ((flatX || flatZ || flatD) && !otherDry && level - lo > 1.0e-4) {
+        // Shoreline on flat ground, as in marching squares: by the share of the corner that is wet, w = (h - lo) / (level - lo),
+        // the corner goes from below the ground (1 of 4 cells wet) through the ground (2 of 4) up to the water level (all 4).
+        // The surface then meets the ground on a line cutting through the cells, not along their half-block edges, and dips
+        // under the ground past it (shoreQuad continues it into the dry cells).
+        float w = clamp((h - lo) / (level - lo), 0.0, 1.0);
+        h = min(lo + (level - lo) * (2.0 * w - 1.0), hiC);
+    } else {
+        h = clamp(h, lo, hiC);
+    }
     h -= HF_SURFACE_DROP * clamp(min(depthSum / shares, h - lo), 0.0, 1.0);
     vec3 n = normalize(vec3(-dhdx, 1.0, -dhdz));
     flow /= shares;
@@ -328,16 +351,25 @@ void emit(uint q, vec3 a, vec3 b, vec3 c, vec3 d, vec3 normal, bool wall) {
 // Whether span t pours over its edge in direction d as a falling sheet: the water it flows into lies below its floor and the
 // outflow is above HF_CURTAIN_MIN. land: where it lands (world y); v0: the speed it leaves the edge at; q: the outflow
 // (blocks^3/s).
-bool curtainOf(HfSpan t, int d, out float land, out float v0, out float q) {
+// down: the falling water has reached where it lands (water over a drop is in the air for its fall time, hf_depth.comp); until
+// then the sheet ends at the falling front, in mid-air.
+bool curtainOf(HfSpan t, int d, out float land, out float v0, out float q, out bool down) {
     land = 0.0;
     v0 = 0.0;
     q = 0.0;
+    down = true;
     HfSpan n;
     if (t.flux == HF_NONE || !pick(t, d, n) || linked(t, d, n)) {
         return false;
     }
     float fl = hfGeo(t.span).x;
     land = wet(n.span) ? surfaceOf(n.span) : hfGeo(n.span).x;
+    float inAir = air[n.span * 3u];
+    float fallen = air[n.span * 3u + 1u];
+    if (inAir > 0.0 && fallen < hfFallTime(air[n.span * 3u + 2u])) {
+        down = false;
+        land = max(land, fl - hfFallDistance(fallen));
+    }
     q = outflowTo(t, d);
     if (land >= fl - 0.05 || q <= HF_CURTAIN_MIN) {
         return false;
@@ -355,7 +387,8 @@ vec4 curtainEnd(HfSpan a, int d, int sd, float land, float v0) {
     float nv;
     float nq;
     float fl = hfGeo(a.span).x;
-    if (pick(a, sd, n) && linked(a, sd, n) && curtainOf(n, d, nl, nv, nq)) {
+    bool nd;
+    if (pick(a, sd, n) && linked(a, sd, n) && curtainOf(n, d, nl, nv, nq, nd)) {
         return vec4(0.5 * (land + nl), 0.5 * (v0 + nv), 0.5 * (fl + hfGeo(n.span).x), 1.0);
     }
     return vec4(land, v0, fl, 0.0);
@@ -501,11 +534,12 @@ const float SPRAY_DROP_RATE = 12.0;
 // Spray thrown by a falling sheet: droplets bouncing back up and out where it lands (faster for taller falls), droplets peeling
 // off it as it falls, and mist at its foot. The rates grow with the energy the water brings down (outflow x drop), so trickles
 // and small steps barely spray while a tall fall throws a cloud. Positions as the mesh's (relative to the origin).
-void emitSpray(uint seed, vec2 outward, vec3 e0, vec3 e1, vec4 end0, vec4 end1, float q) {
+void emitSpray(uint seed, vec2 outward, vec3 e0, vec3 e1, vec4 end0, vec4 end1, float q, bool down) {
     float dt = HF_SPRAY_DT;
     if (dt <= 0.0) {
         return;
     }
+    // Until the falling water lands there is no foot to splash from; only the sheet itself sheds spray.
     float drop = max(0.5 * (e0.y + e1.y) - 0.5 * (end0.x + end1.x), 0.0);
     float energy = q * min(drop, 16.0) * smoothstep(0.3, 1.5, drop);
     if (energy <= 1.0e-4) {
@@ -515,8 +549,9 @@ void emitSpray(uint seed, vec2 outward, vec3 e0, vec3 e1, vec4 end0, vec4 end1, 
     vec3 dir = vec3(outward.x, 0.0, outward.y);
     vec3 side = vec3(-outward.y, 0.0, outward.x);
     vec3 up = vec3(0.0, 1.0, 0.0);
-    float impact = sqrt(2.0 * GRAVITY * drop);
-    int splash = int(min(SPRAY_SPLASH_RATE * energy * dt + sprayRand(s), 24.0));
+    // Speed at the foot with air drag (hf_common.glsl): a high fall hits at most about HF_AIR_TERMINAL.
+    float impact = HF_AIR_TERMINAL * tanh(HF_AIR_G * hfFallTime(drop) / HF_AIR_TERMINAL);
+    int splash = down ? int(min(SPRAY_SPLASH_RATE * energy * dt + sprayRand(s), 24.0)) : 0;
     for (int k = 0; k < splash; k++) {
         float t = sprayRand(s);
         SheetPoint p = sheetPoint(mix(e0, e1, t), outward, mix(end0, end1, t), 1.0, vec2(0.0), false);
@@ -527,7 +562,7 @@ void emitSpray(uint seed, vec2 outward, vec3 e0, vec3 e1, vec4 end0, vec4 end1, 
         sprayAdd(HF_SPRAY_INTO, p.top + up * 0.04, v, mix(0.6, 1.5, sprayRand(s)), SPRAY_DROPLET);
     }
     // A few bigger water drops (drawn as water) bounce out of the foot too.
-    int drops = int(min(SPRAY_DROP_RATE * energy * dt + sprayRand(s), 4.0));
+    int drops = down ? int(min(SPRAY_DROP_RATE * energy * dt + sprayRand(s), 4.0)) : 0;
     for (int k = 0; k < drops; k++) {
         float t = sprayRand(s);
         SheetPoint p = sheetPoint(mix(e0, e1, t), outward, mix(end0, end1, t), 1.0, vec2(0.0), false);
@@ -537,7 +572,7 @@ void emitSpray(uint seed, vec2 outward, vec3 e0, vec3 e1, vec4 end0, vec4 end1, 
         vec3 v = (h * cos(el) + up * sin(el)) * min(impact * mix(0.12, 0.3, sprayRand(s)), 6.0);
         dropAdd(HF_SPRAY_INTO, p.top + up * 0.06, v, 3.0, mix(0.5, 1.1, sprayRand(s)));
     }
-    int mist = int(min(SPRAY_MIST_RATE * energy * dt + sprayRand(s), 6.0));
+    int mist = down ? int(min(SPRAY_MIST_RATE * energy * dt + sprayRand(s), 6.0)) : 0;
     for (int k = 0; k < mist; k++) {
         float t = sprayRand(s);
         SheetPoint p = sheetPoint(mix(e0, e1, t), outward, mix(end0, end1, t), 1.0, vec2(0.0), false);
@@ -552,12 +587,101 @@ void emitSpray(uint seed, vec2 outward, vec3 e0, vec3 e1, vec4 end0, vec4 end1, 
         vec3 e = mix(e0, e1, t);
         vec4 end = mix(end0, end1, t);
         SheetPoint p = sheetPoint(e, outward, end, f, vec2(0.0), false);
-        // The sheet's own velocity there, plus a push away from it.
-        float fall = sqrt(2.0 * max(e.y - end.x, 0.0) / GRAVITY) * f;
+        // The sheet's own velocity there (falling with air drag, as the water does), plus a push away from it.
+        float fall = hfFallTime(max(e.y - end.x, 0.0) * f * f);
         float vx = end.y * exp(-end.y * fall / CURTAIN_REACH);
-        vec3 v = dir * (vx + mix(0.3, 1.2, sprayRand(s))) + side * (sprayRand(s) - 0.5) * 0.8 - up * GRAVITY * fall;
+        float vy = HF_AIR_TERMINAL * tanh(HF_AIR_G * fall / HF_AIR_TERMINAL);
+        vec3 v = dir * (vx + mix(0.3, 1.2, sprayRand(s))) + side * (sprayRand(s) - 0.5) * 0.8 - up * vy;
         sprayAdd(HF_SPRAY_INTO, p.top + dir * 0.02, v, mix(0.8, 1.6, sprayRand(s)), SPRAY_DROPLET);
     }
+}
+
+// How far below the ground a shore surface reaches at a corner no wet cell touches.
+const float SHORE_BELOW = 0.25;
+
+// Wet span on the same floor as fl (water on flat ground next to it).
+bool wetAt(bool ok, HfSpan t, float fl) {
+    return ok && wet(t.span) && abs(hfGeo(t.span).x - fl) <= 0.05;
+}
+
+// A dry span next to water on flat ground: a surface continuing the wet neighbors' corners into it (each corner taken from a wet
+// cell sharing it, with exactly that cell's own corner() call, so the two meet without a crack) and dipping under the ground
+// where no wet cell touches. The waterline is where it crosses the ground (see the marching-squares remap in corner()).
+void shoreQuad(HfSpan a, vec2 g, ivec2 cell) {
+    float fl = g.x;
+    HfSpan nb[4];
+    bool has[4];
+    bool near = false;
+    for (int d = 0; d < 4; d++) {
+        has[d] = pick(a, d, nb[d]);
+        near = near || wetAt(has[d], nb[d], fl);
+    }
+    if (!near) {
+        return;
+    }
+    const ivec2 SIGN[4] = ivec2[](ivec2(-1, -1), ivec2(1, -1), ivec2(1, 1), ivec2(-1, 1));
+    vec4 c[4];
+    vec2 f[4];
+    bool seen = false;
+    for (int i = 0; i < 4; i++) {
+        int sx = SIGN[i].x;
+        int sz = SIGN[i].y;
+        int dirX = sx > 0 ? 0 : 1;
+        int dirZ = sz > 0 ? 2 : 3;
+        HfSpan w;
+        int wx = 0;
+        int wz = 0;
+        bool found = false;
+        if (wetAt(has[dirX], nb[dirX], fl)) {
+            w = nb[dirX];
+            wx = -sx;
+            wz = sz;
+            found = true;
+        } else if (wetAt(has[dirZ], nb[dirZ], fl)) {
+            w = nb[dirZ];
+            wx = sx;
+            wz = -sz;
+            found = true;
+        } else {
+            HfSpan dg;
+            if ((has[dirX] && pick(nb[dirX], dirZ, dg) || has[dirZ] && pick(nb[dirZ], dirX, dg)) && wetAt(true, dg, fl)) {
+                w = dg;
+                wx = -sx;
+                wz = -sz;
+                found = true;
+            }
+        }
+        if (found) {
+            vec2 gw = hfGeo(w.span);
+            c[i] = corner(w, wx, wz, gw.x, surfaceOf(w.span), gw.y, f[i]);
+            seen = seen || c[i].y > fl;
+        } else {
+            c[i] = vec4(0.0, fl - SHORE_BELOW, 0.0, 0.0);
+            f[i] = vec2(0.0);
+        }
+    }
+    // All of it under the ground: nothing to draw.
+    if (!seen) {
+        return;
+    }
+    uint total = subgroupAdd(1u);
+    uint within = subgroupExclusiveAdd(1u);
+    uint base = 0u;
+    if (subgroupElect()) {
+        base = atomicAdd(meshCounters[1], total);
+    }
+    uint q = subgroupBroadcastFirst(base) + within;
+    if (q >= HF_QUAD_CAP) {
+        return;
+    }
+    float cs = HF_CELL;
+    float x0 = float(cell.x) * cs;
+    float x1 = x0 + cs;
+    float z0 = float(cell.y) * cs;
+    float z1 = z0 + cs;
+    float oy = HF_ORIGIN_Y;
+    emitTop(q, vec3(x0, c[0].y - oy, z0), vec3(x1, c[1].y - oy, z0), vec3(x1, c[2].y - oy, z1), vec3(x0, c[3].y - oy, z1),
+        c[0], c[1], c[2], c[3], f[0], f[1], f[2], f[3]);
 }
 
 void main() {
@@ -571,13 +695,19 @@ void main() {
     }
     uint s = a.span;
     vec2 g = hfGeo(s);
-    if (!hfValid(g) || !wet(s)) {
+    if (!hfValid(g)) {
         return;
     }
     ivec2 tile = tileInfo[a.tile * 4u + 1u].xy;
     ivec2 local = hfColumn(a.col);
     int cx = tile.x * HF_TN + local.x;
     int cz = tile.y * HF_TN + local.y;
+    if (!wet(s)) {
+        if (HF_DEBUG != 2) {
+            shoreQuad(a, g, ivec2(cx, cz));
+        }
+        return;
+    }
     float fl = g.x;
     float ce = g.y;
     float top = surfaceOf(s);
@@ -602,15 +732,18 @@ void main() {
     float curtainLand[4];
     float curtainSpeed[4];
     float curtainFlow[4];
+    bool curtainDown[4];
     for (int d = 0; d < 4; d++) {
         HfSpan t;
         bool ok = pick(a, d, t);
         inset[d] = ok ? 0.0 : WALL_INSET;
-        if (!ok || !linked(a, d, t)) {
+        // No side face toward dry ground at our floor: the surface runs on into the ground there (shoreQuad).
+        bool flatDry = ok && !wet(t.span) && abs(hfGeo(t.span).x - fl) <= 0.05;
+        if (!ok || !linked(a, d, t) && !flatDry) {
             wallMask |= 1u << d;
         }
         // Water pouring over an edge onto lower ground or into lower water: a falling sheet down to where it lands.
-        if (curtainOf(a, d, curtainLand[d], curtainSpeed[d], curtainFlow[d])) {
+        if (curtainOf(a, d, curtainLand[d], curtainSpeed[d], curtainFlow[d], curtainDown[d])) {
             curtainMask |= 1u << d;
         }
     }
@@ -691,6 +824,7 @@ void main() {
         vec4 end1 = end1s[d] - vec4(oy, 0.0, oy, 0.0);
         emitCurtain(q, d, OUTWARD[d], e0s[d], e1s[d], end0, end1, c0s[d], c1s[d]);
         q += curtainQuads(end0, end1);
-        emitSpray(a.span * 4u + uint(d) + HF_SPRAY_SEED * 2654435761u, OUTWARD[d], e0s[d], e1s[d], end0, end1, curtainFlow[d]);
+        emitSpray(a.span * 4u + uint(d) + HF_SPRAY_SEED * 2654435761u, OUTWARD[d], e0s[d], e1s[d], end0, end1, curtainFlow[d],
+            curtainDown[d]);
     }
 }

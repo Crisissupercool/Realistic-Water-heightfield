@@ -34,7 +34,7 @@ final class HfDomain implements AutoCloseable {
 		if (programs == null) {
 			int U = Desc.UBO;
 			int S = Desc.SSBO;
-			int[] layout = {U, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S};
+			int[] layout = {U, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S};
 			programs = new ComputeProgram[]{
 				new ComputeProgram("hf_flux.comp", layout),
 				new ComputeProgram("hf_depth.comp", layout),
@@ -122,6 +122,9 @@ final class HfDomain implements AutoCloseable {
 	private final int groupsPerPage;
 	private final VkBuf geo;
 	private final VkBuf depth;
+	/** Water in the air per span page span (3 floats: volume, seconds falling in, mean drop; see hf_depth.comp), binding 20. */
+	private final VkBuf air;
+	private static final long AIR_BYTES = 12L;
 	private final VkBuf flux;
 	/** Foam per flux-page span, twice: one half is read and the other written each step (see hf_depth.comp). */
 	private final VkBuf foam;
@@ -235,6 +238,7 @@ final class HfDomain implements AutoCloseable {
 
 		this.geo = VkBuf.device(spans * 4L, 0);
 		this.depth = VkBuf.device(spans * 4L, 0);
+		this.air = VkBuf.device(spans * AIR_BYTES, 0);
 		this.links = VkBuf.device(spans * 4L, 0);
 		this.flux = VkBuf.device((long) grid.maxFluxPages * this.ps * FLUX_BYTES, 0);
 		this.foamHalf = (long) grid.maxFluxPages * this.ps;
@@ -278,7 +282,7 @@ final class HfDomain implements AutoCloseable {
 
 	/** Size of the GPU allocation, for /water hf stats. */
 	long bytes() {
-		return (long) this.grid.maxPages * this.ps * SPAN_BYTES + (long) this.grid.maxFluxPages * this.ps * (FLUX_BYTES + 8L)
+		return (long) this.grid.maxPages * this.ps * (SPAN_BYTES + AIR_BYTES) + (long) this.grid.maxFluxPages * this.ps * (FLUX_BYTES + 8L)
 			+ this.quadCapacity * 96L + 2L * (SPRAY_MAX + DROP_MAX) * 32L;
 	}
 
@@ -377,7 +381,7 @@ final class HfDomain implements AutoCloseable {
 		p.bind(cb, ubo, Desc.ssbo(this.geo), Desc.ssbo(this.depth), Desc.ssbo(this.flux), Desc.ssbo(this.links), Desc.ssbo(this.listRing[ring]),
 			Desc.ssbo(this.tileInfo), Desc.ssbo(this.activeRing[ring]), Desc.ssbo(this.stats), Desc.ssbo(this.verts), Desc.ssbo(this.quads),
 			Desc.ssbo(this.meshCounters), Desc.ssbo(view), Desc.ssbo(this.pageOwner), Desc.ssbo(aux), Desc.ssbo(this.foam),
-			Desc.ssbo(this.vertFlow), Desc.ssbo(this.spray), Desc.ssbo(this.sprayCounters), Desc.ssbo(this.tileLookup));
+			Desc.ssbo(this.vertFlow), Desc.ssbo(this.spray), Desc.ssbo(this.sprayCounters), Desc.ssbo(this.tileLookup), Desc.ssbo(this.air));
 	}
 
 	/**
@@ -625,6 +629,12 @@ final class HfDomain implements AutoCloseable {
 		}
 		for (Added a : this.added) {
 			this.copyPages(cb, a.staging(), a.pages(), a.pages().length, true);
+			// A reused page may still hold another span's water in the air.
+			for (int page : a.pages()) {
+				if (page >= 0) {
+					this.air.fill(cb, page * this.ps * AIR_BYTES, this.ps * AIR_BYTES, 0);
+				}
+			}
 			Vk.destroyLater(a.staging());
 		}
 		this.added.clear();
@@ -859,6 +869,7 @@ final class HfDomain implements AutoCloseable {
 		int ring = Vk.ringSlot();
 		if (!this.statsCleared) {
 			this.stats.fill(cb, 0);
+			this.air.fill(cb, 0);
 			this.foam.fill(cb, 0);
 			this.sprayCounters.fill(cb, 0);
 			this.statsCleared = true;
@@ -890,8 +901,9 @@ final class HfDomain implements AutoCloseable {
 				int read = (int) (this.foamRead * this.foamHalf);
 				int write = (int) ((1 - this.foamRead) * this.foamHalf);
 				this.foamRead ^= 1;
-				int[] pc = this.push(n, dt, WaterSettings.gravity, this.cell, keep, WaterSettings.hfMaxSpeed, WaterSettings.hfRenderDepth,
-					WaterSettings.hfMinFlowDepth, foamKeep, read, write, 0, 0);
+				// p1.y and p2.zw: churning water's spray (hf_depth.comp) into the current spray half, with a seed per step.
+				int[] pc = this.push(n, dt, WaterSettings.gravity, this.cell, keep, WaterSettings.hfMaxSpeed, Math.max(WaterSettings.hfSpray, 0.0F),
+					WaterSettings.hfMinFlowDepth, foamKeep, read, write, this.sprayCur, (int) this.frameNo * 16 + s);
 				this.bind(p[0], cb, ubo, ring, this.stats);
 				p[0].push(cb, pc);
 				p[0].dispatch(cb, groups, 1, 1);
@@ -1307,6 +1319,7 @@ final class HfDomain implements AutoCloseable {
 		List<AutoCloseable> all = new ArrayList<>(List.of(
 			this.geo, this.depth, this.flux, this.foam, this.links, this.tileInfo, this.pageOwner, this.stats, this.verts, this.quads, this.meshCounters,
 			this.vertFlow, this.spray, this.sprayCounters, this.tileLookup));
+		all.add(this.air);
 		all.add(this.reservoirBuf);
 		all.add(this.sampleBuf);
 		all.add(this.entityOut);

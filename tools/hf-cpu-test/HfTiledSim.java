@@ -20,6 +20,13 @@ final class HfTiledSim {
 	final float[] depth;
 	final int[] links;
 	final float[] flux;
+	/** Mirror of the Air buffer (hf_depth.comp): per span page span volume in flight, seconds falling in, mean drop. */
+	final float[] air;
+	/** Churn per span from the last depth pass (blocks^2/s: inflow x head lost / cell area), for calibration and tests. */
+	final float[] churn;
+	static final float AIR_MIN_DROP = 1.5F;
+	static final float AIR_TERMINAL = 12.0F;
+	static final float AIR_G = 9.81F;
 	/** Mirror of the foam buffer: two halves of one float per flux-page span, swapped every step. */
 	final float[] foam;
 	final int foamHalf;
@@ -42,6 +49,8 @@ final class HfTiledSim {
 		this.geo = new int[g.maxPages * this.ps];
 		this.depth = new float[g.maxPages * this.ps];
 		this.links = new int[g.maxPages * this.ps];
+		this.air = new float[g.maxPages * this.ps * 3];
+		this.churn = new float[g.maxPages * this.ps];
 		this.flux = new float[g.maxFluxPages * this.ps * 8];
 		this.foamHalf = g.maxFluxPages * this.ps;
 		this.foam = new float[2 * this.foamHalf];
@@ -97,6 +106,18 @@ final class HfTiledSim {
 		}
 	}
 
+	/** Mirror of hfFallTime (hf_common.glsl). */
+	static float fallTime(float h) {
+		double a = AIR_G * Math.max(h, 0.0F) / (AIR_TERMINAL * AIR_TERMINAL);
+		return (float) (AIR_TERMINAL / AIR_G * (a + Math.log(1.0 + Math.sqrt(Math.max(1.0 - Math.exp(-2.0 * a), 0.0)))));
+	}
+
+	/** Mirror of hfFallDistance. */
+	static float fallDistance(float t) {
+		double b = AIR_G * Math.max(t, 0.0F) / AIR_TERMINAL;
+		return (float) (AIR_TERMINAL * AIR_TERMINAL / AIR_G * (b + Math.log(1.0 + Math.exp(-2.0 * b)) - Math.log(2.0)));
+	}
+
 	/** Builds and adds a tile; returns the tile index or -1 when the pool is full. */
 	int addTile(int tx, int tz, Fill fill) {
 		HfTileGrid.Tile t = this.g.build(this.vox, tx, tz);
@@ -105,6 +126,10 @@ final class HfTiledSim {
 			return tile;
 		}
 		this.writePages(tile, t);
+		for (int l = 0; l < t.layersUsed; l++) {
+			int base = this.g.spanPage[tile * 4 + l] * this.ps;
+			java.util.Arrays.fill(this.air, base * 3, (base + this.ps) * 3, 0.0F);
+		}
 		double vol = 0.0;
 		float md = 0.0F;
 		for (int l = 0; l < t.layersUsed; l++) {
@@ -134,6 +159,33 @@ final class HfTiledSim {
 				int s = oldPages[i] * this.ps + col;
 				int gg = this.geo[s];
 				float d = this.depth[s];
+				float inAir = this.air[s * 3];
+				if (HfTileGrid.validGeo(gg) && inAir > 0.0F) {
+					float of = this.g.floorOf(gg);
+					float oc = this.g.ceilOf(gg);
+					int into = -1;
+					float most = 0.0F;
+					for (int j = 0; j < 4; j++) {
+						if (newPages[j] < 0 || !HfTileGrid.validGeo(this.geo[newPages[j] * this.ps + col])) {
+							continue;
+						}
+						int ng = this.geo[newPages[j] * this.ps + col];
+						float nf = this.g.floorOf(ng);
+						float nc = this.g.ceilOf(ng);
+						if (nf <= of + 0.01F && of + 0.01F < nc) {
+							into = j;
+							break;
+						}
+						float overlap = Math.max(Math.min(oc, nc) - Math.max(of, nf), 0.0F);
+						if (overlap > most) {
+							into = j;
+							most = overlap;
+						}
+					}
+					if (into >= 0) {
+						acc[into] += inAir / (this.g.cell * this.g.cell);
+					}
+				}
 				if (!HfTileGrid.validGeo(gg) || d <= 0.0F) {
 					continue;
 				}
@@ -170,7 +222,11 @@ final class HfTiledSim {
 			}
 			for (int j = 0; j < 4; j++) {
 				if (newPages[j] >= 0) {
-					this.depth[newPages[j] * this.ps + col] = acc[j];
+					int ns = newPages[j] * this.ps + col;
+					this.depth[ns] = acc[j];
+					this.air[ns * 3] = 0.0F;
+					this.air[ns * 3 + 1] = 0.0F;
+					this.air[ns * 3 + 2] = 0.0F;
 				}
 			}
 			float[][] f = new float[4][8];
@@ -331,6 +387,15 @@ final class HfTiledSim {
 				float foamA = this.foam[read + base / 8];
 				float foamIn = 0.0F;
 				float falling = 0.0F;
+				float airIn = 0.0F;
+				float airDrop = 0.0F;
+				float churnSum = 0.0F;
+				float outSum = 0.0F;
+				for (int k = 0; k < 8; k++) {
+					outSum += this.flux[base + k];
+				}
+				// Our water's speed after the step is not known yet; the outflow over the old depth is close enough.
+				float ua = outSum / (cell * Math.max(old, 0.05F));
 				for (int k = 0; k < 8; k++) {
 					int nib = HfTileGrid.link(this.links[s], k);
 					if (nib == HfTileGrid.LINK_NONE) {
@@ -349,30 +414,68 @@ final class HfTiledSim {
 					if (fi > 0.0F) {
 						foamIn += fi * this.foam[read + nbBase / 8];
 						float drop = this.g.floorOf(this.geo[this.span(nb[0], nb[1], nb[2])]) - (floorA + old);
-						if (drop > 0.0F) {
+						if (drop > AIR_MIN_DROP) {
+							airIn += fi;
+							airDrop += fi * drop;
+						} else if (drop > 0.0F) {
 							falling += fi * Math.min(drop, 4.0F);
+						} else {
+							int bs = this.span(nb[0], nb[1], nb[2]);
+							float hb = this.depth[bs];
+							float ub = fi / (cell * Math.max(hb, 0.05F));
+							float loss = this.g.floorOf(this.geo[bs]) + hb - (floorA + old) + (ub * ub - ua * ua) / (2.0F * AIR_G);
+							churnSum += fi * Math.clamp(loss, 0.0F, 4.0F);
 						}
 					}
 				}
 				float area = cell * cell;
-				float nh = Math.max(old + dt * (in - out) / area, 0.0F);
+				float airVol = this.air[s * 3];
+				float airT = this.air[s * 3 + 1];
+				float airH = this.air[s * 3 + 2];
+				if (airIn > 0.0F) {
+					airH = airDrop / airIn;
+					airVol += airIn * dt;
+				}
+				float landed = 0.0F;
+				if (airVol > 0.0F) {
+					float tf = fallTime(airH);
+					airT = Math.min(airT + dt, tf + 1000.0F);
+					if (airT >= tf) {
+						landed = airVol * (float) (1.0 - Math.exp(-dt / Math.max(tf, 0.05F)));
+						if (airVol - landed < 1.0e-6F) {
+							landed = airVol;
+						}
+						airVol -= landed;
+					}
+				}
+				if (airVol <= 0.0F) {
+					airVol = 0.0F;
+					airT = 0.0F;
+				}
+				this.air[s * 3] = airVol;
+				this.air[s * 3 + 1] = airT;
+				this.air[s * 3 + 2] = airH;
+				falling += landed / dt * Math.min(airH, 4.0F);
+				float nh = Math.max(old + (dt * (in - airIn - out) + landed) / area, 0.0F);
 				this.depth[s] = nh;
+				this.churn[s] = churnSum / area;
 				float speed = nh > 0.05F ? Math.min(peak / (cell * nh), 30.0F) : 0.0F;
 				float mass = foamA * old + dt * (foamIn - out * foamA) / area;
 				float f = nh > 1.0e-4F ? Math.clamp(mass / nh, 0.0F, 1.0F) * foamKeep : 0.0F;
 				f = Math.max(f, 0.9F * smoothstep(0.0F, 6.0F, falling / area));
 				f = Math.max(f, 0.35F * smoothstep(5.0F, 12.0F, speed) * smoothstep(0.05F, 0.2F, nh));
+				f = Math.max(f, 0.85F * smoothstep(1.5F, 12.0F, churnSum / area) * smoothstep(0.02F, 0.1F, nh));
 				float[] st = this.stirAt(tile, col, floorA, floorA + nh);
 				if (st[2] > 0.0F) {
 					f = Math.max(f, 0.35F * smoothstep(1.5F, 4.0F, (float) Math.hypot(st[0], st[1])));
 				}
 				this.foam[write + base / 8] = nh > 0.0F ? f : 0.0F;
-				this.g.volume[tile] += (double) nh * cell * cell;
+				this.g.volume[tile] += (double) nh * cell * cell + airVol;
 				this.g.maxDepth[tile] = Math.max(this.g.maxDepth[tile], nh);
 				if (nh > 0.05F) {
 					this.g.maxSpeed[tile] = Math.max(this.g.maxSpeed[tile], Math.min(peak / (cell * nh), 30.0F));
 				}
-				this.g.maxRate[tile] = Math.max(this.g.maxRate[tile], Math.abs(nh - old) / dt);
+				this.g.maxRate[tile] = Math.max(this.g.maxRate[tile], Math.max(Math.abs(nh - old) / dt, airVol > 1.0e-5F ? 1.0F : 0.0F));
 				this.g.border[tile] |= this.growthBits(tile, s, col, nh);
 			}
 		}
@@ -454,7 +557,7 @@ final class HfTiledSim {
 				int base = this.g.spanPage[tile * 4 + l] * this.ps;
 				for (int c = 0; c < this.ps; c++) {
 					if (HfTileGrid.validGeo(this.geo[base + c])) {
-						v += (double) this.depth[base + c] * this.g.cell * this.g.cell;
+						v += (double) this.depth[base + c] * this.g.cell * this.g.cell + this.air[(base + c) * 3];
 					}
 				}
 			}

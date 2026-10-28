@@ -8,6 +8,7 @@
 // surface dips there and fills in from around.
 // A tile that stays simulated keeps its flux pages (indexed by layer): each new layer takes the flow and foam of the old body
 // that gave it the most water, so the water keeps moving through the edit instead of stopping and surging back.
+// Water still in the air (hf_depth.comp) lands at once, in the new span holding its old span's floor (or overlapping it most).
 #include "hf_common.glsl"
 layout(local_size_x = 256) in;
 layout(std430, binding = 2) buffer Depth { float depth[]; };
@@ -42,6 +43,29 @@ void main() {
         uint s = uint(oldPages[i]) * hfPageSpans() + col;
         vec2 g = hfGeo(s);
         float d = depth[s];
+        float inAir = air[s * 3u];
+        if (hfValid(g) && inAir > 0.0) {
+            int into = -1;
+            float most = 0.0;
+            for (int j = 0; j < 4; j++) {
+                if (!hfValid(ng[j])) {
+                    continue;
+                }
+                if (ng[j].x <= g.x + 0.01 && g.x + 0.01 < ng[j].y) {
+                    into = j;
+                    break;
+                }
+                float overlap = max(min(g.y, ng[j].y) - max(g.x, ng[j].x), 0.0);
+                if (overlap > most) {
+                    into = j;
+                    most = overlap;
+                }
+            }
+            if (into >= 0) {
+                float cell = 1.0 / float(HF_CPB);
+                acc[into] += inAir / (cell * cell);
+            }
+        }
         if (!hfValid(g) || d <= 0.0) {
             continue;
         }
@@ -95,7 +119,11 @@ void main() {
     }
     for (int j = 0; j < 4; j++) {
         if (newPages[j] >= 0) {
-            depth[uint(newPages[j]) * hfPageSpans() + col] = acc[j];
+            uint ns = uint(newPages[j]) * hfPageSpans() + col;
+            depth[ns] = acc[j];
+            air[ns * 3u] = 0.0;
+            air[ns * 3u + 1u] = 0.0;
+            air[ns * 3u + 2u] = 0.0;
         }
     }
 }
