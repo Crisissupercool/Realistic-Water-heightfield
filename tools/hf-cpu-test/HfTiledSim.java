@@ -276,6 +276,7 @@ final class HfTiledSim {
 			int[] src = {-1, -1, -1, -1};
 			float[] srcAmount = new float[4];
 			float[] shown = new float[4];
+			float[][] airNew = new float[4][3];
 			for (int i = 0; i < 4; i++) {
 				if (oldPages[i] < 0) {
 					continue;
@@ -285,10 +286,13 @@ final class HfTiledSim {
 				int gg = this.geo[s];
 				float d = this.depth[s];
 				float inAir = this.air[s * AIR_STRIDE];
-				if (HfTileGrid.validGeo(gg) && inAir > 0.0F) {
+				float inT = this.air[s * AIR_STRIDE + 1];
+				float inH = this.air[s * AIR_STRIDE + 2];
+				if (HfTileGrid.validGeo(gg) && (inAir > 0.0F || inT > 0.0F)) {
 					float of = this.g.floorOf(gg);
 					float oc = this.g.ceilOf(gg);
-					int into = -1;
+					float from = of + Math.max(d, 0.0F) + Math.max(inH - 0.05F, 0.0F);
+					int fromJ = -1, floorJ = -1, mostJ = -1;
 					float most = 0.0F;
 					for (int j = 0; j < 4; j++) {
 						if (newPages[j] < 0 || !HfTileGrid.validGeo(this.geo[newPages[j] * this.ps + col])) {
@@ -297,18 +301,26 @@ final class HfTiledSim {
 						int ng = this.geo[newPages[j] * this.ps + col];
 						float nf = this.g.floorOf(ng);
 						float nc = this.g.ceilOf(ng);
-						if (nf <= of + 0.01F && of + 0.01F < nc) {
-							into = j;
-							break;
+						if (nf <= from && from < nc) {
+							fromJ = j;
+						}
+						if (floorJ < 0 && nf <= of + 0.01F && of + 0.01F < nc) {
+							floorJ = j;
 						}
 						float overlap = Math.max(Math.min(oc, nc) - Math.max(of, nf), 0.0F);
 						if (overlap > most) {
-							into = j;
+							mostJ = j;
 							most = overlap;
 						}
 					}
+					int into = fromJ >= 0 ? fromJ : floorJ >= 0 ? floorJ : mostJ;
 					if (into >= 0) {
-						acc[into] += inAir / (this.g.cell * this.g.cell);
+						float clock = Math.min(inT, fallTime(inH));
+						if (inAir > airNew[into][0] || (airNew[into][0] <= 0.0F && clock > airNew[into][1])) {
+							airNew[into][1] = clock;
+							airNew[into][2] = inH;
+						}
+						airNew[into][0] += inAir;
 					}
 				}
 				if (!HfTileGrid.validGeo(gg) || d <= 0.0F) {
@@ -349,9 +361,9 @@ final class HfTiledSim {
 				if (newPages[j] >= 0) {
 					int ns = newPages[j] * this.ps + col;
 					this.depth[ns] = acc[j];
-					this.air[ns * AIR_STRIDE] = 0.0F;
-					this.air[ns * AIR_STRIDE + 1] = 0.0F;
-					this.air[ns * AIR_STRIDE + 2] = 0.0F;
+					this.air[ns * AIR_STRIDE] = airNew[j][0];
+					this.air[ns * AIR_STRIDE + 1] = airNew[j][1];
+					this.air[ns * AIR_STRIDE + 2] = airNew[j][2];
 					this.air[ns * AIR_STRIDE + 3] = src[j] >= 0 ? shown[src[j]] : 0.0F;
 				}
 			}

@@ -412,6 +412,11 @@ final class HfMeshMirror {
 		if (n == null || linked(t, d, n)) return null;
 		float fl = floorOf(t);
 		float land = wet(n) ? surface(n) : floorOf(n);
+		// Until the falling water reaches where it lands, the sheet ends at the falling front (hf_mesh.comp).
+		int na = n.span() * HfTiledSim.AIR_STRIDE;
+		if (sim.air[na] > 0.0F && sim.air[na + 1] < HfTiledSim.fallTime(sim.air[na + 2])) {
+			land = Math.max(land, fl - HfTiledSim.fallDistance(sim.air[na + 1]));
+		}
 		float[] leaf = sim.foliageOf(n.span());
 		if (leaf[0] < leaf[1] && leaf[1] > land && leaf[0] < fl) land = Math.min(leaf[1], fl);
 		float q = outTo(t, d);

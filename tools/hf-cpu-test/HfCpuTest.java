@@ -551,6 +551,59 @@ public final class HfCpuTest {
 		return new float[]{cu[1], off};
 	}
 
+	static boolean ledge;
+
+	/**
+	 * Water poured onto a 1x1 pillar top 16 blocks up with a ledge block on its +x side 6 blocks down, broken and placed again:
+	 * {sheets drawn just after the break, just after the place, the +x sheet's end just after the break, a second later, just
+	 * after the place}.
+	 */
+	static float[] pillarEdit() {
+		HfTileGrid g = new HfTileGrid(0, 0, 0, 96, C, L, 0.25F, 4, 16, 16);
+		long full = (1L << (C * C * C)) - 1L;
+		ledge = true;
+		HfTiledSim sim = new HfTiledSim(g, (x, y, z) -> y < 64 || (x == 7 && z == 7 && y < 80) || (ledge && x == 8 && z == 7 && y == 74) ? full : 0L);
+		sim.maxNewTiles = 0;
+		int tile = sim.addTile(0, 0, (l, c) -> 0.0);
+		int tn = g.tn;
+		float cellA = g.cell * g.cell;
+		int[] top = {14 * tn + 14, 14 * tn + 15, 15 * tn + 14, 15 * tn + 15};
+		HfMeshMirror.g = g;
+		HfMeshMirror.sim = sim;
+		float[] r = new float[5];
+		for (int f = 0; f < 60 * 18; f++) {
+			if (f == 60 * 12 || f == 60 * 16) {
+				ledge = f != 60 * 12;
+				g.markDirtyBlock(8, 74, 7);
+			}
+			for (int c : top) {
+				sim.inject(tile, c, 80.5F, 0.1F / 4.0F / 60.0F / cellA);
+			}
+			sim.frame();
+			if (f == 60 * 12 || f == 60 * 13 || f == 60 * 16) {
+				int sheets = 0;
+				for (int c : top) {
+					for (int d = 0; d < 4; d++) {
+						sheets += HfMeshMirror.curtainOf(new HfMeshMirror.S(tile, g.layerAt(tile, c, 80.5F), c), d) != null ? 1 : 0;
+					}
+				}
+				int c = 14 * tn + 15;
+				float[] cu = HfMeshMirror.curtainOf(new HfMeshMirror.S(tile, g.layerAt(tile, c, 80.5F), c), 0);
+				float end = cu == null ? Float.NaN : cu[0];
+				if (f == 60 * 12) {
+					r[0] = sheets;
+					r[2] = end;
+				} else if (f == 60 * 13) {
+					r[3] = end;
+				} else {
+					r[1] = sheets;
+					r[4] = end;
+				}
+			}
+		}
+		return r;
+	}
+
 	static double totalFlux(HfTiledSim sim, HfTileGrid grid, int tile) {
 		double sum = 0.0;
 		for (int l = 0; l < grid.layersUsed[tile]; l++) {
@@ -1447,6 +1500,14 @@ public final class HfCpuTest {
 			check(lo[1] >= 0 && lo[1] < 0.1F && hi[1] > 0.3F && hi[0] < 2.5F, String.format(
 				"0.05 b^3/s: leaves at %.2f b/s, %.2f off the face half way down; 1.0 b^3/s: %.2f b/s, %.2f off (was 0.41 and 4.0 b/s, 0.25 and 0.42 off)",
 				lo[0], lo[1], hi[0], hi[1]));
+		}
+
+		System.out.println("Edits: falling sheets keep falling through a block broken or placed next to them (the remap keeps water in the air)");
+		{
+			float[] e = pillarEdit();
+			check(e[0] == 8 && e[1] == 8, String.format("sheets drawn round the pillar just after the break: %.0f of 8, after the place: %.0f of 8 (all vanished and regrew from the lip)", e[0], e[1]));
+			check(e[2] > 74.0F && e[2] < 75.5F && e[3] < 65.0F, String.format("the sheet whose ledge was broken falls on from it: ends at %.2f just after, %.2f a second later", e[2], e[3]));
+			check(e[4] > 74.9F && e[4] < 75.5F, String.format("over the placed ledge it ends on the ledge at once: %.2f", e[4]));
 		}
 
 		System.out.println("Topology: skipping the open sky above the heightmap gives exactly the same spans and links");

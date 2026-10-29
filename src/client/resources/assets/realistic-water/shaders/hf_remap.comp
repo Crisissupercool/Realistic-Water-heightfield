@@ -8,7 +8,11 @@
 // surface dips there and fills in from around.
 // A tile that stays simulated keeps its flux pages (indexed by layer): each new layer takes the flow and foam of the old body
 // that gave it the most water, so the water keeps moving through the edit instead of stopping and surging back.
-// Water still in the air (hf_depth.comp) lands at once, in the new span holding its old span's floor (or overlapping it most).
+// Water still in the air (hf_depth.comp) stays in the air, with its fall time: it goes to the new span that holds the point it
+// falls from (else the one holding its old floor, else the one overlapping most). Landing it at once and restarting the fall
+// clock made every falling sheet of the tile vanish and grow back down from its lip on any block placed or broken near it. The
+// clock is capped at the old fall's own time, so water whose landing a broken block moved lower falls on from where it used to
+// land, and water over a placed block lands on it at once.
 #include "hf_common.glsl"
 layout(local_size_x = 256) in;
 layout(std430, binding = 2) buffer Depth { float depth[]; };
@@ -31,7 +35,9 @@ void main() {
     int src[4];
     float srcAmount[4];
     float shown[4];
+    vec3 airNew[4];
     for (int j = 0; j < 4; j++) {
+        airNew[j] = vec3(0.0);
         acc[j] = 0.0;
         src[j] = -1;
         srcAmount[j] = 0.0;
@@ -45,28 +51,40 @@ void main() {
         uint s = uint(oldPages[i]) * hfPageSpans() + col;
         vec2 g = hfGeo(s);
         float d = depth[s];
-        float inAir = air[s * HF_AIR_STRIDE];
+        vec3 inAir = vec3(air[s * HF_AIR_STRIDE], air[s * HF_AIR_STRIDE + 1u], air[s * HF_AIR_STRIDE + 2u]);
         shown[i] = air[s * HF_AIR_STRIDE + 3u];
-        if (hfValid(g) && inAir > 0.0) {
-            int into = -1;
+        if (hfValid(g) && (inAir.x > 0.0 || inAir.y > 0.0)) {
+            float from = g.x + max(d, 0.0) + max(inAir.z - 0.05, 0.0);
+            int fromJ = -1;
+            int floorJ = -1;
+            int mostJ = -1;
             float most = 0.0;
             for (int j = 0; j < 4; j++) {
                 if (!hfValid(ng[j])) {
                     continue;
                 }
-                if (ng[j].x <= g.x + 0.01 && g.x + 0.01 < ng[j].y) {
-                    into = j;
-                    break;
+                if (ng[j].x <= from && from < ng[j].y) {
+                    fromJ = j;
+                }
+                if (floorJ < 0 && ng[j].x <= g.x + 0.01 && g.x + 0.01 < ng[j].y) {
+                    floorJ = j;
                 }
                 float overlap = max(min(g.y, ng[j].y) - max(g.x, ng[j].x), 0.0);
                 if (overlap > most) {
-                    into = j;
+                    mostJ = j;
                     most = overlap;
                 }
             }
+            int into = fromJ >= 0 ? fromJ : floorJ >= 0 ? floorJ : mostJ;
             if (into >= 0) {
-                float cell = 1.0 / float(HF_CPB);
-                acc[into] += inAir / (cell * cell);
+                vec3 t = airNew[into];
+                float clock = min(inAir.y, hfFallTime(inAir.z));
+                // Two old spans merging (a broken block between them): the volumes add, the fall is the bigger one's.
+                if (inAir.x > t.x || (t.x <= 0.0 && clock > t.y)) {
+                    t.yz = vec2(clock, inAir.z);
+                }
+                t.x += inAir.x;
+                airNew[into] = t;
             }
         }
         if (!hfValid(g) || d <= 0.0) {
@@ -124,9 +142,9 @@ void main() {
         if (newPages[j] >= 0) {
             uint ns = uint(newPages[j]) * hfPageSpans() + col;
             depth[ns] = acc[j];
-            air[ns * HF_AIR_STRIDE] = 0.0;
-            air[ns * HF_AIR_STRIDE + 1u] = 0.0;
-            air[ns * HF_AIR_STRIDE + 2u] = 0.0;
+            air[ns * HF_AIR_STRIDE] = airNew[j].x;
+            air[ns * HF_AIR_STRIDE + 1u] = airNew[j].y;
+            air[ns * HF_AIR_STRIDE + 2u] = airNew[j].z;
             // A film drawn as running stays drawn through the edit.
             air[ns * HF_AIR_STRIDE + 3u] = src[j] >= 0 ? shown[src[j]] : 0.0;
         }

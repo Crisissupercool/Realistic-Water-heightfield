@@ -771,7 +771,7 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   our surface now goes into the air first: per span, 3 floats (`Air`, binding 20) hold the volume in flight, how long the
   front has been falling and the mean drop. It lands after the fall time of a body with drag (terminal speed 12 b/s):
   1.5 blocks 0.56 s, 10 blocks 1.59 s, 30 blocks 3.34 s, 100 blocks 9.18 s, then at the rate it arrives. Volume in flight
-  counts in the stats total and keeps the tile awake; a remap lands it at once. The mesh draws the falling sheet only down to
+  counts in the stats total and keeps the tile awake; a remap keeps it in the air (section 26, edits). The mesh draws the falling sheet only down to
   where the front has reached (`hfFallDistance`), and splash, drops and mist start when it lands, at the drag-limited impact
   speed. CPU test: a 30-block drop lands after 3.38 s (expected 3.34 s), up to 149 blocks^3 in the air, volume exact.
 * **Foam and spray where water is churned:** foam used to come only from the brink and the plunge. Each span now measures
@@ -935,3 +935,11 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   per width (0.69 b/s for 0.05 b^3/s on the pillar, 1.89 for 1.0). The stand-off now grows with that speed: 0.03 blocks below
   0.4 b/s (a trickle runs down the face) up to 0.42 from 2 b/s (curtainReach). Half way down a 16-block pillar: 0.06 off the
   face for 0.05 b^3/s, 0.41 for 1.0 (were 0.25 and 0.42). The sheet spray uses the same reach.
+* **Edits made every sheet vanish and fall again.** The remap landed water in the air at once and zeroed its fall clock, so a
+  block placed or broken anywhere in a tile made every falling sheet in it disappear for a frame and grow back down from its
+  lip over the whole fall time (about 2 s for a 16-block pillar): in game it looked like the old edit bug, all water on the
+  pillar gone for a moment. The remap now carries volume in flight, fall clock and drop to the new span that holds the point
+  the water falls from (else the one holding its old floor, else the one overlapping most); merged spans add their volumes.
+  The clock is capped at the old fall's own time, so after a ledge under a sheet is broken the water falls on from the ledge
+  (sheet end 74.9 just after, 64.7 a second later, ground 64) and over a placed ledge it lands on the ledge at once. CPU test
+  (pillarEdit): all 8 sheets round the pillar stay drawn through the break and the place (were 0 of 8 just after).
