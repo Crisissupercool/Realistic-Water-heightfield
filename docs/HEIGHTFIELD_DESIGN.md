@@ -928,3 +928,10 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   stays exactly 3.0000 blocks^3 (heightfield + air + drops), 1.2 of it reached the ground under the canopy, sheets end at the
   canopy top, nothing lost; a 20-block waterfall of 0.5 b^3/s keeps 10.000 blocks^3 exactly and its splash puts 0.08 blocks^3
   down more than a block from its foot.
+* **The glassy dome on a 1x1 pillar.** Water poured onto a pillar top is only 1.6-6 cm deep there (0.05-1 b^3/s); the dome was
+  the four sheets' lips. A sheet's speed off the edge came from the outflow over the span's own depth, so a thin film on a
+  small top left at up to the 4 b/s cap, and every sheet stood up to 0.42 off the face whatever the flow: a glassy box with a
+  dome of lips on top. A free overfall leaves at about the brink speed of critical flow: v0 = 1.4 (g q')^(1/3), q' the outflow
+  per width (0.69 b/s for 0.05 b^3/s on the pillar, 1.89 for 1.0). The stand-off now grows with that speed: 0.03 blocks below
+  0.4 b/s (a trickle runs down the face) up to 0.42 from 2 b/s (curtainReach). Half way down a 16-block pillar: 0.06 off the
+  face for 0.05 b^3/s, 0.41 for 1.0 (were 0.25 and 0.42). The sheet spray uses the same reach.

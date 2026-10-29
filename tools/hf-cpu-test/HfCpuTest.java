@@ -526,6 +526,31 @@ public final class HfCpuTest {
 		return new double[]{poured, sim.volume() + sim.dropWater(), far};
 	}
 
+	/** Water poured onto a 1x1 pillar top 16 blocks up: {speed a sheet leaves its edge at, how far it stands off at half its fall}. */
+	static float[] pillarSheet(float q) {
+		HfTileGrid g = new HfTileGrid(0, 0, 0, 96, C, L, 0.25F, 4, 16, 16);
+		long full = (1L << (C * C * C)) - 1L;
+		HfTiledSim sim = new HfTiledSim(g, (x, y, z) -> y < 64 || (x == 7 && z == 7 && y < 80) ? full : 0L);
+		sim.maxNewTiles = 0;
+		int tile = sim.addTile(0, 0, (l, c) -> 0.0);
+		int tn = g.tn;
+		float cellA = g.cell * g.cell;
+		int[] top = {14 * tn + 14, 14 * tn + 15, 15 * tn + 14, 15 * tn + 15};
+		for (int f = 0; f < 60 * 15; f++) {
+			for (int c : top) {
+				sim.inject(tile, c, 80.5F, q / 4.0F / 60.0F / cellA);
+			}
+			sim.frame();
+		}
+		HfMeshMirror.g = g;
+		HfMeshMirror.sim = sim;
+		int c = 14 * tn + 15;
+		float[] cu = HfMeshMirror.curtainOf(new HfMeshMirror.S(tile, g.layerAt(tile, c, 80.5F), c), 0);
+		if (cu == null) return new float[]{-1, -1};
+		float off = HfMeshMirror.sheetPoint(new float[]{0, 80.05F, 0}, new float[]{1, 0}, new float[]{cu[0], cu[1], 80.0F}, 0.5F)[0];
+		return new float[]{cu[1], off};
+	}
+
 	static double totalFlux(HfTiledSim sim, HfTileGrid grid, int tile) {
 		double sum = 0.0;
 		for (int l = 0; l < grid.layersUsed[tile]; l++) {
@@ -1414,6 +1439,14 @@ public final class HfCpuTest {
 			double[] w = waterfallSplash();
 			check(Math.abs(w[1] - w[0]) < 1.0e-3 * w[0], String.format("20-block waterfall: poured %.3f, %.3f now", w[0], w[1]));
 			check(w[2] > 0.005 * w[0], String.format("its splash put %.3f blocks^3 down more than a block from its foot", w[2]));
+		}
+
+		System.out.println("Sheets off a 1x1 pillar: a trickle runs down its faces, a strong pour arcs out (critical-flow exit speed)");
+		{
+			float[] lo = pillarSheet(0.05F), hi = pillarSheet(1.0F);
+			check(lo[1] >= 0 && lo[1] < 0.1F && hi[1] > 0.3F && hi[0] < 2.5F, String.format(
+				"0.05 b^3/s: leaves at %.2f b/s, %.2f off the face half way down; 1.0 b^3/s: %.2f b/s, %.2f off (was 0.41 and 4.0 b/s, 0.25 and 0.42 off)",
+				lo[0], lo[1], hi[0], hi[1]));
 		}
 
 		System.out.println("Topology: skipping the open sky above the heightmap gives exactly the same spans and links");

@@ -427,7 +427,7 @@ final class HfMeshMirror {
 			p = settle > 1.0e-3F ? Math.clamp(p / settle, 0.0F, 1.0F) : 1.0F;
 		}
 		if (p < 1.0F) land = (fl - 0.05F) * (1 - p) + land * p;
-		return new float[]{land, Math.clamp(q / (0.5F * Math.max(surface(t) - fl, 0.03F)), 0.2F, 4.0F)};
+		return new float[]{land, Math.clamp(1.4F * (float) Math.cbrt(GRAV * q / 0.5F), 0.2F, 4.0F)};
 	}
 
 	static float[] curtainEnd(S a, int d, int sd, float[] c) {
@@ -448,12 +448,13 @@ final class HfMeshMirror {
 	/** {top xyz, bottom xyz, n xyz} like sheetPoint (no free-end narrowing). */
 	static float[] sheetPoint(float[] e, float[] o, float[] end, float s) {
 		float v0 = end[1], h = Math.max(e[1] - end[0], 0), t = (float) Math.sqrt(2 * h / GRAV) * s;
-		float k = (float) Math.exp(-v0 * t / REACH), vx = v0 * k, vy = GRAV * t, sp = (float) Math.hypot(vx, vy);
+		float u = Math.clamp((v0 - 0.4F) / 1.6F, 0, 1), reach = 0.03F + (REACH - 0.03F) * u * u * (3 - 2 * u);
+		float k = (float) Math.exp(-v0 * t / reach), vx = v0 * k, vy = GRAV * t, sp = (float) Math.hypot(vx, vy);
 		float[] n = {o[0] * vy / sp, vx / sp, o[1] * vy / sp};
-		float x = REACH * (1 - k);
+		float x = reach * (1 - k);
 		float[] top = {e[0] + o[0] * x, e[1] - h * s * s, e[2] + o[1] * x};
 		float floorY = Math.min(end[2], e[1]), hl = Math.max(floorY - end[0], 0), tl = (float) Math.sqrt(2 * hl / GRAV) * s;
-		float xl = REACH * (1 - (float) Math.exp(-v0 * tl / REACH));
+		float xl = reach * (1 - (float) Math.exp(-v0 * tl / reach));
 		float[] b = {e[0] + o[0] * xl, floorY - hl * s * s, e[2] + o[1] * xl};
 		float gap = (top[0] - b[0]) * n[0] + (top[1] - b[1]) * n[1] + (top[2] - b[2]) * n[2];
 		float push = Math.max(0.012F - gap, 0);

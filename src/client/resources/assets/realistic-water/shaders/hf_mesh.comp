@@ -45,7 +45,14 @@ const int CURTAIN_SEGMENTS = 6;
 const float CURTAIN_T[7] = float[](0.0, 0.05, 0.13, 0.26, 0.45, 0.7, 1.0);
 // The farthest a sheet gets from its edge: it lands in the next cell, which is where the solver puts its water.
 const float CURTAIN_REACH = 0.42;
+// How far a sheet stands off at most, by the speed it leaves the edge at: a trickle runs down the face it pours over (held by
+// surface tension), a strong pour arcs out up to CURTAIN_REACH. Every 4 sheets round a 1x1 pillar stood 0.42 off its faces
+// whatever the flow, a glassy box with a dome of lips on top.
+float curtainReach(float v0) {
+    return 0.03 + (CURTAIN_REACH - 0.03) * smoothstep(0.4, 2.0, v0);
+}
 const float GRAVITY = 9.81;
+#define HF_G_MESH GRAVITY
 
 // Heightfield vertices (OPEN set): 12 + 12 bit octahedral normal, 6 bit aeration (foam, falling water), wall flag, OPEN.
 // mesh.vert decodes this; the fluid meshes keep packNormal's format (OPEN clear).
@@ -440,7 +447,10 @@ bool curtainOf(HfSpan t, int d, out float land, out float v0, out float q, out b
         land = mix(fl - 0.05, land, p);
         down = down && p >= 1.0;
     }
-    v0 = clamp(q / (HF_CELL * max(surfaceOf(t.span) - fl, 0.03)), 0.2, 4.0);
+    // Water leaving an edge (a free overfall) flows at about the brink speed of critical flow, 1.4 (g q')^(1/3) for q' the
+    // outflow per width. From the outflow over the span's own depth instead, a thin film on a small top (a 1x1 pillar: 6 cm)
+    // came out at the 4 b/s cap.
+    v0 = clamp(1.4 * pow(HF_G_MESH * q / HF_CELL, 1.0 / 3.0), 0.2, 4.0);
     return true;
 }
 
@@ -479,17 +489,18 @@ SheetPoint sheetPoint(vec3 e, vec2 outward, vec4 end, float s, vec2 inward, bool
     vec3 dir = vec3(outward.x, 0.0, outward.y);
     float h = max(e.y - end.x, 0.0);
     float t = sqrt(2.0 * h / GRAVITY) * s;
-    float k = exp(-v0 * t / CURTAIN_REACH);
+    float reach = curtainReach(v0);
+    float k = exp(-v0 * t / reach);
     float vx = v0 * k;
     float vy = GRAVITY * t;
     r.drop = h * s * s;
     r.speed = sqrt(vx * vx + vy * vy);
     r.n = normalize(dir * vy + vec3(0.0, vx, 0.0));
-    r.top = vec3(e.x, e.y - r.drop, e.z) + dir * (CURTAIN_REACH * (1.0 - k));
+    r.top = vec3(e.x, e.y - r.drop, e.z) + dir * (reach * (1.0 - k));
     float floorY = min(end.z, e.y);
     float hl = max(floorY - end.x, 0.0);
     float tl = sqrt(2.0 * hl / GRAVITY) * s;
-    r.bottom = vec3(e.x, floorY - hl * s * s, e.z) + dir * (CURTAIN_REACH * (1.0 - exp(-v0 * tl / CURTAIN_REACH)));
+    r.bottom = vec3(e.x, floorY - hl * s * s, e.z) + dir * (reach * (1.0 - exp(-v0 * tl / reach)));
     // At least a thin film thick, never into the cliff under the edge or below where it lands.
     r.bottom -= r.n * max(0.012 - dot(r.top - r.bottom, r.n), 0.0);
     float outTop = dot(r.top.xz - e.xz, outward);
@@ -657,7 +668,7 @@ void emitSpray(uint seed, vec2 outward, vec3 e0, vec3 e1, vec4 end0, vec4 end1, 
         SheetPoint p = sheetPoint(e, outward, end, f, vec2(0.0), false);
         // The sheet's own velocity there (falling with air drag, as the water does), plus a push away from it.
         float fall = hfFallTime(max(e.y - end.x, 0.0) * f * f);
-        float vx = end.y * exp(-end.y * fall / CURTAIN_REACH);
+        float vx = end.y * exp(-end.y * fall / curtainReach(end.y));
         float vy = HF_AIR_TERMINAL * tanh(HF_AIR_G * fall / HF_AIR_TERMINAL);
         vec3 v = dir * (vx + mix(0.3, 1.2, sprayRand(s))) + side * (sprayRand(s) - 0.5) * 0.8 - up * vy;
         sprayAdd(HF_SPRAY_INTO, p.top + dir * 0.02, v, mix(0.8, 1.6, sprayRand(s)), SPRAY_DROPLET);
