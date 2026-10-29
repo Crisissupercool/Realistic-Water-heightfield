@@ -4,6 +4,8 @@
 > [Realistic Water](https://github.com/sskaffy/Realistic-Water) by **Skaffy**, who is the author of the original mod.
 > This fork adds a large-scale multi-layer heightfield water solver for floods and rivers
 > (see [docs/HEIGHTFIELD_DESIGN.md](docs/HEIGHTFIELD_DESIGN.md)). It is distributed under the original license, kept intact in `LICENSE`.
+>
+> **Fork downloads:** [releases of this fork](https://github.com/Crisissupercool/Realistic-Water-heightfield/releases) (prototype builds, see the notes there). The steps below are the original mod's.
 
 A Minecraft mod that adds the realistic waters and sands from Blender animations.
 

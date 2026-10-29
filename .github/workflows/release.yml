@@ -1,0 +1,38 @@
+name: Release
+
+# Builds the mod and attaches the jar to a GitHub release when a tag hf-* is pushed (or when run by hand on a tag).
+on:
+  push:
+    tags: ['hf-*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and release
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build
+        run: bash ./gradlew build --no-configuration-cache
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          name: Heightfield prototype ${{ inputs.tag || github.ref_name }}
+          body_path: docs/releases/prototype-1.md
+          prerelease: true
+          files: |
+            build/libs/*.jar

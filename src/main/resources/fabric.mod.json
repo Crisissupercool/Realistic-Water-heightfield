@@ -2,12 +2,17 @@
 	"schemaVersion": 1,
 	"id": "realistic-water",
 	"version": "${version}",
-	"name": "Realistic Water",
-	"description": "Ultra realistic water and sand in Minecraft!",
+	"name": "Realistic Water (heightfield fork)",
+	"description": "Modified version of Realistic Water by Skaffy (not the original mod; original: https://github.com/sskaffy/Realistic-Water). Adds a large-scale heightfield water simulation for floods, rivers and waterfalls.",
 	"authors": [
 		"Skaffy"
 	],
+	"contributors": [
+		"Crisissupercool (heightfield fork)"
+	],
 	"contact": {
+		"homepage": "https://github.com/sskaffy/Realistic-Water",
+		"sources": "https://github.com/Crisissupercool/Realistic-Water-heightfield"
 	},
 	"license": "Custom License",
 	"icon": "assets/realistic-water/icon.png",
