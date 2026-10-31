@@ -41,6 +41,16 @@ void main() {
     float drag = 1.0 - exp(-HF_STIR_RATE * HF_DT);
     float outflow[8];
     float total = 0.0;
+    // Momentum brought in over the last step (hf_depth.comp): horizontal (x, z) and landed from above (spreads to all sides).
+    uvec2 mp = mom[hfFoamIndex(a)];
+    vec2 pIn = unpackHalf2x16(mp.x);
+    float pLand = unpackHalf2x16(mp.y).x;
+    float perDir[4] = float[](0.0, 0.0, 0.0, 0.0);
+    for (uint k = 0u; k < HF_LINKS; k++) {
+        if (hfLink(a, k) != HF_LINK_NONE) {
+            perDir[k >> 1] += 1.0;
+        }
+    }
     for (uint k = 0u; k < HF_LINKS; k++) {
         outflow[k] = 0.0;
         uint nib = hfLink(a, k);
@@ -71,6 +81,23 @@ void main() {
             carry = filmCarry;
         }
         float q = flux[base + k] * HF_KEEP * carry + HF_DT * HF_G * area * drive / HF_CELL;
+        // Momentum advection: the momentum that flowed into this span from behind (and its share of what landed on it) moves on
+        // through this face, and what the face carries leaves it: d(q)/dt += (P_in - q u) / cell, upwind and implicit (stable at
+        // any speed). Without it each span started its outflow from rest, so water lost its speed at every step it ran over and
+        // piled up into a pool before spilling on (water on a mountainside moved like gel, in pulses), and a waterfall's water
+        // only spread by the height of the mound it built at its foot.
+        // The speed the face's momentum leaves at is the flow over the depth it comes from (upwind). Over the deeper of the two
+        // sides, a thin span next to a crest saw a slow outflow, kept speeding up and drained itself: fast water broke up into
+        // trains of crests and near-dry troughs (0.7 next to 0.01 deep below a big waterfall), the "huge waves" of fast floods.
+        uint dir = k >> 1;
+        float pFace = (max(dot(pIn, vec2(HF_DX[dir], HF_DZ[dir])), 0.0) + 0.25 * pLand) * carry / perDir[dir];
+        q = (q + HF_DT / HF_CELL * pFace) / (1.0 + HF_DT / HF_CELL * max(q, 0.0) / (HF_CELL * max(wetA, 0.01)));
+        // Bed friction (Manning, g n^2 |u| / h^(4/3), implicit): holds back thin fast water, barely touches deep water. Water
+        // pouring over an edge is in free fall and has no bed.
+        if (HF_MANNING > 0.0 && q > 0.0 && headB >= ga.x) {
+            float hf = max(area / HF_CELL, 0.005);
+            q /= 1.0 + HF_DT * HF_G * HF_MANNING * HF_MANNING * (q / area) / pow(hf, 4.0 / 3.0);
+        }
         if (stir.z > 0.0) {
             uint d = k >> 1;
             float target = dot(stir.xy, vec2(HF_DX[d], HF_DZ[d])) * HF_CELL * min(stir.z, wetA);

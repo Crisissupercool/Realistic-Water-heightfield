@@ -162,9 +162,17 @@ public final class WaterSettings {
 	public static int hfCompositeOff = 0;
 	public static int hfMaxNewTilesPerFrame = 2;
 	public static float hfCfl = 0.3F;
-	public static float hfDamping = 0.995F;
-	public static float hfFriction = 0.2F;
+	/** Linear drag on the flow (per 1/60 s and per second). Low now: bed friction (hfManning) holds back thin, fast water instead. */
+	public static float hfDamping = 0.998F;
+	public static float hfFriction = 0.05F;
 	public static float hfMaxSpeed = 30.0F;
+	/**
+	 * Manning bed roughness (s/m^(1/3), 1 block = 1 m): thin fast water is held back by the ground, deep water barely. Real ground
+	 * is about 0.025-0.035; 0 turns it off.
+	 */
+	public static float hfManning = 0.02F;
+	/** Share of the vertical momentum of water landing from a fall or a step that turns into flow spreading out from where it lands. */
+	public static float hfImpactSpread = 0.5F;
 	/** Water thinner than this is not drawn: still films (thinner than hfMinFlowDepth) stay invisible instead of shimmering squares. */
 	public static float hfRenderDepth = 0.035F;
 	/** Lowers the drawn surface like vanilla's 8/9-high water (blocks, for water at least a block deep). */

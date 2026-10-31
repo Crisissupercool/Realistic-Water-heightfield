@@ -562,8 +562,23 @@ final class HfTileGrid {
 
 	// ---- per frame ----
 
+	/** Whether a missing tile can be built now (its chunk and the eight around it are loaded). */
+	interface TileTest {
+		boolean ready(int tx, int tz);
+	}
+
 	/** Missing tiles that water is pushing into, at most {@code max}, as {tx, tz} pairs. */
 	int[][] growthRequests(int max) {
+		return this.growthRequests(max, (tx, tz) -> true);
+	}
+
+	/**
+	 * Missing tiles that water is pushing into and that can be built now ({@code ready}), at most {@code max}. Requests that cannot
+	 * be built yet are skipped here, not handed out: the first requests in slot order used to fill the per-frame limit every frame
+	 * while their chunks were not loaded (the flood reaching the render distance on one side), so no other border ever grew and the
+	 * water stopped at chunk borders everywhere.
+	 */
+	int[][] growthRequests(int max, TileTest ready) {
 		if (this.count >= this.maxTiles) {
 			return new int[0][];
 		}
@@ -581,7 +596,7 @@ final class HfTileGrid {
 				}
 				int tx = this.tileX[s] + DX[d];
 				int tz = this.tileZ[s] + DZ[d];
-				if (seen.put(key(tx, tz), Boolean.TRUE) == null) {
+				if (seen.put(key(tx, tz), Boolean.TRUE) == null && ready.ready(tx, tz)) {
 					out[n++] = new int[]{tx, tz};
 				}
 			}

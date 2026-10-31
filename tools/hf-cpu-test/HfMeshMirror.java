@@ -366,7 +366,7 @@ final class HfMeshMirror {
 		sim.addTile(1, 0, null);
 		g.setReservoir(tile, resCol, resLevel, HfTileGrid.RESERVOIR_FIXED);
 		for (int f = 0; f < frames; f++) sim.frame();
-		int tn = g.tn, pairs = 0, ramps = 0, cracks = 0, wetCount = 0;
+		int tn = g.tn, pairs = 0, ramps = 0, cracks = 0, wetCount = 0, sheets = 0, gaps = 0;
 		float worst = 0;
 		for (int t = 0; t < g.count; t++) for (int l = 0; l < g.layersUsed[t]; l++) for (int col = 0; col < g.pageSpans; col++) {
 			S a = new S(t, l, col);
@@ -374,7 +374,14 @@ final class HfMeshMirror {
 			wetCount++;
 			for (int dir : new int[]{0, 2}) {
 				S b = pick(a, dir);
-				if (b == null || !linked(a, dir, b)) continue;
+				if (b == null || !linked(a, dir, b)) {
+					// Water on a lower step that is not drawn as one surface with ours must be reached by a sheet over the edge.
+					if (b != null && wet(b) && floorOf(b) < floorOf(a) - 0.5F) {
+						if (curtainOf(a, dir) != null) sheets++;
+						else if (outTo(a, dir) > 0.001F) gaps++;
+					}
+					continue;
+				}
 				pairs++;
 				if (!joined(a, b)) ramps++;
 				int[][] pairsC = dir == 0 ? new int[][]{{1, -1, -1, -1}, {1, 1, -1, 1}} : new int[][]{{-1, 1, -1, -1}, {1, 1, 1, -1}};
@@ -391,9 +398,12 @@ final class HfMeshMirror {
 				}
 			}
 		}
-		boolean ok = cracks == 0 && normalGap < 1.0e-4F && ramps > 0 == !name.startsWith("lake");
-		HfCpuTest.check(ok, String.format("%s: %d wet spans, %d pairs drawn as one surface (%d ramps over steps), %d cracks (worst %.4f), worst slope mismatch %.4f",
-			name, wetCount, pairs, ramps, cracks, worst, normalGap));
+		// A stream over steps is drawn as ramps (where the lower water reaches the step's top) or pours over the step as a sheet
+		// (a thin, fast stream skims down: each step a small fall); a lake has neither.
+		boolean lake = name.startsWith("lake");
+		boolean ok = cracks == 0 && normalGap < 1.0e-4F && gaps == 0 && (ramps + sheets > 0) == !lake;
+		HfCpuTest.check(ok, String.format("%s: %d wet spans, %d pairs drawn as one surface (%d ramps over steps), %d sheets over steps, %d steps with flow but neither, %d cracks (worst %.4f), worst slope mismatch %.4f",
+			name, wetCount, pairs, ramps, sheets, gaps, cracks, worst, normalGap));
 		normalGap = 0;
 		return ok;
 	}
@@ -561,8 +571,9 @@ final class HfMeshMirror {
 				cover * 100, 100 * r[0], r[1]));
 		}
 		double before = lipDip(false), after = lipDip(true);
-		HfCpuTest.check(after >= 0.0 && before < 0.0, String.format(
-			"lake pouring over a 1-block step into a filling pool: the brink corner lies %+.3f over the block's top edge (before: %+.3f, inside the block)", after, before));
+		// (With momentum the old corner rule no longer dips either here; the requirement is the corner staying over the edge.)
+		HfCpuTest.check(after >= 0.0, String.format(
+			"lake pouring over a 1-block step into a filling pool: the brink corner lies %+.3f over the block's top edge (old corner rule: %+.3f; -0.367 inside the block before momentum)", after, before));
 		double[] brinkOld = brinkDrawn(false);
 		double[] brinkNow = brinkDrawn(true);
 		HfCpuTest.check(brinkNow[0] > 0.9 && brinkNow[0] > brinkOld[0], String.format(

@@ -943,3 +943,40 @@ Edge reservoirs are not saved; after a reload the sea boundary is a wall, which 
   The clock is capped at the old fall's own time, so after a ledge under a sheet is broken the water falls on from the ledge
   (sheet end 74.9 just after, 64.7 a second later, ground 64) and over a placed ledge it lands on the ledge at once. CPU test
   (pillarEdit): all 8 sheets round the pillar stay drawn through the break and the place (were 0 of 8 just after).
+
+## 27. Water that runs instead of gel: momentum, upwind outflow, steps, growth (as built)
+
+In game, water going down steep slopes moved like gel, a big waterfall's foot made huge waves while the water still spread
+slowly, and floods stopped at chunk borders.
+
+* **Momentum advection, Manning bed friction, impact spread** (`hf_flux.comp`, `hf_depth.comp`, binding 23 `Mom`). Each
+  span passes on the momentum of the water that flowed in (and part of what landed on it) through the faces it leaves by,
+  so water keeps its speed from cell to cell instead of starting from rest at every step and pooling before it spills.
+  Bed friction (hfManning 0.02) holds back thin fast water; the linear drag is lower (hfDamping 0.998, hfFriction 0.05);
+  hfImpactSpread 0.5 of a landing's vertical momentum spreads out. Without momentum a 2 b^3/s stream down a staircase
+  formed pools 2.6 deep next to dry steps (fill, spill, pulse), and a 20 b^3/s waterfall's front reached 13 blocks in 9 s.
+* **Upwind outflow speed.** The momentum a face carries away left at the flow over the deeper of its two sides. A thin
+  span next to a crest then saw a slow outflow, kept speeding up and drained itself: fast water broke up into crests and
+  near-dry troughs moving at about 10 b/s (0.7 next to 0.01 deep below the 20 b^3/s waterfall), the huge waves. It now
+  leaves at the flow over the depth it comes from (donor cell, at least 1 cm). Roughness of the surface below that
+  waterfall (mean relative 2nd difference): 0.25 -> 0.056, front 33 -> 28 blocks in 9 s.
+* **Forward at small steps.** Water dropping over a step of up to HF_AIR_MIN_DROP had its falling speed spread to all four
+  sides (a quarter back into the step it came down). It now goes on in the direction it came over the edge, like water
+  running down stairs (a jet hitting a tread at an angle goes on mostly forward). 2 b^3/s down a 1:2 staircase: an even
+  4-6 cm sheet on every step (no pits), front 30 blocks in 10 s (20 before); down a 1:1 slope about 9 b/s. Each step
+  pours as a small sheet instead of pooling up into a ramp.
+* **Wake foam from the water rushing past.** With momentum the lee of a post is a slow zone (0.2-0.4 b/s behind a
+  1.5 b/s stream), so foam there by its own speed was faint (0.10). The lee foam now uses the speed of the fastest open
+  neighbour: 0.55 right behind a 1x1 pillar, 0.07 a block behind.
+* **Momentum cleared with the flow pages.** Flux pages a tile gets when it wakes are reused from other tiles; their
+  momentum is now zeroed with them (only the CPU mirror did), and so is a rebuilt tile's (the remap moves flow between
+  layers).
+* **Floods stopping at chunk borders.** Each frame the first hfMaxNewTilesPerFrame growth requests (in tile order) were
+  tried, and the ones whose chunks were not loaded failed. Once a few border tiles pointed at unloaded chunks (the render
+  distance on one side), they took the per-frame limit every frame and no other border of the flood ever grew.
+  growthRequests now skips targets that are not ready (HfWorld.neighborhoodLoaded) before picking. CPU test: a pool whose
+  only loaded neighbour is in the 4th direction grows into it (7.4 blocks^3 there after 3 s; never before).
+* Tests updated for the new flow: the tiles-vs-dense check runs the plain pipe model on both sides; reservoir drain gets
+  90 s (70 s with bed friction); canopy rain counts all water on the ground (all 3.000 b^3 reached it); staircase mesh:
+  each step is either joined, a ramp or a sheet, never a gap; brink corner: only the requirement (it stays over the edge).
+  New: fastFallFoot, stairStream, growthPastUnloaded.

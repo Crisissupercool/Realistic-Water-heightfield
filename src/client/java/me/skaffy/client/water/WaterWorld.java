@@ -954,7 +954,9 @@ public final class WaterWorld {
 		float dt = frameDt;
 		ClientLevel level = mc.level;
 		int[] dirty = grid.takeDirty();
-		int[][] grow = running ? grid.growthRequests(Math.max(0, WaterSettings.hfMaxNewTilesPerFrame)) : new int[0][];
+		int[][] grow = running && level != null
+			? grid.growthRequests(Math.max(0, WaterSettings.hfMaxNewTilesPerFrame), (tx, tz) -> HfWorld.neighborhoodLoaded(level, grid, tx, tz))
+			: new int[0][];
 		if (level != null && (dirty.length > 0 || grow.length > 0)) {
 			HfTopology.Voxels voxels = HfWorld.voxels(level, grid);
 			// All dirty tiles in one frame, so both sides of a tile border always use the same topology.
@@ -1247,6 +1249,8 @@ public final class WaterWorld {
 		putInts(b, o + 32, 0, 0, bodies, this.frameCounter);
 		putInts(b, o + 48, 0, 0, 0, 0);
 		putFloats(b, o + 64, 0.0F, -WaterSettings.gravity, 0.0F, hf.lastDt);
+		// simA: bed roughness and impact spread for hf_flux.comp / hf_depth.comp (hf_common.glsl HF_MANNING, HF_IMPACT_SPREAD).
+		putFloats(b, o + 80, Math.max(WaterSettings.hfManning, 0.0F), Math.max(WaterSettings.hfImpactSpread, 0.0F), 0.0F, 0.0F);
 		// simB.w: hfRenderDepth, for the drawn-presence target hf_depth.comp keeps per span (hf_common.glsl).
 		putFloats(b, o + 96, WaterSettings.hfMaxSpeed, hf.cell, this.simTime, WaterSettings.hfRenderDepth);
 		putFloats(b, o + 3184, 0.0F, 0.0F, WaterSettings.nearCull, 0.0F);

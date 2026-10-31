@@ -363,7 +363,7 @@ public final class HfCpuTest {
 			}
 			sim.frame();
 		}
-		return new double[]{sim.foamAt(t0, 0, 15 * tn + 22), sim.foamAt(t0, 0, 15 * tn + 26), sim.foamAt(t0, 0, 11 * tn + 22)};
+		return new double[]{sim.foamAt(t0, 0, 15 * tn + 22), sim.foamAt(t0, 0, 15 * tn + 24), sim.foamAt(t0, 0, 11 * tn + 22)};
 	}
 
 	/**
@@ -470,10 +470,12 @@ public final class HfCpuTest {
 				lowest = lowestSheet(sim, g, tile);
 			}
 		}
+		// Everything on the ground (it spreads out from under the canopy; with momentum it runs past the canopy's edge).
 		double ground = 0.0;
-		for (int cz = 8; cz < 22; cz++) {
-			for (int cx = 8; cx < 22; cx++) {
-				ground += sim.depthAt(tile, 0, cz * tn + cx) * cellA;
+		for (int c = 0; c < g.pageSpans; c++) {
+			int s = g.spanPage[tile * 4] * g.pageSpans + c;
+			if (HfTileGrid.validGeo(sim.geo[s]) && g.floorOf(sim.geo[s]) < 65.0F) {
+				ground += sim.depth[s] * cellA;
 			}
 		}
 		return new double[]{poured, sim.volume() + sim.dropWater(), ground, sim.drops.size(), lowest};
@@ -549,6 +551,110 @@ public final class HfCpuTest {
 		if (cu == null) return new float[]{-1, -1};
 		float off = HfMeshMirror.sheetPoint(new float[]{0, 80.05F, 0}, new float[]{1, 0}, new float[]{cu[0], cu[1], 80.0F}, 0.5F)[0];
 		return new float[]{cu[1], off};
+	}
+
+	/**
+	 * A 0.3-deep pool filling a tile on flat ground; only the chunk to its -x side is loaded, the others are not (the render
+	 * distance), one new tile per frame. {1 if the -x tile was built, water in it after 3 s}.
+	 */
+	static double[] growthPastUnloaded(boolean oldGrowth) {
+		HfTileGrid g = new HfTileGrid(0, 0, 0, 96, C, L, 0.25F, 16, 64, 64);
+		long full = (1L << (C * C * C)) - 1L;
+		HfTiledSim sim = new HfTiledSim(g, (x, y, z) -> y < 64 ? full : 0L);
+		sim.maxNewTiles = 1;
+		sim.oldGrowth = oldGrowth;
+		sim.loaded = (tx, tz) -> tx == -1 && tz == 0;
+		sim.addTile(0, 0, (l, c) -> l == 0 ? 0.3 : 0.0);
+		for (int f = 0; f < 60 * 3; f++) {
+			sim.frame();
+		}
+		int t = g.slotAt(-1, 0);
+		if (t == HfTileGrid.NONE) {
+			return new double[]{0, 0};
+		}
+		double v = 0.0;
+		for (int c = 0; c < g.pageSpans; c++) {
+			v += sim.depthAt(t, 0, c) * g.cell * g.cell;
+		}
+		return new double[]{1, v};
+	}
+
+	/** 20 b^3/s poured off a 20-block cliff for 9 s: {front distance from the cliff (blocks), mean relative 2nd difference of the depth}. */
+	static double[] fastFallFoot() {
+		HfTileGrid g = new HfTileGrid(0, 0, 0, 96, C, L, 0.25F, 64, 256, 256);
+		long full = (1L << (C * C * C)) - 1L;
+		HfTiledSim sim = new HfTiledSim(g, (x, y, z) -> (x < 6 ? y < 40 : y < 20) ? full : 0L);
+		sim.maxNewTiles = 4;
+		int tile = sim.addTile(0, 0, (l, c) -> 0.0);
+		int tn = g.tn;
+		float cellA = g.cell * g.cell;
+		double front = 0.0, rough = 0.0;
+		int roughN = 0;
+		for (int f = 0; f < 60 * 9; f++) {
+			for (int z = 14; z < 18; z++) {
+				sim.inject(tile, z * tn + 10, 40.5F, 20.0F / 4.0F / 60.0F / cellA);
+			}
+			sim.frame();
+			if (f < 60 * 8) {
+				continue;
+			}
+			float prev = -1.0F, pp = -1.0F;
+			for (int cx = 12; cx < 96; cx++) {
+				int t = g.slotAt(cx / tn, 0);
+				if (t < 0) {
+					break;
+				}
+				int col = 16 * tn + cx % tn;
+				int l = g.layerAt(t, col, 20.5F);
+				float d = l < 0 ? 0.0F : sim.depthAt(t, l, col);
+				if (d > 0.01F) {
+					front = Math.max(front, cx * g.cell - 6.0);
+				}
+				if (pp >= 0.02F && prev >= 0.02F && d >= 0.02F) {
+					rough += Math.abs(prev - 0.5 * (pp + d)) / prev;
+					roughN++;
+				}
+				pp = prev;
+				prev = d;
+			}
+		}
+		return new double[]{front, rough / Math.max(roughN, 1)};
+	}
+
+	/** 2 b^3/s poured at the top of a staircase (1 block down every 2 across) for 10 s: {front (blocks), shallowest cell behind it}. */
+	static double[] stairStream() {
+		HfTileGrid g = new HfTileGrid(0, 0, 0, 120, C, L, 0.25F, 64, 256, 256);
+		long full = (1L << (C * C * C)) - 1L;
+		HfTiledSim sim = new HfTiledSim(g, (x, y, z) -> y < 90 - Math.max(x, 0) / 2 ? full : 0L);
+		sim.maxNewTiles = 4;
+		int tile = sim.addTile(0, 0, (l, c) -> 0.0);
+		int tn = g.tn;
+		float cellA = g.cell * g.cell;
+		for (int f = 0; f < 60 * 10; f++) {
+			for (int z = 14; z < 18; z++) {
+				sim.inject(tile, z * tn + 1, 90.5F, 2.0F / 4.0F / 60.0F / cellA);
+			}
+			sim.frame();
+		}
+		float[] d = new float[96];
+		double front = 0.0;
+		for (int cx = 0; cx < 96; cx++) {
+			int t = g.slotAt(cx / tn, 0);
+			if (t < 0) {
+				break;
+			}
+			int col = 16 * tn + cx % tn;
+			int l = g.layerAt(t, col, 90 - (cx / 2) / 2 + 0.5F);
+			d[cx] = l < 0 ? 0.0F : sim.depthAt(t, l, col);
+			if (d[cx] > 0.01F) {
+				front = cx * g.cell;
+			}
+		}
+		float shallowest = 9.0F;
+		for (int cx = 8; cx < (int) (front / g.cell) - 8; cx++) {
+			shallowest = Math.min(shallowest, d[cx]);
+		}
+		return new double[]{front, shallowest};
 	}
 
 	static boolean ledge;
@@ -972,6 +1078,12 @@ public final class HfCpuTest {
 			}
 			HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 16, 64, 64);
 			HfTiledSim tiled = new HfTiledSim(grid, voxels(solid));
+			// The dense reference is the plain pipe model (no momentum, bed friction or impact spread, the old drag): this checks the
+			// tiling, not the physics.
+			tiled.advect = false;
+			tiled.manning = 0.0F;
+			tiled.damping = 0.995F;
+			tiled.friction = 0.2F;
 			tiled.sleepRate = -1.0F;
 			tiled.filmRate = -1.0F;
 			tiled.maxNewTiles = 0;
@@ -1252,11 +1364,12 @@ public final class HfCpuTest {
 				tiled.maxNewTiles = 0;
 				int tile = tiled.addTile(0, 0, (l, c) -> start);
 				grid.setReservoir(tile, (7 * C) * grid.tn + 2 * C, 65.0F, HfTileGrid.RESERVOIR_FIXED);
-				for (int f = 0; f < 3600; f++) {
+				// 90 s: draining 2 blocks through one edge cell takes about 70 s with bed friction (hfManning), 55 s without.
+				for (int f = 0; f < 5400; f++) {
 					tiled.frame();
 				}
 				float mid = tiled.depthAt(tile, 0, (8 * C) * grid.tn + 8 * C);
-				check(Math.abs(mid - 1.0F) < 0.02F, String.format("pool starting %.0f deep settles to the edge level 65: depth %.3f", start, mid));
+				check(Math.abs(mid - 1.0F) < 0.02F, String.format("pool starting %.0f deep settles to the edge level 65 within 90 s: depth %.3f", start, mid));
 			}
 			HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 4, 16, 16);
 			HfTiledSim tiled = new HfTiledSim(grid, voxels(solid));
@@ -1464,8 +1577,9 @@ public final class HfCpuTest {
 		System.out.println("Wakes: water running past a pillar foams in its lee, and the foam trails downstream");
 		{
 			double[] w = pillarWake(1.5F);
+			// With momentum the lee is a slow zone (0.2-0.4 b/s behind a 1.5 b/s stream), so the foam fades over about 2 blocks.
 			check(w[0] > 0.2 && w[1] > 0.03 && w[1] < w[0] && w[2] < 0.01, String.format(
-				"0.7 b/s past a 1x1 pillar: foam %.2f right behind it, %.2f 2 blocks behind, %.2f 2 blocks aside", w[0], w[1], w[2]));
+				"1.5 b/s past a 1x1 pillar: foam %.2f right behind it, %.2f 1 block behind, %.2f 2 blocks aside", w[0], w[1], w[2]));
 		}
 
 		System.out.println("Boats: vanilla boat buoyancy on the blocks the heightfield writes (AbstractBoatMixin)");
@@ -1486,7 +1600,7 @@ public final class HfCpuTest {
 		{
 			double[] r = rainThroughCanopy(true);
 			check(Math.abs(r[1] - r[0]) < 1.0e-3 * r[0] + 1.0e-4, String.format("poured %.4f blocks^3 onto a pillar over a canopy, %.4f now (heightfield, air and drops)", r[0], r[1]));
-			check(r[2] > 0.3 * r[0], String.format("%.3f blocks^3 reached the ground under the canopy", r[2]));
+			check(r[2] > 0.3 * r[0], String.format("%.3f blocks^3 of %.3f reached the ground through the canopy", r[2], r[0]));
 			check(r[4] >= 69.9F, String.format("falling sheets end at the canopy top (lowest end %.2f, canopy top 70)", r[4]));
 			check(lastSim.lostUnits == 0, String.format("drops that ended where no span could take their water: %.6f blocks^3", lastSim.lostUnits * HfTiledSim.WATER_UNIT));
 			double[] w = waterfallSplash();
@@ -1500,6 +1614,25 @@ public final class HfCpuTest {
 			check(lo[1] >= 0 && lo[1] < 0.1F && hi[1] > 0.3F && hi[0] < 2.5F, String.format(
 				"0.05 b^3/s: leaves at %.2f b/s, %.2f off the face half way down; 1.0 b^3/s: %.2f b/s, %.2f off (was 0.41 and 4.0 b/s, 0.25 and 0.42 off)",
 				lo[0], lo[1], hi[0], hi[1]));
+		}
+
+		System.out.println("Fast water: momentum carries floods fast, and the surface stays smooth (no crests and dry troughs)");
+		{
+			double[] fall = fastFallFoot();
+			check(fall[0] > 20.0 && fall[1] < 0.1, String.format(
+				"20 b^3/s off a 20-block cliff: front %.0f blocks out after 9 s, surface roughness %.3f (momentum over the deeper side: 33 blocks but 0.25, crests 0.7 next to 0.01; no momentum: 13 blocks)",
+				fall[0], fall[1]));
+			double[] st = stairStream();
+			check(st[0] >= 25.0 && st[1] > 0.02, String.format(
+				"2 b^3/s down a staircase (1 down per 2 across): front %.1f blocks down in 10 s, shallowest wet cell behind the front %.3f (falling speed spread to all sides: 20 blocks, 0.009, pooling and spilling; no momentum: 2.6 deep pools next to dry steps)",
+				st[0], st[1]));
+		}
+
+		System.out.println("Growth: a flood still grows where chunks are loaded while other borders wait for theirs");
+		{
+			double[] before = growthPastUnloaded(true), after = growthPastUnloaded(false);
+			check(after[0] == 1 && after[1] > 1.0, String.format("tile toward the loaded side built: %s, %.1f blocks^3 in it after 3 s (with the old pick: %s, %.1f; the unloaded side's requests used up the per-frame limit every frame)",
+				after[0] == 1, after[1], before[0] == 1, before[1]));
 		}
 
 		System.out.println("Edits: falling sheets keep falling through a block broken or placed next to them (the remap keeps water in the air)");

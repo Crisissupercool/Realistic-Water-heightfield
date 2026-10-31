@@ -164,6 +164,13 @@ layout(std430, binding = 21) readonly buffer Foliage { uint foliage[]; };
 // Water that drops (hf_spray.glsl) brought down onto each span, in HF_WATER_UNIT; hf_depth.comp adds it and clears it.
 layout(std430, binding = 22) coherent buffer Deposit { uint deposit[]; };
 const float HF_WATER_UNIT = 1.0e-6;
+// Momentum carried into each simulated span (per flux span, hfFoamIndex), as half floats: the horizontal momentum flux of the
+// water that flowed in over the last step (x, z; blocks^4/s^2) and the momentum of water that landed on it from above, which
+// spreads out to all sides. hf_depth.comp writes it, the next hf_flux.comp passes it on (momentum advection).
+layout(std430, binding = 23) buffer Mom { uvec2 mom[]; };
+// Manning bed roughness (hfManning) and the share of a landing's vertical momentum that spreads out (hfImpactSpread).
+#define HF_MANNING G.simA.x
+#define HF_IMPACT_SPREAD G.simA.y
 
 // Foliage in span s as (bottom, top) world heights; bottom >= top when there is none.
 vec2 hfFoliage(uint s) {
