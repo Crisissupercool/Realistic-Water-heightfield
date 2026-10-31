@@ -140,6 +140,13 @@ void main() {
         vec2 leafA = hfFoliage(a.span);
         bool drops = HF_SPRAY_SCALE > 0.0;
         float churn = 0.0;
+        // Momentum the water flowing in brings (see Mom in hf_common.glsl).
+        vec2 momIn = vec2(0.0);
+        float momLand = 0.0;
+        // Water dropping over a small step (up to HF_AIR_MIN_DROP) hits the tread at an angle and goes on forward, like water
+        // running down stairs: its falling speed is added in the direction it came over the edge. Spread to all sides it pushed
+        // a quarter back into the step it came down and a half sideways, and water ran down blocky slopes in slow pools.
+        vec2 momFwd = vec2(0.0);
         // Whether a neighbor deeper than hfRenderDepth has its surface at ours (we are the edge of that body).
         bool lake = false;
         // Our water's speed (its outflow over the old depth; the new one is not known yet) and where it goes.
@@ -179,6 +186,17 @@ void main() {
                 // Water arriving from a span whose floor lies above our surface drops in: a waterfall or a step. Over a real
                 // drop it is in the air first and churns the water where it lands, when it lands (below).
                 float drop = hfGeo(b.span).x - (floorA + old);
+                {
+                    // Its speed through the face it came over, in the direction it travels; falling in over a step, also the
+                    // vertical speed of the fall, which spreads out where it lands.
+                    float fb = hfGeo(b.span).x;
+                    float face = max(max(fb + depth[b.span], floorA + old) - max(fb, floorA), 0.01);
+                    float u = min(i / (HF_CELL * face), HF_MAX_SPEED);
+                    momIn -= i * u * vec2(HF_DX[k >> 1], HF_DZ[k >> 1]);
+                    if (drop > 0.0 && drop <= HF_AIR_MIN_DROP) {
+                        momFwd -= i * sqrt(2.0 * HF_AIR_G * drop) * vec2(HF_DX[k >> 1], HF_DZ[k >> 1]);
+                    }
+                }
                 float enter = min(leafA.y, hfGeo(b.span).x);
                 if (drops && drop > 0.5 && leafA.x < leafA.y && enter > floorA + old + 0.5 && leafA.x < hfGeo(b.span).x) {
                     rainIn += i;
@@ -261,6 +279,12 @@ void main() {
         // (Rain the drops could not take stays here: of rainIn x dt, only `rained` left.)
         float h = max(old + (HF_DT * (inflow - airIn - outflow) + landed + deposited - splashed - rained) / area, 0.0);
         depth[a.span] = h;
+        if (landed > 0.0) {
+            momLand += landed / HF_DT * HF_AIR_TERMINAL * tanh(HF_AIR_G * hfFallTime(airH) / HF_AIR_TERMINAL);
+        }
+        // What lands spreads out less the deeper the water it lands in: a plunge into a deep pool goes down, not out.
+        mom[hfFoamIndex(a)] = uvec2(packHalf2x16(momIn + momFwd * HF_IMPACT_SPREAD / (1.0 + h)),
+            packHalf2x16(vec2(momLand * HF_IMPACT_SPREAD / (1.0 + h), 0.0)));
         // How much of the water here is in the drawn surface (see hfPresenceTarget), moving at most 1 per HF_FILM_SWITCH seconds.
         float sv = air[ai + 3u];
         bool on = hfRunning(sv);

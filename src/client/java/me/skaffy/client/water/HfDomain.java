@@ -21,7 +21,8 @@ import org.lwjgl.vulkan.VkCommandBuffer;
  * (inject or reservoir entries), 15 foam (two halves per flux page span, swapped every solver step), 16 vertex flow (mesh),
  * 17 spray particles (two halves of {@link #SPRAY_MAX}), 18 spray counters and draw args, 19 tile lookup (slot per tile around
  * the origin, see {@link #LOOKUP}), 20 water in the air, 21 foliage per span (HfTileGrid.Tile#foliage), 22 water deposited by
- * drops (per span, fixed point {@link #DEPOSIT_UNIT}).
+ * drops (per span, fixed point {@link #DEPOSIT_UNIT}), 23 momentum carried into each flux-page span (two half-float pairs, see
+ * hf_common.glsl Mom).
  */
 final class HfDomain implements AutoCloseable {
 	/** Two vec4 per (span page, group of 256 spans): (volume, max depth, max speed, max rate), (border bits, 0, 0, 0). */
@@ -35,7 +36,7 @@ final class HfDomain implements AutoCloseable {
 		if (programs == null) {
 			int U = Desc.UBO;
 			int S = Desc.SSBO;
-			int[] layout = {U, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S};
+			int[] layout = {U, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S, S};
 			programs = new ComputeProgram[]{
 				new ComputeProgram("hf_flux.comp", layout),
 				new ComputeProgram("hf_depth.comp", layout),
@@ -132,6 +133,9 @@ final class HfDomain implements AutoCloseable {
 	private final VkBuf air;
 	private static final long AIR_BYTES = 16L;
 	private final VkBuf flux;
+	/** Momentum carried into each flux-page span (binding 23, 8 bytes; hf_depth.comp writes it, hf_flux.comp passes it on). */
+	private final VkBuf mom;
+	private static final long MOM_BYTES = 8L;
 	/** Foam per flux-page span, twice: one half is read and the other written each step (see hf_depth.comp). */
 	private final VkBuf foam;
 	private final long foamHalf;
@@ -251,6 +255,7 @@ final class HfDomain implements AutoCloseable {
 		this.flux = VkBuf.device((long) grid.maxFluxPages * this.ps * FLUX_BYTES, 0);
 		this.foamHalf = (long) grid.maxFluxPages * this.ps;
 		this.foam = VkBuf.device(this.foamHalf * 8L, 0);
+		this.mom = VkBuf.device(this.foamHalf * MOM_BYTES, 0);
 		this.tileInfo = VkBuf.device((long) grid.maxTiles * 64L, 0);
 		this.pageOwner = VkBuf.device((long) grid.maxPages * 4L, 0);
 		this.statsTail = (long) grid.maxPages * this.groupsPerPage * STATS_BYTES;
@@ -290,7 +295,7 @@ final class HfDomain implements AutoCloseable {
 
 	/** Size of the GPU allocation, for /water hf stats. */
 	long bytes() {
-		return (long) this.grid.maxPages * this.ps * (SPAN_BYTES + AIR_BYTES + 8L) + (long) this.grid.maxFluxPages * this.ps * (FLUX_BYTES + 8L)
+		return (long) this.grid.maxPages * this.ps * (SPAN_BYTES + AIR_BYTES + 8L) + (long) this.grid.maxFluxPages * this.ps * (FLUX_BYTES + 8L + MOM_BYTES)
 			+ this.quadCapacity * 96L + 2L * (SPRAY_MAX + DROP_MAX) * 32L;
 	}
 
@@ -394,7 +399,7 @@ final class HfDomain implements AutoCloseable {
 			Desc.ssbo(this.tileInfo), Desc.ssbo(this.activeRing[ring]), Desc.ssbo(this.stats), Desc.ssbo(this.verts), Desc.ssbo(this.quads),
 			Desc.ssbo(this.meshCounters), Desc.ssbo(view), Desc.ssbo(this.pageOwner), Desc.ssbo(aux), Desc.ssbo(this.foam),
 			Desc.ssbo(this.vertFlow), Desc.ssbo(this.spray), Desc.ssbo(this.sprayCounters), Desc.ssbo(this.tileLookup), Desc.ssbo(this.air),
-			Desc.ssbo(this.foliage), Desc.ssbo(this.deposit));
+			Desc.ssbo(this.foliage), Desc.ssbo(this.deposit), Desc.ssbo(this.mom));
 	}
 
 	/**
@@ -608,6 +613,8 @@ final class HfDomain implements AutoCloseable {
 				// New layers' flux pages start at rest (they may hold another tile's flow) before the remap fills them.
 				for (int fp : r.freshFlux()) {
 					this.flux.fill(cb, (long) fp * this.ps * FLUX_BYTES, (long) this.ps * FLUX_BYTES, 0);
+			this.mom.fill(cb, (long) fp * this.ps * MOM_BYTES, (long) this.ps * MOM_BYTES, 0);
+					this.mom.fill(cb, (long) fp * this.ps * MOM_BYTES, (long) this.ps * MOM_BYTES, 0);
 					this.foam.fill(cb, (long) fp * this.ps * 4L, (long) this.ps * 4L, 0);
 					this.foam.fill(cb, (this.foamHalf + (long) fp * this.ps) * 4L, (long) this.ps * 4L, 0);
 				}
@@ -885,6 +892,7 @@ final class HfDomain implements AutoCloseable {
 			this.air.fill(cb, 0);
 			this.deposit.fill(cb, 0);
 			this.foam.fill(cb, 0);
+			this.mom.fill(cb, 0);
 			this.sprayCounters.fill(cb, 0);
 			this.statsCleared = true;
 		}
@@ -1338,6 +1346,7 @@ final class HfDomain implements AutoCloseable {
 		all.add(this.air);
 		all.add(this.foliage);
 		all.add(this.deposit);
+		all.add(this.mom);
 		all.add(this.reservoirBuf);
 		all.add(this.sampleBuf);
 		all.add(this.entityOut);

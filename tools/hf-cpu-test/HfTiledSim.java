@@ -50,6 +50,25 @@ final class HfTiledSim {
 	private final java.util.Random dropRng = new java.util.Random(7);
 	/** Mirror of the foam buffer: two halves of one float per flux-page span, swapped every step. */
 	final float[] foam;
+	/**
+	 * Momentum carried into each simulated span (per flux span, 3 floats, rounded to half floats like the GPU buffer): the
+	 * horizontal momentum flux of the water flowing in (x, z; blocks^4/s^2) and the momentum of water landing on it from above
+	 * (spread to all sides). See hf_depth.comp and hf_flux.comp.
+	 */
+	final float[] mom;
+	/** Share of a landing's vertical momentum that turns into flow spreading out from where it lands (hfImpactSpread). */
+	float impactSpread = 0.5F;
+	/** hfDamping and hfFriction (linear drag on the flow). */
+	float damping = 0.998F;
+	float friction = 0.05F;
+	/** Manning bed roughness (hfManning; 0: none): thin fast water is held back by the ground, deep water barely. */
+	float manning = 0.02F;
+	/** Momentum advection on (false: the old solver, for comparison). */
+	boolean advect = true;
+	/** Experiment switches (temporary). */
+	static int exp = Integer.getInteger("hfexp", 3);
+	static long scaled, faces;
+	static float expK = 0.5F;
 	final int foamHalf;
 	int foamRead;
 	float foamLife = 1.5F;
@@ -61,6 +80,10 @@ final class HfTiledSim {
 	float filmDepth = 0.1F;
 	float filmRate = 0.02F;
 	int maxNewTiles = 2;
+	/** Which missing tiles have their chunks loaded (WaterWorld: HfWorld.neighborhoodLoaded); all by default. */
+	HfTileGrid.TileTest loaded = (tx, tz) -> true;
+	/** true: growth as before the fix (requests picked before the loaded test). */
+	boolean oldGrowth;
 	int[] pages = new int[0];
 
 	HfTiledSim(HfTileGrid g, HfTopology.Voxels vox) {
@@ -77,6 +100,7 @@ final class HfTiledSim {
 		this.flux = new float[g.maxFluxPages * this.ps * 8];
 		this.foamHalf = g.maxFluxPages * this.ps;
 		this.foam = new float[2 * this.foamHalf];
+		this.mom = new float[this.foamHalf * 3];
 	}
 
 	/** Mirror of hfStir: {vx, vz, height filled} for a column. */
@@ -426,6 +450,10 @@ final class HfTiledSim {
 		return new int[]{t, layer, cz * tn + cx};
 	}
 
+	static float half(float v) {
+		return Float.float16ToFloat(Float.floatToFloat16(v));
+	}
+
 	private static int rev(int k, int nib) {
 		return ((k >> 1) ^ 1) * 2 + (nib >> 2);
 	}
@@ -452,6 +480,24 @@ final class HfTiledSim {
 				float drag = 1.0F - (float) Math.exp(-this.stirRate * dt);
 				float[] out = new float[8];
 				float total = 0.0F;
+				int mi = base / 8 * 3;
+				float px = this.mom[mi], pz = this.mom[mi + 1], pr = this.mom[mi + 2];
+				int[] perDir = new int[4];
+				for (int k = 0; k < 8; k++) {
+					if (HfTileGrid.link(this.links[s], k) != HfTileGrid.LINK_NONE) {
+						perDir[k >> 1]++;
+					}
+				}
+				int openMask = 0;
+				for (int k = 0; k < 8; k++) {
+					int nib = HfTileGrid.link(this.links[s], k);
+					if (nib == HfTileGrid.LINK_NONE) continue;
+					int[] nb = this.neighbor(tile, col, k, nib, true);
+					if (nb == null) continue;
+					float fb0 = this.g.floorOf(this.geo[this.span(nb[0], nb[1], nb[2])]);
+					if (Math.max(fa, fb0) < headA) openMask |= 1 << (k >> 1);
+				}
+				int openN = Integer.bitCount(openMask);
 				for (int k = 0; k < 8; k++) {
 					int nib = HfTileGrid.link(this.links[s], k);
 					if (nib == HfTileGrid.LINK_NONE) {
@@ -483,6 +529,25 @@ final class HfTiledSim {
 						carry = filmCarry;
 					}
 					float q = this.flux[base + k] * keep * carry + dt * 9.81F * area * drive / cell;
+					if (this.advect) {
+						// Momentum advection (hf_flux.comp): the momentum flowing into this span from behind, plus its share of what landed
+						// on it, moves on through this face; what this face carries leaves. Implicit, so it is stable at any speed.
+						int d = k >> 1;
+						float pin = Math.max(px * HfTileGrid.DX[d] + pz * HfTileGrid.DZ[d], 0.0F) + (exp >= 4 ? pr / Math.max(openN, 1) : 0.25F * pr);
+						pin *= carry / perDir[d];
+						float uq = Math.max(q, 0.0F) / area;
+						if (exp == 1 || exp == 3) uq = Math.max(q, 0.0F) / (cell * Math.max(wetA, 0.01F));
+						if (exp == 2) uq = Math.max(q, 0.0F) / (cell * Math.max(0.5F * (wetA + wetB), 0.01F));
+						q = (q + dt / cell * pin) / (1.0F + dt / cell * uq);
+					}
+					if (this.manning > 0.0F && q > 0.0F) {
+						// Bed friction (Manning): g n^2 |u| / h^(4/3), implicit. Over an edge the water is in free fall, no bed.
+						float hf = Math.max(area / cell, 0.005F);
+						float uq = q / area;
+						if (headB >= fa) {
+							q /= 1.0F + dt * 9.81F * this.manning * this.manning * uq / (float) Math.pow(hf, 4.0 / 3.0);
+						}
+					}
 					if (st[2] > 0.0F) {
 						int d = k >> 1;
 						float target = (st[0] * HfTileGrid.DX[d] + st[1] * HfTileGrid.DZ[d]) * cell * Math.min(st[2], wetA);
@@ -493,6 +558,7 @@ final class HfTiledSim {
 				}
 				float volume = hA * cell * cell;
 				float scale = total * dt > volume ? volume / (total * dt) : 1.0F;
+				if (total > 0) { faces++; if (scale < 1.0F) scaled++; }
 				for (int k = 0; k < 8; k++) {
 					this.flux[base + k] = out[k] * scale;
 				}
@@ -536,6 +602,7 @@ final class HfTiledSim {
 				boolean lake = false;
 				float airDrop = 0.0F;
 				float churnSum = 0.0F;
+				float momX = 0.0F, momZ = 0.0F, momR = 0.0F, fwdX = 0.0F, fwdZ = 0.0F;
 				int openDirs = 0;
 				float outSum = 0.0F;
 				for (int k = 0; k < 8; k++) {
@@ -570,6 +637,23 @@ final class HfTiledSim {
 					if (fi > 0.0F) {
 						foamIn += fi * this.foam[read + nbBase / 8];
 						float drop = this.g.floorOf(this.geo[this.span(nb[0], nb[1], nb[2])]) - (floorA + old);
+						{
+							// Momentum it brings: its speed through the face it came over, in the direction it travels; falling in over a
+							// step, also the vertical speed of the fall, which spreads out when it lands.
+							int bs = this.span(nb[0], nb[1], nb[2]);
+							float fb = this.g.floorOf(this.geo[bs]);
+							float face = Math.max(Math.max(fb + this.depth[bs], floorA + old) - Math.max(fb, floorA), 0.01F);
+							float u = Math.min(fi / (cell * face), 30.0F);
+							momX -= fi * u * HfTileGrid.DX[k >> 1];
+							momZ -= fi * u * HfTileGrid.DZ[k >> 1];
+							if (drop > 0.0F && drop <= AIR_MIN_DROP && (exp == 3 || exp == 5)) {
+								float vf = (float) Math.sqrt(2.0F * AIR_G * drop);
+								fwdX -= fi * vf * HfTileGrid.DX[k >> 1];
+								fwdZ -= fi * vf * HfTileGrid.DZ[k >> 1];
+							} else if (drop > 0.0F && drop <= AIR_MIN_DROP) {
+								momR += fi * (float) Math.sqrt(2.0F * AIR_G * drop);
+							}
+						}
 						float fb = this.g.floorOf(this.geo[this.span(nb[0], nb[1], nb[2])]);
 						float enter = Math.min(leafA[1], fb);
 						if (this.waterDrops && drop > 0.5F && leafA[0] < leafA[1] && enter > floorA + old + 0.5F && leafA[0] < fb) {
@@ -638,6 +722,16 @@ final class HfTiledSim {
 				}
 				float nh = Math.max(old + (dt * (in - airIn - out) + landed + deposited - splashed - rained) / area, 0.0F);
 				this.depth[s] = nh;
+				if (landed > 0.0F) {
+					momR += landed / dt * (float) (AIR_TERMINAL * Math.tanh(AIR_G * fallTime(airH) / AIR_TERMINAL));
+				}
+				{
+					// What lands spreads out less the deeper the water it lands in (a plunge into a deep pool goes down, not out).
+					int mi = base / 8 * 3;
+					this.mom[mi] = half(momX + fwdX * this.impactSpread / (1.0F + nh));
+					this.mom[mi + 1] = half(momZ + fwdZ * this.impactSpread / (1.0F + nh));
+					this.mom[mi + 2] = half(momR * this.impactSpread / (1.0F + nh));
+				}
 				{
 					float sv = this.air[s * AIR_STRIDE + 3];
 					boolean on = (sv % 4.0F) >= 2.0F;
@@ -791,18 +885,26 @@ final class HfTiledSim {
 			this.writePages(tile, t);
 			for (int p : this.g.lastFreshFlux) {
 				Arrays.fill(this.flux, p * this.ps * 8, (p + 1) * this.ps * 8, 0.0F);
+			Arrays.fill(this.mom, p * this.ps * 3, (p + 1) * this.ps * 3, 0.0F);
+				Arrays.fill(this.mom, p * this.ps * 3, (p + 1) * this.ps * 3, 0.0F);
 				Arrays.fill(this.foam, p * this.ps, (p + 1) * this.ps, 0.0F);
 				Arrays.fill(this.foam, this.foamHalf + p * this.ps, this.foamHalf + (p + 1) * this.ps, 0.0F);
 			}
 			this.remap(old, Arrays.copyOfRange(this.g.spanPage, tile * 4, tile * 4 + 4), Arrays.copyOfRange(this.g.fluxPage, tile * 4, tile * 4 + 4));
 			this.g.releaseSpanPages(old);
 		}
-		for (int[] req : this.g.growthRequests(this.maxNewTiles)) {
-			this.addTile(req[0], req[1], null);
+		// Like WaterWorld: only tiles whose chunks are loaded can be built (oldGrowth: the requests were picked first and the
+		// unloaded ones then failed, using up the per-frame limit).
+		int[][] reqs = this.oldGrowth ? this.g.growthRequests(this.maxNewTiles) : this.g.growthRequests(this.maxNewTiles, this.loaded);
+		for (int[] req : reqs) {
+			if (this.loaded.ready(req[0], req[1])) {
+				this.addTile(req[0], req[1], null);
+			}
 		}
 		HfTileGrid.Activation act = this.g.updateActive(frameDt, this.sleepRate, this.sleepSeconds, this.filmDepth, this.filmRate);
 		for (int p : act.newFluxPages) {
 			Arrays.fill(this.flux, p * this.ps * 8, (p + 1) * this.ps * 8, 0.0F);
+			Arrays.fill(this.mom, p * this.ps * 3, (p + 1) * this.ps * 3, 0.0F);
 			Arrays.fill(this.foam, p * this.ps, (p + 1) * this.ps, 0.0F);
 			Arrays.fill(this.foam, this.foamHalf + p * this.ps, this.foamHalf + (p + 1) * this.ps, 0.0F);
 		}
@@ -815,7 +917,7 @@ final class HfTiledSim {
 		float stable = 0.3F * this.g.cell / wave;
 		int steps = Math.clamp((int) Math.ceil(frameDt / stable), 1, 8);
 		float dt = Math.min(frameDt / steps, stable);
-		float keep = (float) Math.pow(0.995, dt * 60.0) / (1.0F + 0.2F * dt);
+		float keep = (float) Math.pow(this.damping, dt * 60.0) / (1.0F + this.friction * dt);
 		for (int i = 0; i < steps; i++) {
 			this.fluxPass(dt, keep);
 			this.depthPass(dt);

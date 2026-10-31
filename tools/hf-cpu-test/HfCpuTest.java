@@ -551,6 +551,32 @@ public final class HfCpuTest {
 		return new float[]{cu[1], off};
 	}
 
+	/**
+	 * A 0.3-deep pool filling a tile on flat ground; only the chunk to its -x side is loaded, the others are not (the render
+	 * distance), one new tile per frame. {1 if the -x tile was built, water in it after 3 s}.
+	 */
+	static double[] growthPastUnloaded(boolean oldGrowth) {
+		HfTileGrid g = new HfTileGrid(0, 0, 0, 96, C, L, 0.25F, 16, 64, 64);
+		long full = (1L << (C * C * C)) - 1L;
+		HfTiledSim sim = new HfTiledSim(g, (x, y, z) -> y < 64 ? full : 0L);
+		sim.maxNewTiles = 1;
+		sim.oldGrowth = oldGrowth;
+		sim.loaded = (tx, tz) -> tx == -1 && tz == 0;
+		sim.addTile(0, 0, (l, c) -> l == 0 ? 0.3 : 0.0);
+		for (int f = 0; f < 60 * 3; f++) {
+			sim.frame();
+		}
+		int t = g.slotAt(-1, 0);
+		if (t == HfTileGrid.NONE) {
+			return new double[]{0, 0};
+		}
+		double v = 0.0;
+		for (int c = 0; c < g.pageSpans; c++) {
+			v += sim.depthAt(t, 0, c) * g.cell * g.cell;
+		}
+		return new double[]{1, v};
+	}
+
 	static boolean ledge;
 
 	/**
@@ -1500,6 +1526,13 @@ public final class HfCpuTest {
 			check(lo[1] >= 0 && lo[1] < 0.1F && hi[1] > 0.3F && hi[0] < 2.5F, String.format(
 				"0.05 b^3/s: leaves at %.2f b/s, %.2f off the face half way down; 1.0 b^3/s: %.2f b/s, %.2f off (was 0.41 and 4.0 b/s, 0.25 and 0.42 off)",
 				lo[0], lo[1], hi[0], hi[1]));
+		}
+
+		System.out.println("Growth: a flood still grows where chunks are loaded while other borders wait for theirs");
+		{
+			double[] before = growthPastUnloaded(true), after = growthPastUnloaded(false);
+			check(after[0] == 1 && after[1] > 1.0, String.format("tile toward the loaded side built: %s, %.1f blocks^3 in it after 3 s (with the old pick: %s, %.1f; the unloaded side's requests used up the per-frame limit every frame)",
+				after[0] == 1, after[1], before[0] == 1, before[1]));
 		}
 
 		System.out.println("Edits: falling sheets keep falling through a block broken or placed next to them (the remap keeps water in the air)");
