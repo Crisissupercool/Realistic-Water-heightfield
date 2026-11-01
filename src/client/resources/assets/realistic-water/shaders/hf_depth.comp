@@ -241,21 +241,31 @@ void main() {
         float landed = 0.0;
         if (airVol > 0.0) {
             float tf = hfFallTime(airH);
-            airT = min(airT + HF_DT, tf + 1000.0);
-            if (airT >= tf) {
-                landed = airVol * (1.0 - exp(-HF_DT / max(tf, 0.05)));
-                if (airVol - landed < 1.0e-6) {
-                    landed = airVol;
+            if (airIn > 0.0 || airT < tf) {
+                // Pouring, or the front of a short pour still falling: the clock runs on.
+                airT = min(airT + HF_DT, tf + 1000.0);
+                if (airIn > 0.0 && airT >= tf) {
+                    landed = airVol * (1.0 - exp(-HF_DT / max(tf, 0.05)));
                 }
-                airVol -= landed;
+            } else {
+                // The pour stopped after its front landed: the stream's tail lands within one fall time, evenly over what is
+                // left of it (the clock counts down from twice the fall time to once). Landing a share each step instead, the
+                // air never emptied (a 20-block fall still held water after 30 s), the clock kept running, and a new pour on
+                // the same spot drew its sheet down to the ground at once.
+                airT = min(airT, 2.0 * tf) - HF_DT;
+                landed = airT - tf > HF_DT ? airVol * HF_DT / (airT - tf) : airVol;
             }
+            if (airVol - landed < 1.0e-6) {
+                landed = airVol;
+            }
+            airVol -= landed;
         }
         if (airVol <= 0.0) {
             // Nothing in the air: the stream's tail falls on, so a pour that resumes within the fall time continues the falling
             // column instead of starting a new front at the top (a thin, pulsing pour restarted it every pulse, and the sheet
             // kept ending in mid-air). After a full fall time without water the next pour starts from the top.
             airVol = 0.0;
-            airT = max(airT - HF_DT, 0.0);
+            airT = max(min(airT, hfFallTime(airH)) - HF_DT, 0.0);
         }
         air[ai] = airVol;
         air[ai + 1u] = airT;

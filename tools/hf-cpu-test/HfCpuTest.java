@@ -760,6 +760,53 @@ public final class HfCpuTest {
 		return new double[]{deepest, sim.sunk, poured, sim.volume() + sim.dropWater() + sim.sunk - poured};
 	}
 
+	/**
+	 * 1 b^3/s off a 20-block cliff for 10 s, then the plateau is emptied and stays dry for 5 s, then the pour starts again:
+	 * {sheet end 0.6 s into the second pour, 4 s into it}.
+	 */
+	static float[] pourAgain() {
+		HfTileGrid g = new HfTileGrid(0, 0, 0, 96, C, L, 0.25F, 16, 64, 64);
+		long full = (1L << (C * C * C)) - 1L;
+		HfTiledSim sim = new HfTiledSim(g, (x, y, z) -> (x < 6 ? y < 40 : y < 20) ? full : 0L);
+		sim.maxNewTiles = 0;
+		int t = sim.addTile(0, 0, (l, c) -> 0.0);
+		HfMeshMirror.g = g;
+		HfMeshMirror.sim = sim;
+		int tn = g.tn;
+		float cellA = g.cell * g.cell;
+		int c = 16 * tn + 11;
+		float[] r = new float[2];
+		int again = -1;
+		for (int f = 0; f < 60 * 22; f++) {
+			boolean pouring = f < 60 * 10 || f >= 60 * 15;
+			if (f == 60 * 10) {
+				// The pour stops and the plateau is emptied (left alone, it drains over the edge for half a minute): the column
+				// in the air lands and stays empty for 5 s, twice its fall time.
+				for (int col = 0; col < g.pageSpans; col++) {
+					int sp = g.spanPage[t * 4] * g.pageSpans + col;
+					if (HfTileGrid.validGeo(sim.geo[sp]) && g.floorOf(sim.geo[sp]) > 30.0F) {
+						sim.depth[sp] = 0.0F;
+					}
+				}
+			}
+			if (pouring) {
+				for (int z = 14; z < 18; z++) {
+					sim.inject(t, z * tn + 4, 40.5F, 1.0F / 4.0F / 60.0F / cellA);
+				}
+			}
+			sim.frame();
+			HfMeshMirror.S s = new HfMeshMirror.S(t, g.layerAt(t, c, 40.5F), c);
+			if (f >= 60 * 15 && again < 0 && HfMeshMirror.outTo(s, 0) > 0.0F) {
+				again = f;
+			}
+			if (again >= 0 && (f - again == 36 || f - again == 240)) {
+				float[] cu = HfMeshMirror.curtainOf(s, 0);
+				r[f - again == 36 ? 0 : 1] = cu == null ? 40.0F : cu[0];
+			}
+		}
+		return r;
+	}
+
 	static boolean ledge;
 
 	/**
@@ -1745,6 +1792,14 @@ public final class HfCpuTest {
 			check(sea[0] < 0.01 && wall[0] > 0.02 && sea[1] > 0.1 && Math.abs(sea[3]) < 1.0e-3 * sea[2], String.format(
 				"over the sea: deepest water %.3f, %.2f of %.1f blocks^3 poured taken in so far, volume error %.5f (vanilla water as a plain floor: a layer %.3f deep over it)",
 				sea[0], sea[1], sea[2], sea[3], wall[0]));
+		}
+
+		System.out.println("Falls: a pour started again after a long pause falls from the top again");
+		{
+			float[] r = pourAgain();
+			check(r[0] > 30.0F && r[1] < 21.0F, String.format(
+				"20-block cliff, 10 s pour, 5 s pause, pour again: 0.6 s later the sheet ends at %.2f (ground 20; it reached the ground at once for up to 17 min after a pour), at %.2f after 4 s",
+				r[0], r[1]));
 		}
 
 		System.out.println("Growth: a flood still grows where chunks are loaded while other borders wait for theirs");

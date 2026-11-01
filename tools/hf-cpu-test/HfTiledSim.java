@@ -674,18 +674,24 @@ final class HfTiledSim {
 				float landed = 0.0F;
 				if (airVol > 0.0F) {
 					float tf = fallTime(airH);
-					airT = Math.min(airT + dt, tf + 1000.0F);
-					if (airT >= tf) {
-						landed = airVol * (float) (1.0 - Math.exp(-dt / Math.max(tf, 0.05F)));
-						if (airVol - landed < 1.0e-6F) {
-							landed = airVol;
+					if (airIn > 0.0F || airT < tf) {
+						airT = Math.min(airT + dt, tf + 1000.0F);
+						if (airIn > 0.0F && airT >= tf) {
+							landed = airVol * (float) (1.0 - Math.exp(-dt / Math.max(tf, 0.05F)));
 						}
-						airVol -= landed;
+					} else {
+						// The stream's tail lands evenly within one fall time after the pour stops (hf_depth.comp).
+						airT = Math.min(airT, 2.0F * tf) - dt;
+						landed = airT - tf > dt ? airVol * dt / (airT - tf) : airVol;
 					}
+					if (airVol - landed < 1.0e-6F) {
+						landed = airVol;
+					}
+					airVol -= landed;
 				}
 				if (airVol <= 0.0F) {
 					airVol = 0.0F;
-					airT = Math.max(airT - dt, 0.0F);
+					airT = Math.max(Math.min(airT, fallTime(airH)) - dt, 0.0F);
 				}
 				this.air[s * AIR_STRIDE] = airVol;
 				this.air[s * AIR_STRIDE + 1] = airT;

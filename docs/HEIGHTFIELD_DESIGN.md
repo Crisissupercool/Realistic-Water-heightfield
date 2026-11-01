@@ -1016,3 +1016,15 @@ ended in straight edges where its tiles ended (in game: raised rectangles of wat
   rebuild is remapped before new tiles are uploaded. Needs singleplayer (it changes blocks); tiles built on chunk load
   never capture, so ponds are only taken in where a flood arrives.
 * `/water hf stats` shows the spray particles and water drops alive (spray N/65,536, drops N/16,384).
+
+## 30. A pour that stops lands within one fall time (as built)
+
+Waterfalls reached the ground at once again on spots that had poured before. Water in the air landed a share each step
+(volume / fall time), which never empties it: after a 20-block fall stopped, its column still held water half a minute
+later, the fall clock kept running (up to the fall time + 1000 s), and a new pour there drew its sheet down to the ground at
+once. Now, once nothing flows in and the front has landed, the clock counts down from twice the fall time to once and the
+tail lands evenly over that time (a stream's last water lands one fall time after it stops). A short pour whose front is
+still falling keeps falling; an empty column counts down from the fall time, so a pour that resumes within it continues the
+column (pulsing trickles still do not restart: 0 restarts in 20 s) and later ones start from the top. CPU test (pourAgain):
+20-block cliff, 10 s pour, the plateau emptied, 5 s dry, pour again: 0.6 s later the sheet ends at 39.1 (the ground before),
+at the ground after 4 s. The mesh test's gap check skips steps whose water is only starting to fall (front under 5 cm).

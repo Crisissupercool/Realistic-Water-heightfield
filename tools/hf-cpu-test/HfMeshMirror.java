@@ -357,6 +357,12 @@ final class HfMeshMirror {
 		return worst;
 	}
 
+	/** Water just beginning to fall into b (its front less than 5 cm down): no sheet is drawn yet, and that is no gap. */
+	static boolean startingToFall(S b) {
+		int na = b.span() * HfTiledSim.AIR_STRIDE;
+		return sim.air[na] > 0.0F && HfTiledSim.fallDistance(sim.air[na + 1]) < 0.05F;
+	}
+
 	static boolean check(String name, HfCpuTest.Solid solid, int resCol, float resLevel, int frames) {
 		int C = 2;
 		g = new HfTileGrid(0, 0, 40, 96, C, 4, 0.25F, 8, 32, 32);
@@ -378,7 +384,7 @@ final class HfMeshMirror {
 					// Water on a lower step that is not drawn as one surface with ours must be reached by a sheet over the edge.
 					if (b != null && wet(b) && floorOf(b) < floorOf(a) - 0.5F) {
 						if (curtainOf(a, dir) != null) sheets++;
-						else if (outTo(a, dir) > 0.001F) gaps++;
+						else if (outTo(a, dir) > 0.001F && !startingToFall(b)) gaps++;
 					}
 					continue;
 				}
