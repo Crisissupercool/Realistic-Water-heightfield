@@ -1064,3 +1064,9 @@ and its edge is where it runs thin, not a tile border. hf_mesh.comp draws water 
 the vanilla surface instead of standing on it, and meets taken-in sea (section 32) at the same height. CPU test
 (floodIntoSea, 1 b^3/s for 60 s): a steady plume of 4.3 blocks^3, at most 4.2 cm deep, 34.6 taken in, volume exact (as a
 plain floor: 39 blocks^3, 17 cm and rising).
+
+## 34. Underwater view fixes (as built)
+
+* **Spray over the surface is hidden from below.** Seen from under the water, the spray thrown over a waterfall's foot hung
+  in the water as white sparkles. hf_probe.comp also stores how far the surface of the camera's water is above it (view
+  state z, w = 1); particle.vert hides spray particles above that height while the camera is under heightfield water.

@@ -36,6 +36,14 @@ void main() {
     }
 #endif
     vec3 rel = G.domainOrigin.xyz + p.pos.xyz * G.domainOrigin.w;
+#ifndef DROPLETS
+    // Under heightfield water (hf_probe.comp), spray over the surface is not seen through it: drawn, it hung in the water as
+    // white sparkles over every waterfall's foot.
+    if (viewState.w > 0.5 && rel.y > viewState.z) {
+        gl_Position = vec4(0.0, 0.0, -2.0, 1.0);
+        return;
+    }
+#endif
     vec3 center = (G.view * vec4(rel, 1.0)).xyz;
     float r = pc.a.x;
 #ifndef DROPLETS

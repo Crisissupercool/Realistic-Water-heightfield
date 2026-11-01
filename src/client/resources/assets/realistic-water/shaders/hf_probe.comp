@@ -1,5 +1,6 @@
 #version 450
-// Sets the shared "camera is underwater" flag when the camera is inside a wet heightfield span.
+// Sets the shared "camera is underwater" flag when the camera is inside a wet heightfield span, and how far above the camera that
+// water's surface is (z, with w = 1).
 // The CPU finds the camera's tile and column and passes that tile's span pages, so this scans one column's layers.
 #include "hf_common.glsl"
 layout(local_size_x = 1) in;
@@ -27,6 +28,9 @@ void main() {
         if (camY > g.x && camY < min(g.x + h, g.y)) {
             atomicMax(viewBits[0], floatBitsToUint(1.0));
             atomicMax(viewBits[1], floatBitsToUint(1.0));
+            // Where the water surface is above the camera (blocks), and that it is known (particle.vert hides spray above it).
+            viewBits[2] = floatBitsToUint(min(g.x + h, g.y) - camY);
+            viewBits[3] = floatBitsToUint(1.0);
             return;
         }
     }
