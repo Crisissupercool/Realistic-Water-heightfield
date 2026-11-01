@@ -210,8 +210,165 @@ final class HfWorld {
 		int tile = hf.addTile(tx, tz, t, depth);
 		if (tile != HfTileGrid.NONE) {
 			this.addSpringsIn(level, hf, tile);
+			this.vanillaWaterIn(level, hf, tile, extra, null);
 		}
 		return tile;
+	}
+
+	/** Vanilla water bodies with at most this many surface blocks are ponds a flood takes in; bigger ones are seas it drains into. */
+	static final int POND_MAX_AREA = 1024;
+
+	/**
+	 * Vanilla water whose surface lies in tile (water the heightfield does not hold counts as solid to it, see {@link #voxels}).
+	 * Flood water reaching it used to spread over its surface as a layer of its own and end in straight edges at the tile borders.
+	 * A large body (more than {@link #POND_MAX_AREA} surface blocks, or running into unloaded chunks: the sea, a lake, a river) is
+	 * a sink at its own level: its surface columns in this tile hold a fixed level a few mm over the vanilla surface, so water that
+	 * flows onto it is taken in, as a river into the sea (not saved; set again whenever the tile is built). Small bodies are put
+	 * into {@code ponds} (position -> amount, the whole pond), for the caller to capture. Water in {@code extra} (being captured
+	 * right now) is left alone.
+	 */
+	private void vanillaWaterIn(ClientLevel level, HfDomain hf, int tile, @Nullable Long2IntOpenHashMap extra,
+		@Nullable Long2IntOpenHashMap ponds) {
+		HfTileGrid g = hf.grid;
+		int x0 = g.originX + g.tileX[tile] * HfTileGrid.TILE_BLOCKS;
+		int z0 = g.originZ + g.tileZ[tile] * HfTileGrid.TILE_BLOCKS;
+		LongOpenHashSet seen = new LongOpenHashSet();
+		BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
+		for (int bz = 0; bz < HfTileGrid.TILE_BLOCKS; bz++) {
+			for (int bx = 0; bx < HfTileGrid.TILE_BLOCKS; bx++) {
+				int x = x0 + bx;
+				int z = z0 + bz;
+				int y = surfaceWater(level, g, x, z, p);
+				if (y == Integer.MIN_VALUE || seen.contains(BlockPos.asLong(x, y, z))
+					|| extra != null && extra.containsKey(BlockPos.asLong(x, y, z))) {
+					continue;
+				}
+				// The body's surface at this level, flood-filled up to POND_MAX_AREA blocks.
+				LongArrayList body = new LongArrayList();
+				boolean large = false;
+				java.util.ArrayDeque<Long> open = new java.util.ArrayDeque<>();
+				long start = BlockPos.asLong(x, y, z);
+				seen.add(start);
+				open.add(start);
+				while (!open.isEmpty()) {
+					long k = open.poll();
+					body.add(k);
+					if (body.size() > POND_MAX_AREA) {
+						large = true;
+						break;
+					}
+					for (int d = 0; d < 4; d++) {
+						int nx = BlockPos.getX(k) + HfTileGrid.DX[d];
+						int nz = BlockPos.getZ(k) + HfTileGrid.DZ[d];
+						if (!level.hasChunk(nx >> 4, nz >> 4)) {
+							large = true;
+							continue;
+						}
+						long nk = BlockPos.asLong(nx, y, nz);
+						if (!seen.contains(nk) && (extra == null || !extra.containsKey(nk)) && isVanillaWater(level.getBlockState(p.set(nx, y, nz)))) {
+							seen.add(nk);
+							open.add(nk);
+						}
+					}
+				}
+				if (large) {
+					// Its surface columns inside this tile (the capped fill may have stopped before reaching all of them): filled
+					// again, within the tile only.
+					LongOpenHashSet inTile = new LongOpenHashSet();
+					inTile.add(start);
+					open.clear();
+					open.add(start);
+					while (!open.isEmpty()) {
+						long k = open.poll();
+						int kx = BlockPos.getX(k);
+						int kz = BlockPos.getZ(k);
+						this.setBlockReservoir(g, tile, kx - x0, kz - z0, y + 1.0F + SINK_FILM, HfTileGrid.RESERVOIR_FIXED, true);
+						for (int d = 0; d < 4; d++) {
+							int nx = kx + HfTileGrid.DX[d];
+							int nz = kz + HfTileGrid.DZ[d];
+							long nk = BlockPos.asLong(nx, y, nz);
+							if (nx >= x0 && nx < x0 + HfTileGrid.TILE_BLOCKS && nz >= z0 && nz < z0 + HfTileGrid.TILE_BLOCKS
+								&& !inTile.contains(nk) && (extra == null || !extra.containsKey(nk)) && surfaceWater(level, g, nx, nz, p) == y) {
+								inTile.add(nk);
+								seen.add(nk);
+								open.add(nk);
+							}
+						}
+					}
+				} else if (ponds != null) {
+					for (long k : body) {
+						for (int wy = y; wy >= g.yMin && isVanillaWater(level.getBlockState(p.set(BlockPos.getX(k), wy, BlockPos.getZ(k)))); wy--) {
+							ponds.put(BlockPos.asLong(BlockPos.getX(k), wy, BlockPos.getZ(k)),
+								Math.clamp(level.getBlockState(p).getFluidState().getAmount(), 1, 8));
+						}
+					}
+				}
+			}
+		}
+	}
+
+	/** Depth a sink holds over the vanilla surface: below hfRenderDepth, so it is never drawn. */
+	private static final float SINK_FILM = 0.002F;
+
+	private static boolean isVanillaWater(BlockState state) {
+		return state.getBlock() == Blocks.WATER;
+	}
+
+	/** Y of the vanilla water block at the top of column (x, z) inside the height window, or Integer.MIN_VALUE. */
+	private static int surfaceWater(ClientLevel level, HfTileGrid g, int x, int z, BlockPos.MutableBlockPos p) {
+		if (!level.hasChunk(x >> 4, z >> 4)) {
+			return Integer.MIN_VALUE;
+		}
+		int y = level.getHeight(Heightmap.Types.WORLD_SURFACE, x, z) - 1;
+		return y >= g.yMin && y < g.yMax - 1 && isVanillaWater(level.getBlockState(p.set(x, y, z))) ? y : Integer.MIN_VALUE;
+	}
+
+	/**
+	 * A tile a flood grew into: small vanilla ponds in it join the flood (captured, so it can fill a valley with a pond in it
+	 * instead of flowing over the pond as over a floor). Needs singleplayer (it changes blocks). Returns the blocks captured.
+	 */
+	/** Tiles a flood grew into this frame; their ponds are taken in next frame ({@link #takeInQueuedPonds}). */
+	private final List<Integer> pondTiles = new ArrayList<>();
+
+	/**
+	 * Queues a tile a flood just grew into for {@link #takeInPonds}. Not this frame: capturing rebuilds the tile, and a rebuild is
+	 * remapped before new tiles are uploaded, so it would read the pages of a tile added this frame before they hold anything.
+	 */
+	void queuePonds(int tile) {
+		if (tile != HfTileGrid.NONE) {
+			this.pondTiles.add(tile);
+		}
+	}
+
+	/** Takes in the ponds of the tiles queued last frame. Returns the blocks captured. */
+	int takeInQueuedPonds(ClientLevel level, HfDomain hf) {
+		int n = 0;
+		for (int tile : this.pondTiles) {
+			if (tile < hf.grid.count) {
+				n += this.takeInPonds(level, hf, tile);
+			}
+		}
+		this.pondTiles.clear();
+		return n;
+	}
+
+	int takeInPonds(ClientLevel level, HfDomain hf, int tile) {
+		if (tile == HfTileGrid.NONE || !canWrite()) {
+			return 0;
+		}
+		Long2IntOpenHashMap ponds = new Long2IntOpenHashMap();
+		this.vanillaWaterIn(level, hf, tile, null, ponds);
+		if (ponds.isEmpty()) {
+			return 0;
+		}
+		HfTileGrid g = hf.grid;
+		Map<Long, int[]> tiles = new LinkedHashMap<>();
+		for (long key : ponds.keySet()) {
+			int tx = g.tileOfBlockX(BlockPos.getX(key));
+			int tz = g.tileOfBlockZ(BlockPos.getZ(key));
+			tiles.putIfAbsent(((long) tx << 32) ^ (tz & 0xFFFFFFFFL), new int[]{tx, tz});
+		}
+		return this.captureBlocks(level, hf, ponds, tiles.values())[0];
 	}
 
 	/** Springs (infinite realistic water) in a tile hold their column at the top of the block, like a vanilla source: they refill it and take back any overshoot. */
@@ -527,11 +684,24 @@ final class HfWorld {
 		if (water.isEmpty()) {
 			return "No vanilla water within " + radius + " blocks (between Y " + g.yMin + " and " + g.yMax + ")";
 		}
+		int[] r = this.captureBlocks(level, hf, water, tiles.values());
+		int reservoirs = this.captureEdges(level, hf, water, cx, cz, radius);
+		return String.format("Captured %,d water blocks into %d new tiles (%d in use), %d edge cells held at their level%s",
+			r[0], r[1], g.count, reservoirs, r[2] > 0 ? String.format("; %,d blocks left as vanilla (tile pool full)", r[2]) : "");
+	}
+
+	/**
+	 * Turns the vanilla water blocks in {@code water} (position -> amount 1..8) into realistic water the heightfield simulates:
+	 * tiles in {@code tiles} ({tx, tz}) that exist are rebuilt with those cells open and get the water injected, missing ones are
+	 * built with it. Returns {blocks captured, new tiles, blocks left vanilla because the pool is full}.
+	 */
+	private int[] captureBlocks(ClientLevel level, HfDomain hf, Long2IntOpenHashMap water, java.util.Collection<int[]> tiles) {
+		HfTileGrid g = hf.grid;
 		LongArrayList positions = new LongArrayList();
 		ByteArrayList amounts = new ByteArrayList();
 		int newTiles = 0;
 		int skipped = 0;
-		for (int[] t : tiles.values()) {
+		for (int[] t : tiles) {
 			int tile = g.slotAt(t[0], t[1]);
 			boolean fresh = tile == HfTileGrid.NONE;
 			if (!fresh) {
@@ -565,10 +735,8 @@ final class HfWorld {
 			}
 		}
 		skipped = water.size() - positions.size();
-		int reservoirs = this.captureEdges(level, hf, water, cx, cz, radius);
 		send(HfBlocksPayload.CAPTURE, positions, amounts);
-		return String.format("Captured %,d water blocks into %d new tiles (%d in use), %d edge cells held at their level%s",
-			positions.size(), newTiles, g.count, reservoirs, skipped > 0 ? String.format("; %,d blocks left as vanilla (tile pool full)", skipped) : "");
+		return new int[]{positions.size(), newTiles, skipped};
 	}
 
 	/** Columns at the edge of the capture whose water continues outside become fixed-level reservoirs. Returns the cell count. */

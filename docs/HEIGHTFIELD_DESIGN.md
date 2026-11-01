@@ -993,3 +993,22 @@ and a step drop of up to HF_AIR_MIN_DROP only counted as falling (foam), never a
   dam-break front 0.2; 90th percentile 3 b^3/s down 1:2 steps 1.0, down 1:1 steps 1.9 (99th 3.6).
   SPRAY_CHURN_MIN 8 -> 0.5, SPRAY_CHURN_RATE 0.12 -> 1.5 droplets/s per unit (1-5 a second per span on a cascade, about
   what the old cascades threw), spray strength over (churn - min) / 4 instead of / 40, FOAM_CHURN 1.5-12 -> 0.3-2.5.
+
+## 29. Floods meeting vanilla water: seas take it in, ponds join (as built)
+
+Vanilla water the heightfield does not hold counts as solid to it (section 14: captured lakes leaked into the sea
+otherwise). So a flood that reached the sea spread over the vanilla surface as a layer of its own, standing above it, and
+ended in straight edges where its tiles ended (in game: raised rectangles of water out on a lake).
+
+* **Seas are sinks.** Whenever a tile is built (`HfWorld.addTileFromBlocks`), the vanilla water whose surface lies in it is
+  flood-filled at its surface level up to `POND_MAX_AREA` (1024) blocks. A bigger body (or one running into unloaded
+  chunks: the sea, a lake, a river) gets its surface columns in the tile held at a fixed level 2 mm over the vanilla top
+  (`RESERVOIR_FIXED`, under hfRenderDepth so never drawn): water flowing onto it is taken in, as a river into the sea, and
+  never builds up there, so the flood also stops growing tile by tile across the sea. Only the columns connected to the
+  body inside the tile are marked. Not saved; set again whenever the tile is built. The reservoir pass holds 65,536 cells
+  (64 tiles of open sea).
+* **Ponds join the flood.** A body of at most 1024 surface blocks in a tile a flood grew into is captured (the capture
+  path of `/water hf capture`, factored out as `captureBlocks`), so a flood can fill a valley with a pond in it instead of
+  running over the pond as over a floor. Next frame, not the frame the tile is added: capturing rebuilds the tile, and a
+  rebuild is remapped before new tiles are uploaded. Needs singleplayer (it changes blocks); tiles built on chunk load
+  never capture, so ponds are only taken in where a flood arrives.

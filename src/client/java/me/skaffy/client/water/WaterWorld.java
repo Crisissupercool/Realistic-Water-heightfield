@@ -953,6 +953,9 @@ public final class WaterWorld {
 		int steps = 0;
 		float dt = frameDt;
 		ClientLevel level = mc.level;
+		if (running && level != null) {
+			this.hfWorld.takeInQueuedPonds(level, hf);
+		}
 		int[] dirty = grid.takeDirty();
 		int[][] grow = running && level != null
 			? grid.growthRequests(Math.max(0, WaterSettings.hfMaxNewTilesPerFrame), (tx, tz) -> HfWorld.neighborhoodLoaded(level, grid, tx, tz))
@@ -972,7 +975,8 @@ public final class WaterWorld {
 			}
 			for (int[] t : grow) {
 				// Built from the blocks: after a reload the neighbor chunk may hold water that was not imported yet.
-				this.hfWorld.addTileFromBlocks(level, hf, t[0], t[1], null);
+				// A flood grew into it: small vanilla ponds there join the flood next frame (big bodies became sinks when it was built).
+				this.hfWorld.queuePonds(this.hfWorld.addTileFromBlocks(level, hf, t[0], t[1], null));
 			}
 		}
 		// Before planning, so a player moving through sleeping water wakes it this frame.
