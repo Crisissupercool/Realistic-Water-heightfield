@@ -303,10 +303,12 @@ void main() {
         // (Rain the drops could not take stays here: of rainIn x dt, only `rained` left.)
         float h = max(old + (HF_DT * (inflow - airIn - outflow) + landed + deposited - splashed - rained) / area, 0.0);
         if (h > HF_SINK_FILM && hfSink(a.span)) {
-            int taken = int(round((h - HF_SINK_FILM) * area * 65536.0));
+            // Taken in all at once, the flood ended at the shore; never, it spread over the whole sea as a layer of its own.
+            float take = (h - HF_SINK_FILM) * (1.0 - exp(-HF_DT / HF_SINK_TIME));
+            int taken = int(round(take * area * 65536.0));
             atomicAdd(sunk, -taken);
             atomicMax(sinkPeak, (uint(min(taken, 0xFFFF)) << 16) | (a.col & 0xFFFFu));
-            h = HF_SINK_FILM;
+            h -= float(taken) / (area * 65536.0);
         }
         depth[a.span] = h;
         if (landed > 0.0) {

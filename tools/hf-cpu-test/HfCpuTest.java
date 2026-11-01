@@ -724,7 +724,7 @@ public final class HfCpuTest {
 
 	/**
 	 * A stream poured onto a slope running down into a sea (solid to the heightfield, like vanilla water, from x = 16 on; its surface
-	 * blocks are sinks when sea): {deepest water over the sea, taken in, poured, volume now + taken in - poured}.
+	 * blocks are sinks when sea): {deepest water over the sea, taken in, poured, volume now + taken in - poured, volume on it}.
 	 */
 	static double[] floodIntoSea(boolean sea) {
 		HfTileGrid g = new HfTileGrid(0, 0, 0, 96, C, L, 0.25F, 16, 64, 64);
@@ -745,7 +745,7 @@ public final class HfCpuTest {
 		int tn = g.tn;
 		float cellA = g.cell * g.cell;
 		double poured = 0.0;
-		for (int f = 0; f < 60 * 15; f++) {
+		for (int f = 0; f < 60 * 60; f++) {
 			for (int z = 12; z < 20; z++) {
 				if (sim.inject(t0, z * tn + 1, 70.5F, 1.0F / 8.0F / 60.0F / cellA)) {
 					poured += 1.0 / 8.0 / 60.0;
@@ -753,11 +753,12 @@ public final class HfCpuTest {
 			}
 			sim.frame();
 		}
-		double deepest = 0.0;
+		double deepest = 0.0, onSea = 0.0;
 		for (int c = 0; c < g.pageSpans; c++) {
 			deepest = Math.max(deepest, sim.depthAt(t1, 0, c));
+			onSea += sim.depthAt(t1, 0, c) * cellA;
 		}
-		return new double[]{deepest, sim.sunk, poured, sim.volume() + sim.dropWater() + sim.sunk - poured};
+		return new double[]{deepest, sim.sunk, poured, sim.volume() + sim.dropWater() + sim.sunk - poured, onSea};
 	}
 
 	/**
@@ -1786,12 +1787,12 @@ public final class HfCpuTest {
 				c[0], c[1], c[2], c[3], c[4]));
 		}
 
-		System.out.println("Seas: a flood running into a large body of vanilla water is taken in, not spread over it as a layer");
+		System.out.println("Seas: a flood running into a large body of vanilla water spreads over it as a plume the sea takes in");
 		{
 			double[] sea = floodIntoSea(true), wall = floodIntoSea(false);
-			check(sea[0] < 0.01 && wall[0] > 0.02 && sea[1] > 0.1 && Math.abs(sea[3]) < 1.0e-3 * sea[2], String.format(
-				"over the sea: deepest water %.3f, %.2f of %.1f blocks^3 poured taken in so far, volume error %.5f (vanilla water as a plain floor: a layer %.3f deep over it)",
-				sea[0], sea[1], sea[2], sea[3], wall[0]));
+			check(sea[4] < 0.5 * wall[4] && sea[1] > 0.1 && Math.abs(sea[3]) < 1.0e-3 * sea[2], String.format(
+				"over the sea: deepest %.3f, %.1f blocks^3 on it, %.2f of %.1f poured taken in so far, volume error %.5f (vanilla water as a plain floor: %.3f deep, %.1f blocks^3 on it)",
+				sea[0], sea[4], sea[1], sea[2], sea[3], wall[0], wall[4]));
 		}
 
 		System.out.println("Falls: a pour started again after a long pause falls from the top again");

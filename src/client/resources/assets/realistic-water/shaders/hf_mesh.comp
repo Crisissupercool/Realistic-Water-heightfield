@@ -352,7 +352,11 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce, out vec2 fl
     } else {
         h = clamp(h, lo, hiC);
     }
-    h -= HF_SURFACE_DROP * clamp(min(min(depthSum / weight, shallow), h - lo), 0.0, 1.0);
+    // Water over a sea (hfSink) lies on vanilla water drawn 1/9 under its block top: it gets the full drop, so a plume thinning
+    // out meets the vanilla surface instead of standing on it as a slab (by the share of the corner's water over the sea).
+    float overSea = (pa * float(hfSink(a.span)) + (lx ? px * float(hfSink(nx.span)) : 0.0) + (lz ? pz * float(hfSink(nz.span)) : 0.0)
+        + (ld ? pd * float(hfSink(nd.span)) : 0.0)) / weight;
+    h -= HF_SURFACE_DROP * mix(clamp(min(min(depthSum / weight, shallow), h - lo), 0.0, 1.0), 1.0, clamp(overSea, 0.0, 1.0));
     // A ramp over a step (sharers on different floors) never dips under the upper floor: at a brink the averaged corner put the
     // surface through the edge of the block, so the outer half of the block top stuck out of the water as dry grass (and
     // switched as the pool below rose and the brink turned from a sheet into a ramp). The water now drapes over the edge.

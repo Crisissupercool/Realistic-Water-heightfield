@@ -1053,3 +1053,14 @@ around where a flood runs in becomes heightfield water:
   (a sink still). Skipping points near earlier ones keeps the taken-in water's own outflow at its edge from taking in the
   next ring, and so on across the sea. A chat line reports each one. Changes blocks (the captured water becomes realistic
   water; /water hf release turns it back).
+
+## 33. River plumes: floods spread over the sea and are taken in gradually (as built)
+
+Taken in at once (section 29), a flood ended at the shore; never (before), it spread over the whole sea as a slab of its own
+with straight edges at tile borders. Now a sea takes in the water on it over HF_SINK_TIME (4 s): a flood running in spreads
+over the vanilla surface as a plume that thins out and is gone further out (river water spreads over the sea like that),
+and its edge is where it runs thin, not a tile border. hf_mesh.comp draws water over a sea with the full 1/9 surface drop
+(by the share of a corner's water over the sea): it lies on vanilla water drawn at 8/9 of its block, so a thinning plume meets
+the vanilla surface instead of standing on it, and meets taken-in sea (section 32) at the same height. CPU test
+(floodIntoSea, 1 b^3/s for 60 s): a steady plume of 4.3 blocks^3, at most 4.2 cm deep, 34.6 taken in, volume exact (as a
+plain floor: 39 blocks^3, 17 cm and rising).
