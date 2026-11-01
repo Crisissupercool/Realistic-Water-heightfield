@@ -165,6 +165,8 @@ public final class WaterSettings {
 	public static int hfDebugMesh = 0;
 	/** Turns parts of the water shading off to measure their cost (/water hf stats, composite): 1 reflection trace, 2 ripples, 4 foam, 8 wake. Add to combine. */
 	public static int hfCompositeOff = 0;
+	/** Keep the first-person eye 12 cm off the water surface (an eye at the surface sees it edge-on, a line across the screen). */
+	public static boolean hfEyeClear = true;
 	public static int hfMaxNewTilesPerFrame = 2;
 	public static float hfCfl = 0.3F;
 	/** Linear drag on the flow (per 1/60 s and per second). Low now: bed friction (hfManning) holds back thin, fast water instead. */

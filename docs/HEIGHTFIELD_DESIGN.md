@@ -1089,8 +1089,13 @@ plain floor: 39 blocks^3, 17 cm and rising).
   did keeping the surface near the eye off eye height (underwater it stuck to the head). Fading the reflection trace out
   for near-level reflected rays (tried next) broke reflections from above: seen from near the surface, nearly all reflected
   rays are near level, so trees fell back to sky and only tilted wave faces still reflected (stripes of trunks). Reverted.
-  Open; `/water set hfCompositeOff 1` (reflection trace off) tells whether the line is the trace. Minecraft's own underwater fog still applies whenever the eye is inside a realistic water block,
-  whose height is in 1/8 steps, so near the surface it can tint the view above the waterline.
+  With the reflection trace off (`/water set hfCompositeOff 1`) the line turns white (the sky fallback), so it is not the
+  trace: it is the surface itself, edge-on. Treading water holds the eye within millimetres of the surface, so the whole
+  surface out to the far shore projects onto the horizon as a line a few pixels thick. Now the camera, not the surface, is
+  kept off it: WaterWorld.eyeY (from CameraMixin, end of alignWithEntity, first person only) keeps the eye at least 12 cm
+  from the drawn surface (player sample minus hfSurfaceDrop) on the side it is on, easing out to no offset 24 cm away. It
+  changes side only when the real eye is 6 cm past the surface (a short dip), so bobbing does not flicker. hfEyeClear turns
+  it off.
 * **Currents seen from below.** The surface's ripples drift with the current (flow-mapped) from above; from below they stood
   still. The composite now decodes the flow for both and passes it to the from-below shading too.
 

@@ -168,6 +168,37 @@ public final class WaterWorld {
 		return INSTANCE;
 	}
 
+	/** Which side of the heightfield surface the first-person eye is kept on (see eyeY). */
+	private boolean eyeAbove = true;
+
+	/**
+	 * The first-person eye height to render from. Treading water holds the eye within millimetres of the surface, and a surface
+	 * at eye height is seen edge-on: a line across the screen at the horizon, as far as the water reaches (the sky or the shore
+	 * mirrored in it), which no shading can hide. So the eye is kept at least EYE_GAP off the drawn surface, on the side it is on;
+	 * it changes side only once the real eye is EYE_GAP/2 past the surface (a short dip), so bobbing does not flicker. Moving the
+	 * surface instead (tried) made it follow the head. Within 2.5 EYE_GAP of the surface the offset eases out to none.
+	 */
+	public double eyeY(double eye) {
+		float[] sm = this.hfWorld.freshPlayerSample();
+		if (!WaterSettings.hfEyeClear || sm == null || sm[4] < 0.5F || sm[3] < 0.05F) {
+			return eye;
+		}
+		final double gap = 0.12;
+		double d = eye - (sm[2] - WaterSettings.hfSurfaceDrop);
+		if (this.eyeAbove && d < -0.5 * gap) {
+			this.eyeAbove = false;
+		} else if (!this.eyeAbove && d > 0.5 * gap) {
+			this.eyeAbove = true;
+		}
+		double s = this.eyeAbove ? d : -d;
+		if (s >= 2.0 * gap) {
+			return eye;
+		}
+		// [-gap/2, 2 gap] -> [gap, 2 gap], continuous with the real eye at 2 gap.
+		double kept = gap + (s + 0.5 * gap) * 0.4;
+		return eye + ((this.eyeAbove ? kept : -kept) - d);
+	}
+
 	public static boolean isRealistic(FluidState state) {
 		return RealisticWaterFluid.isRealistic(state);
 	}
