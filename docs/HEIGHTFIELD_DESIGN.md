@@ -1086,10 +1086,10 @@ plain floor: 39 blocks^3, 17 cm and rising).
   underwater. Now, under heightfield water, a ray going up with no surface in front is fogged only up to the surface height
   (view state z). Where the surface is drawn edge-on, within ~15 cm of eye height, it mirrored the ground under it through
   hardly any water. Recolouring it did not help (water colour: a dark line; see-through: a band of unfogged ground), nor
-  did keeping the surface near the eye off eye height (underwater it stuck to the head). The line is the reflection: a
-  reflected ray running almost level finds whatever lies next to the surface on the screen at a grazing slant and switches
-  between that and the fallback (sky above, fog below) from pixel to pixel. traceReflection now fades the trace out as the
-  reflected ray turns level (|R . up| from 0.2 down to 0.03), so the fallback takes over smoothly. Minecraft's own underwater fog still applies whenever the eye is inside a realistic water block,
+  did keeping the surface near the eye off eye height (underwater it stuck to the head). Fading the reflection trace out
+  for near-level reflected rays (tried next) broke reflections from above: seen from near the surface, nearly all reflected
+  rays are near level, so trees fell back to sky and only tilted wave faces still reflected (stripes of trunks). Reverted.
+  Open; `/water set hfCompositeOff 1` (reflection trace off) tells whether the line is the trace. Minecraft's own underwater fog still applies whenever the eye is inside a realistic water block,
   whose height is in 1/8 steps, so near the surface it can tint the view above the waterline.
 * **Currents seen from below.** The surface's ripples drift with the current (flow-mapped) from above; from below they stood
   still. The composite now decodes the flow for both and passes it to the from-below shading too.
