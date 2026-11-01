@@ -1077,3 +1077,11 @@ plain floor: 39 blocks^3, 17 cm and rising).
   hardly any water: a brown line across the screen. There it fades to the water's own colour (a meniscus).
 * **Currents seen from below.** The surface's ripples drift with the current (flow-mapped) from above; from below they stood
   still. The composite now decodes the flow for both and passes it to the from-below shading too.
+
+## 35. Bigger pools (as built)
+
+A flood cascading down a mountain through caves and overhangs kept about 450 tiles awake and held all 1536 flux pages
+(stats: flux 1536/1536). Water poured elsewhere then got a tile but no flux page: it could not move, stood at its tile borders
+as walls and was never written back as blocks, so it was not swimmable. Defaults now hfMaxTiles 2048, hfMaxPages 4096,
+hfMaxFluxPages 4096 (about 490 MB of pools, was about 290). The real fix for very large floods is evicting tiles far from
+the player that are settled (backlog: pool eviction).

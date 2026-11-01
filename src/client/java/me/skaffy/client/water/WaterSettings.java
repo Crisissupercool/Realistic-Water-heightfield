@@ -138,11 +138,16 @@ public final class WaterSettings {
 	public static int hfLayers = 4;
 	public static float hfMinOpening = 0.25F;
 	/** Tiles of 16x16 blocks; with hfMaxPages and hfMaxFluxPages read when a flood starts. */
-	public static int hfMaxTiles = 1024;
-	/** Span pages: one per used layer of a tile, 12 B per span (12 KB per page at 2 cells per block). */
-	public static int hfMaxPages = 2048;
-	/** Flux pages, only held by tiles being simulated: 32 B per span (32 KB per page). */
-	public static int hfMaxFluxPages = 1536;
+	public static int hfMaxTiles = 2048;
+	/** Span pages: one per used layer of a tile, about 36 B per span with air, foliage and deposits (36 KB per page at 2 cells per block). */
+	public static int hfMaxPages = 4096;
+	/**
+	 * Flux pages, only held by tiles being simulated (one per layer): 48 B per span with foam and momentum (48 KB per page). A flood
+	 * cascading down a mountain kept about 450 tiles awake through caves and overhangs and held all 1536: water poured elsewhere
+	 * then could not move and stood at its tile borders as walls (and was never written back, so not swimmable). With 4096 the
+	 * pools take about 490 MB.
+	 */
+	public static int hfMaxFluxPages = 4096;
 	/** Quads in the shared heightfield surface mesh (80 B each). */
 	public static int hfMaxQuads = 400_000;
 	/** The heightfield owns realistic water: chunk loads, placed water and springs go to it instead of the particle simulation. */
