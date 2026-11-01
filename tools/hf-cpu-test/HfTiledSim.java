@@ -65,6 +65,9 @@ final class HfTiledSim {
 	float manning = 0.02F;
 	/** Momentum advection on (false: the old solver, for comparison). */
 	boolean advect = true;
+	/** Mirror of HF_SINK_FILM, and the water seas took in so far (blocks^3). */
+	static final float SINK_FILM = 0.002F;
+	double sunk;
 	final int foamHalf;
 	int foamRead;
 	float foamLife = 1.5F;
@@ -152,7 +155,7 @@ final class HfTiledSim {
 	}
 
 	float[] foliageOf(int s) {
-		int f = this.foliage[s];
+		int f = this.foliage[s] & 0x7FFFFFFF;
 		return f == 0 ? new float[]{1.0F, 0.0F} : new float[]{(f & 0xFFFF) - 1 + this.g.yMin, (f >>> 16) - 1 + this.g.yMin};
 	}
 
@@ -706,6 +709,11 @@ final class HfTiledSim {
 					}
 				}
 				float nh = Math.max(old + (dt * (in - airIn - out) + landed + deposited - splashed - rained) / area, 0.0F);
+				if (nh > SINK_FILM && (this.foliage[s] & HfTileGrid.SINK) != 0) {
+					// A sea takes it in (hf_depth.comp hfSink).
+					this.sunk += (double) (nh - SINK_FILM) * area;
+					nh = SINK_FILM;
+				}
 				this.depth[s] = nh;
 				if (landed > 0.0F) {
 					momR += landed / dt * (float) (AIR_TERMINAL * Math.tanh(AIR_G * fallTime(airH) / AIR_TERMINAL));

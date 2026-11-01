@@ -1000,19 +1000,19 @@ Vanilla water the heightfield does not hold counts as solid to it (section 14: c
 otherwise). So a flood that reached the sea spread over the vanilla surface as a layer of its own, standing above it, and
 ended in straight edges where its tiles ended (in game: raised rectangles of water out on a lake).
 
-* **Seas are sinks.** Whenever a tile is built (`HfWorld.addTileFromBlocks`), the vanilla water whose surface lies in it is
-  flood-filled at its surface level up to `POND_MAX_AREA` (1024) blocks. A bigger body (or one running into unloaded
-  chunks: the sea, a lake, a river) gets its surface columns in the tile held at a fixed level 2 mm over the vanilla top
-  (`RESERVOIR_FIXED`, under hfRenderDepth so never drawn): water flowing onto it is taken in, as a river into the sea, and
-  never builds up there, so the flood also stops growing tile by tile across the sea. Only the columns connected to the
-  body inside the tile are marked. Not saved; set again whenever the tile is built. The reservoir pass holds 65,536 cells
-  (64 tiles of open sea).
+* **Seas are sinks.** A span whose floor is the top of a vanilla water block at its body's surface, in a body of more than
+  `POND_MAX_AREA` (1024) blocks at that level (or one running into unloaded chunks: the sea, a lake, a river), gets the
+  SINK bit (bit 31 of its foliage word, `HfTileGrid.SINK`, set by `Voxels.sink` when the tile is built; `HfWorld.voxels`
+  flood-fills each body once per build, memoized). The depth pass keeps it at HF_SINK_FILM (2 mm, under hfRenderDepth): water
+  flowing onto it is taken in, as a river into the sea, and counted with springs/edges in the stats. Realistic water lying on
+  the vanilla surface (flood water saved before sinks existed) is open space over it, so it drains too. The first version
+  marked sink cells as fixed-level reservoirs: after /water reload every chunk under an old flood layer became a tile, the
+  65,536-cell reservoir list overflowed, was cut in hash order, and the sinks that stayed formed stripes the water flowed
+  between. The flag has no limit and is rebuilt with the tile. CPU test (floodIntoSea): a stream running into a sea leaves
+  at most 2 mm over it (a 3.8 cm layer without), volume exact.
 * **Ponds join the flood.** A body of at most 1024 surface blocks in a tile a flood grew into is captured (the capture
   path of `/water hf capture`, factored out as `captureBlocks`), so a flood can fill a valley with a pond in it instead of
   running over the pond as over a floor. Next frame, not the frame the tile is added: capturing rebuilds the tile, and a
   rebuild is remapped before new tiles are uploaded. Needs singleplayer (it changes blocks); tiles built on chunk load
   never capture, so ponds are only taken in where a flood arrives.
-* **Seas under old flood water.** Flood water that spread over the sea before sinks existed was written back as realistic
-  water blocks on top of the vanilla surface, and read in again on every load: the top block of those columns was realistic
-  water, so no sink was set and the raised rectangles stayed. The surface search now looks down through realistic water to
-  the vanilla water under it; the sink then drains the layer on top (after /water reload or a world reload).
+* `/water hf stats` shows the spray particles and water drops alive (spray N/65,536, drops N/16,384).

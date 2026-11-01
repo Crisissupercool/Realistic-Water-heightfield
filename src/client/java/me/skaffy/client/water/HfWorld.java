@@ -159,6 +159,22 @@ final class HfWorld {
 				return level.getBlockState(p.set(bx, by, bz)).is(BlockTags.LEAVES);
 			}
 
+			/** Vanilla water at its body's surface, for bodies over POND_MAX_AREA surface blocks (memoized per body). */
+			private final it.unimi.dsi.fastutil.longs.Long2BooleanOpenHashMap seas = new it.unimi.dsi.fastutil.longs.Long2BooleanOpenHashMap();
+
+			@Override
+			public boolean sink(int bx, int by, int bz) {
+				long key = BlockPos.asLong(bx, by, bz);
+				if (open != null && open.containsKey(key) || !isVanillaWater(level.getBlockState(p.set(bx, by, bz)))
+					|| isVanillaWater(level.getBlockState(p.set(bx, by + 1, bz)))) {
+					return false;
+				}
+				if (this.seas.containsKey(key)) {
+					return this.seas.get(key);
+				}
+				return largeBody(level, bx, by, bz, open, this.seas);
+			}
+
 			/** Above the highest non-air block (the client's WORLD_SURFACE heightmap) a column is open sky; unloaded chunks stay solid. */
 			@Override
 			public int top(int bx, int bz) {
@@ -210,7 +226,6 @@ final class HfWorld {
 		int tile = hf.addTile(tx, tz, t, depth);
 		if (tile != HfTileGrid.NONE) {
 			this.addSpringsIn(level, hf, tile);
-			this.vanillaWaterIn(level, hf, tile, extra, null);
 		}
 		return tile;
 	}
@@ -219,96 +234,82 @@ final class HfWorld {
 	static final int POND_MAX_AREA = 1024;
 
 	/**
-	 * Vanilla water whose surface lies in tile (water the heightfield does not hold counts as solid to it, see {@link #voxels}).
-	 * Flood water reaching it used to spread over its surface as a layer of its own and end in straight edges at the tile borders.
-	 * A large body (more than {@link #POND_MAX_AREA} surface blocks, or running into unloaded chunks: the sea, a lake, a river) is
-	 * a sink at its own level: its surface columns in this tile hold a fixed level a few mm over the vanilla surface, so water that
-	 * flows onto it is taken in, as a river into the sea (not saved; set again whenever the tile is built). Small bodies are put
-	 * into {@code ponds} (position -> amount, the whole pond), for the caller to capture. Water in {@code extra} (being captured
-	 * right now) is left alone.
+	 * Whether the vanilla water at (x, y, z) belongs to a body with more than {@link #POND_MAX_AREA} blocks at that level (or one
+	 * running into unloaded chunks): the sea, a lake, a river. The fill's blocks are all recorded in {@code memo} with the answer.
 	 */
-	private void vanillaWaterIn(ClientLevel level, HfDomain hf, int tile, @Nullable Long2IntOpenHashMap extra,
-		@Nullable Long2IntOpenHashMap ponds) {
+	static boolean largeBody(ClientLevel level, int x, int y, int z, @Nullable Long2IntOpenHashMap skip,
+		it.unimi.dsi.fastutil.longs.Long2BooleanOpenHashMap memo) {
+		LongArrayList body = new LongArrayList();
+		LongOpenHashSet seen = new LongOpenHashSet();
+		java.util.ArrayDeque<Long> open = new java.util.ArrayDeque<>();
+		BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
+		long start = BlockPos.asLong(x, y, z);
+		seen.add(start);
+		open.add(start);
+		boolean large = false;
+		while (!open.isEmpty() && !large) {
+			long k = open.poll();
+			body.add(k);
+			if (body.size() > POND_MAX_AREA || memo.containsKey(k) && memo.get(k)) {
+				large = true;
+				break;
+			}
+			for (int d = 0; d < 4; d++) {
+				int nx = BlockPos.getX(k) + HfTileGrid.DX[d];
+				int nz = BlockPos.getZ(k) + HfTileGrid.DZ[d];
+				if (!level.hasChunk(nx >> 4, nz >> 4)) {
+					large = true;
+					break;
+				}
+				long nk = BlockPos.asLong(nx, y, nz);
+				if (!seen.contains(nk) && (skip == null || !skip.containsKey(nk)) && isVanillaWater(level.getBlockState(p.set(nx, y, nz)))) {
+					seen.add(nk);
+					open.add(nk);
+				}
+			}
+		}
+		for (long k : body) {
+			memo.put(k, large);
+		}
+		if (large) {
+			for (long k : open) {
+				memo.put(k, true);
+			}
+		}
+		return large;
+	}
+
+	/**
+	 * Small bodies of vanilla water (ponds, {@link #POND_MAX_AREA} surface blocks at most) whose surface lies in tile, all their
+	 * blocks into {@code ponds} (position -> amount). Big ones are seas (HfWorld.voxels sink, HfTileGrid.SINK).
+	 */
+	private void pondsIn(ClientLevel level, HfDomain hf, int tile, Long2IntOpenHashMap ponds) {
 		HfTileGrid g = hf.grid;
 		int x0 = g.originX + g.tileX[tile] * HfTileGrid.TILE_BLOCKS;
 		int z0 = g.originZ + g.tileZ[tile] * HfTileGrid.TILE_BLOCKS;
-		LongOpenHashSet seen = new LongOpenHashSet();
+		it.unimi.dsi.fastutil.longs.Long2BooleanOpenHashMap memo = new it.unimi.dsi.fastutil.longs.Long2BooleanOpenHashMap();
 		BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
 		for (int bz = 0; bz < HfTileGrid.TILE_BLOCKS; bz++) {
 			for (int bx = 0; bx < HfTileGrid.TILE_BLOCKS; bx++) {
 				int x = x0 + bx;
 				int z = z0 + bz;
 				int y = surfaceWater(level, g, x, z, p);
-				if (y == Integer.MIN_VALUE || seen.contains(BlockPos.asLong(x, y, z))
-					|| extra != null && extra.containsKey(BlockPos.asLong(x, y, z))) {
+				if (y == Integer.MIN_VALUE || memo.containsKey(BlockPos.asLong(x, y, z)) || largeBody(level, x, y, z, null, memo)) {
 					continue;
 				}
-				// The body's surface at this level, flood-filled up to POND_MAX_AREA blocks.
-				LongArrayList body = new LongArrayList();
-				boolean large = false;
-				java.util.ArrayDeque<Long> open = new java.util.ArrayDeque<>();
-				long start = BlockPos.asLong(x, y, z);
-				seen.add(start);
-				open.add(start);
-				while (!open.isEmpty()) {
-					long k = open.poll();
-					body.add(k);
-					if (body.size() > POND_MAX_AREA) {
-						large = true;
-						break;
+				for (var e : memo.long2BooleanEntrySet()) {
+					long k = e.getLongKey();
+					if (e.getBooleanValue() || BlockPos.getY(k) != y || ponds.containsKey(k)) {
+						continue;
 					}
-					for (int d = 0; d < 4; d++) {
-						int nx = BlockPos.getX(k) + HfTileGrid.DX[d];
-						int nz = BlockPos.getZ(k) + HfTileGrid.DZ[d];
-						if (!level.hasChunk(nx >> 4, nz >> 4)) {
-							large = true;
-							continue;
-						}
-						long nk = BlockPos.asLong(nx, y, nz);
-						if (!seen.contains(nk) && (extra == null || !extra.containsKey(nk)) && isVanillaWater(level.getBlockState(p.set(nx, y, nz)))) {
-							seen.add(nk);
-							open.add(nk);
-						}
-					}
-				}
-				if (large) {
-					// Its surface columns inside this tile (the capped fill may have stopped before reaching all of them): filled
-					// again, within the tile only.
-					LongOpenHashSet inTile = new LongOpenHashSet();
-					inTile.add(start);
-					open.clear();
-					open.add(start);
-					while (!open.isEmpty()) {
-						long k = open.poll();
-						int kx = BlockPos.getX(k);
-						int kz = BlockPos.getZ(k);
-						this.setBlockReservoir(g, tile, kx - x0, kz - z0, y + 1.0F + SINK_FILM, HfTileGrid.RESERVOIR_FIXED, true);
-						for (int d = 0; d < 4; d++) {
-							int nx = kx + HfTileGrid.DX[d];
-							int nz = kz + HfTileGrid.DZ[d];
-							long nk = BlockPos.asLong(nx, y, nz);
-							if (nx >= x0 && nx < x0 + HfTileGrid.TILE_BLOCKS && nz >= z0 && nz < z0 + HfTileGrid.TILE_BLOCKS
-								&& !inTile.contains(nk) && (extra == null || !extra.containsKey(nk)) && surfaceWater(level, g, nx, nz, p) == y) {
-								inTile.add(nk);
-								seen.add(nk);
-								open.add(nk);
-							}
-						}
-					}
-				} else if (ponds != null) {
-					for (long k : body) {
-						for (int wy = y; wy >= g.yMin && isVanillaWater(level.getBlockState(p.set(BlockPos.getX(k), wy, BlockPos.getZ(k)))); wy--) {
-							ponds.put(BlockPos.asLong(BlockPos.getX(k), wy, BlockPos.getZ(k)),
-								Math.clamp(level.getBlockState(p).getFluidState().getAmount(), 1, 8));
-						}
+					for (int wy = y; wy >= g.yMin && isVanillaWater(level.getBlockState(p.set(BlockPos.getX(k), wy, BlockPos.getZ(k)))); wy--) {
+						ponds.put(BlockPos.asLong(BlockPos.getX(k), wy, BlockPos.getZ(k)),
+							Math.clamp(level.getBlockState(p).getFluidState().getAmount(), 1, 8));
 					}
 				}
 			}
 		}
 	}
-
-	/** Depth a sink holds over the vanilla surface: below hfRenderDepth, so it is never drawn. */
-	private static final float SINK_FILM = 0.002F;
 
 	private static boolean isVanillaWater(BlockState state) {
 		return state.getBlock() == Blocks.WATER;
@@ -364,7 +365,7 @@ final class HfWorld {
 			return 0;
 		}
 		Long2IntOpenHashMap ponds = new Long2IntOpenHashMap();
-		this.vanillaWaterIn(level, hf, tile, null, ponds);
+		this.pondsIn(level, hf, tile, ponds);
 		if (ponds.isEmpty()) {
 			return 0;
 		}

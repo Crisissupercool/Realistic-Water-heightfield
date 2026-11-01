@@ -9,6 +9,10 @@ layout(std430, binding = 2) buffer Depth { float depth[]; };
 layout(std430, binding = 3) readonly buffer Flux { float flux[]; };
 // Two vec4 per (span page, group of 256 spans): (volume, max depth, max speed, max rate), (border bits as uint, 0, 0, 0).
 layout(std430, binding = 8) writeonly buffer Stats { vec4 stats[]; };
+// The same buffer as ints: the water sinks take in is added to the reservoir volume counter past the per-page stats (in 1/65536
+// blocks^3, as hf_reservoir.comp does), so /water hf stats counts it with springs and edges instead of as solver drift.
+layout(std430, binding = 8) buffer StatsInt { int statsInt[]; };
+shared int sunk;
 
 #define HF_DT hp.p0.x
 #define HF_CELL hp.p0.z
@@ -117,6 +121,7 @@ void main() {
     uint lid = gl_LocalInvocationIndex;
     if (lid == 0u) {
         borderBits = 0u;
+        sunk = 0;
     }
     barrier();
     HfSpan a;
@@ -283,6 +288,10 @@ void main() {
         }
         // (Rain the drops could not take stays here: of rainIn x dt, only `rained` left.)
         float h = max(old + (HF_DT * (inflow - airIn - outflow) + landed + deposited - splashed - rained) / area, 0.0);
+        if (h > HF_SINK_FILM && hfSink(a.span)) {
+            atomicAdd(sunk, -int(round((h - HF_SINK_FILM) * area * 65536.0)));
+            h = HF_SINK_FILM;
+        }
         depth[a.span] = h;
         if (landed > 0.0) {
             momLand += landed / HF_DT * HF_AIR_TERMINAL * tanh(HF_AIR_G * hfFallTime(airH) / HF_AIR_TERMINAL);
@@ -408,5 +417,9 @@ void main() {
         uint entry = page * (hfPageSpans() / 256u) + (first % hfPageSpans()) / 256u;
         stats[entry * 2u] = reduction[0];
         stats[entry * 2u + 1u] = vec4(uintBitsToFloat(borderBits), 0.0, 0.0, 0.0);
+    }
+    if (lid == 0u && sunk != 0) {
+        // The counter is the int right after the per-page stats (HfDomain.statsTail).
+        atomicAdd(statsInt[uint(stats.length() - 1) * 4u], sunk);
     }
 }

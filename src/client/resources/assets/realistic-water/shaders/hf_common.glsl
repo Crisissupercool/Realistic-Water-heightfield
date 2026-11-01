@@ -174,12 +174,18 @@ layout(std430, binding = 23) buffer Mom { uvec2 mom[]; };
 
 // Foliage in span s as (bottom, top) world heights; bottom >= top when there is none.
 vec2 hfFoliage(uint s) {
-    uint f = foliage[s];
+    uint f = foliage[s] & 0x7FFFFFFFu;
     if (f == 0u) {
         return vec2(1.0, 0.0);
     }
     return vec2(float(int(f & 0xFFFFu) - 1 + HF_YMIN), float(int(f >> 16) - 1 + HF_YMIN));
 }
+// Whether span s's floor is the surface of a sea (vanilla water too big for a flood to take in, HfTileGrid.SINK): hf_depth.comp
+// keeps it at HF_SINK_FILM, so water flowing onto it is taken in instead of spreading over the vanilla surface.
+bool hfSink(uint s) {
+    return (foliage[s] & 0x80000000u) != 0u;
+}
+const float HF_SINK_FILM = 0.002;
 const float HF_AIR_MIN_DROP = 1.5;
 const uint HF_AIR_STRIDE = 4u;
 // A thin film (deeper than HF_FILM_DRY, thinner than hfRenderDepth) is drawn while it runs (outflow above HF_FILM_DRAW,

@@ -184,6 +184,9 @@ final class HfDomain implements AutoCloseable {
 	int lastSteps;
 	float lastDt;
 	int lastRebuilt;
+	/** Spray particles and water drops alive at the last readback (/water hf stats). */
+	int liveSpray;
+	int liveDrops;
 	private boolean meshDirty = true;
 	private float meshRenderDepth = Float.NaN;
 	private int meshDebug;
@@ -728,6 +731,8 @@ final class HfDomain implements AutoCloseable {
 		ByteBuffer b = rb.mapped();
 		double fromReservoirs = b.getInt((int) this.statsTail) / 65536.0;
 		this.lastQuads = b.getInt((int) this.statsTail + 4);
+		this.liveSpray = b.getInt((int) this.statsTail + 8);
+		this.liveDrops = b.getInt((int) this.statsTail + 12);
 		this.reservoirVolume += fromReservoirs;
 		this.initialVolume += fromReservoirs;
 		HfTileGrid g = this.grid;
@@ -1039,6 +1044,10 @@ final class HfDomain implements AutoCloseable {
 		p[10].push(cb, this.push(0, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, this.sprayCur, 0, 0, 0));
 		p[10].dispatch(cb, 1, 1, 1);
 		Vk.barrier(cb);
+		// Particles alive (spray, water drops) for /water hf stats, in the stats words after the quad count (read back next frame).
+		this.sprayCounters.copyTo(cb, this.stats, SPRAY_ARGS + 4L, this.statsTail + 8L, 4L);
+		this.sprayCounters.copyTo(cb, this.stats, DROP_ARGS + 4L, this.statsTail + 12L, 4L);
+		Vk.barrier(cb);
 	}
 
 	private void copyProbe(VkCommandBuffer cb, EditProbe probe, int[] pages, int region) {
@@ -1327,8 +1336,9 @@ final class HfDomain implements AutoCloseable {
 			g.count > 0.9 * g.maxTiles || g.usedSpanPages() > 0.9 * g.maxPages || g.usedFluxPages() > 0.9 * g.maxFluxPages
 				? "  |  POOL NEARLY FULL: the flood stops growing (or tiles cannot wake) when it fills; raise hfMaxTiles / hfMaxPages / "
 					+ "hfMaxFluxPages and /water reload" : "",
-			String.format("  |  quads %,d/%,d%s", this.lastQuads, this.quadCapacity,
-				this.lastQuads > this.quadCapacity ? (this.quadCapacity >= MAX_QUADS ? " FULL at the limit, the rest is not drawn" : " full, growing") : ""),
+			String.format("  |  quads %,d/%,d%s  |  spray %,d/%,d%s, drops %,d/%,d", this.lastQuads, this.quadCapacity,
+				this.lastQuads > this.quadCapacity ? (this.quadCapacity >= MAX_QUADS ? " FULL at the limit, the rest is not drawn" : " full, growing") : "",
+				this.liveSpray, SPRAY_MAX, this.liveSpray >= SPRAY_MAX ? " FULL" : "", this.liveDrops, DROP_MAX),
 			g.foreignKeptOpen > 0 ? String.format("  |  edits kept %,d non-realistic fluid blocks open", g.foreignKeptOpen) : "");
 	}
 

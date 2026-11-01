@@ -340,6 +340,13 @@ final class HfTileGrid {
 	}
 
 	/** Foliage per span (see {@link Tile#foliage}), scanned in each span's block column between its floor and ceiling (or the sky). */
+	/**
+	 * Flag in a span's foliage word (hf_common.glsl hfSink): its floor is the surface of a sea, vanilla water too big for a flood
+	 * to take in (HfWorld.voxels). The depth pass keeps such a span at a film, so water flowing onto it is taken in, as a river into
+	 * the sea, instead of spreading over the vanilla surface as a layer of its own.
+	 */
+	static final int SINK = 0x80000000;
+
 	private int[] foliage(HfTopology.Voxels voxels, int tx, int tz, int[] geo) {
 		int ps = this.pageSpans;
 		int[] out = new int[geo.length];
@@ -366,6 +373,12 @@ final class HfTileGrid {
 					}
 					if (top > bottom) {
 						out[i] = (top - this.yMin + 1) << 16 | (bottom - this.yMin + 1);
+					}
+					// A floor on the surface of a sea (vanilla water too big to take in) drains into it.
+					float fl = this.floorOf(g);
+					int below = Math.round(fl) - 1;
+					if (Math.abs(fl - (below + 1)) < 1.0e-3F && below >= this.yMin && voxels.sink(wx, below, wz)) {
+						out[i] |= SINK;
 					}
 				}
 			}

@@ -69,6 +69,14 @@ final class HfTopology {
 		default boolean foliage(int bx, int by, int bz) {
 			return false;
 		}
+
+		/**
+		 * Whether the block is the surface of a large body of water the heightfield does not hold (the sea, a lake, a river: vanilla
+		 * water, solid to the heightfield). A span whose floor is its top takes in water flowing onto it (HfTileGrid.SINK).
+		 */
+		default boolean sink(int bx, int by, int bz) {
+			return false;
+		}
 	}
 
 	/**

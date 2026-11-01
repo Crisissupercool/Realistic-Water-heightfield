@@ -722,6 +722,44 @@ public final class HfCpuTest {
 		return r;
 	}
 
+	/**
+	 * A stream poured onto a slope running down into a sea (solid to the heightfield, like vanilla water, from x = 16 on; its surface
+	 * blocks are sinks when sea): {deepest water over the sea, taken in, poured, volume now + taken in - poured}.
+	 */
+	static double[] floodIntoSea(boolean sea) {
+		HfTileGrid g = new HfTileGrid(0, 0, 0, 96, C, L, 0.25F, 16, 64, 64);
+		long full = (1L << (C * C * C)) - 1L;
+		HfTopology.Voxels vox = new HfTopology.Voxels() {
+			public long blockVoxels(int x, int y, int z) {
+				return x < 16 ? (y < 70 - x / 4 ? full : 0L) : (y < 63 ? full : 0L);
+			}
+
+			public boolean sink(int x, int y, int z) {
+				return sea && x >= 16 && y == 62;
+			}
+		};
+		HfTiledSim sim = new HfTiledSim(g, vox);
+		sim.maxNewTiles = 0;
+		int t0 = sim.addTile(0, 0, (l, c) -> 0.0);
+		int t1 = sim.addTile(1, 0, (l, c) -> 0.0);
+		int tn = g.tn;
+		float cellA = g.cell * g.cell;
+		double poured = 0.0;
+		for (int f = 0; f < 60 * 15; f++) {
+			for (int z = 12; z < 20; z++) {
+				if (sim.inject(t0, z * tn + 1, 70.5F, 1.0F / 8.0F / 60.0F / cellA)) {
+					poured += 1.0 / 8.0 / 60.0;
+				}
+			}
+			sim.frame();
+		}
+		double deepest = 0.0;
+		for (int c = 0; c < g.pageSpans; c++) {
+			deepest = Math.max(deepest, sim.depthAt(t1, 0, c));
+		}
+		return new double[]{deepest, sim.sunk, poured, sim.volume() + sim.dropWater() + sim.sunk - poured};
+	}
+
 	static boolean ledge;
 
 	/**
@@ -1699,6 +1737,14 @@ public final class HfCpuTest {
 			check(c[0] < 0.5F && c[1] < 0.5F && c[2] < 0.5F && c[3] > 0.5F && c[4] > 1.0F, String.format(
 				"99th percentile: still lake %.2f, river 1:16 %.2f, dam-break front %.2f | 90th percentile: 3 b^3/s down 1:2 steps %.2f, down 1:1 steps %.2f",
 				c[0], c[1], c[2], c[3], c[4]));
+		}
+
+		System.out.println("Seas: a flood running into a large body of vanilla water is taken in, not spread over it as a layer");
+		{
+			double[] sea = floodIntoSea(true), wall = floodIntoSea(false);
+			check(sea[0] < 0.01 && wall[0] > 0.02 && sea[1] > 0.1 && Math.abs(sea[3]) < 1.0e-3 * sea[2], String.format(
+				"over the sea: deepest water %.3f, %.2f of %.1f blocks^3 poured taken in so far, volume error %.5f (vanilla water as a plain floor: a layer %.3f deep over it)",
+				sea[0], sea[1], sea[2], sea[3], wall[0]));
 		}
 
 		System.out.println("Growth: a flood still grows where chunks are loaded while other borders wait for theirs");
