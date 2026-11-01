@@ -161,7 +161,7 @@ final class HfDomain implements AutoCloseable {
 	 */
 	static final int SPRAY_MAX = 65_536;
 	/** Water drops (splashes, drawn as water), a second set after the spray: two halves of DROP_MAX. */
-	static final int DROP_MAX = 16_384;
+	static final int DROP_MAX = 65_536;
 	/** Byte offsets of the spray and drop draw arguments (6 vertices, count, 0, first particle) in {@link #sprayCounters}. */
 	static final long SPRAY_ARGS = 16;
 	static final long DROP_ARGS = 32;

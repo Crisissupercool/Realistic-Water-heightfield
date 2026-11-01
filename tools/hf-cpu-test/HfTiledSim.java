@@ -41,7 +41,7 @@ final class HfTiledSim {
 	/** Mirror of the water-carrying drops (hf_spray.glsl set 1): x, z relative to the grid origin, y relative to yMin, velocity, life, units. */
 	final java.util.ArrayList<float[]> drops = new java.util.ArrayList<>();
 	static final double WATER_UNIT = 1.0e-6;
-	static final int DROP_WATER = 300, DROPS_PER_STEP = 4, DROP_MAX = 16384;
+	static final int DROP_WATER = 300, DROPS_PER_STEP = 4, DROP_MAX = 65536;
 	static final float SPLASH_SHARE = 0.25F;
 	/** false: no water drops (rain through leaves falls as before, no splash), as with hfSpray 0. */
 	boolean waterDrops = true;

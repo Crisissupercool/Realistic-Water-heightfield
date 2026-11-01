@@ -1028,3 +1028,12 @@ still falling keeps falling; an empty column counts down from the fall time, so 
 column (pulsing trickles still do not restart: 0 restarts in 20 s) and later ones start from the top. CPU test (pourAgain):
 20-block cliff, 10 s pour, the plateau emptied, 5 s dry, pour again: 0.6 s later the sheet ends at 39.1 (the ground before),
 at the ground after 4 s. The mesh test's gap check skips steps whose water is only starting to fall (front under 5 cm).
+
+## 31. Spray where it is seen (as built)
+
+/water hf stats now shows the particles alive. Over a flooded mountain both pools were full (spray 65,536/65,536, drops
+16,384/16,384) with particles all over the flood, so the water in view got none, and raising hfSpray to 3 changed nothing.
+Cosmetic spray (what sheets throw where they land, droplets peeling off them, the drops drawn as water there, churn spray) is
+now thrown at the full rate within 24 blocks of the camera, fading out to none at 96 (`sprayLod`, hf_spray.glsl). Water
+drops that carry water (splashes, rain through leaves) are thrown wherever the water is; their pool is 65,536 (was 16,384,
++3 MB).

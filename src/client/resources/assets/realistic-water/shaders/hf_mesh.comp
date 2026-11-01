@@ -621,6 +621,8 @@ void emitSpray(uint seed, vec2 outward, vec3 e0, vec3 e1, vec4 end0, vec4 end1, 
     // Until the falling water lands there is no foot to splash from; only the sheet itself sheds spray.
     float drop = max(0.5 * (e0.y + e1.y) - 0.5 * (end0.x + end1.x), 0.0);
     float energy = q * min(drop, 16.0) * smoothstep(0.3, 1.5, drop);
+    // Only near the camera (sprayLod), as many as there is room for there.
+    energy *= sprayLod(0.5 * (e0 + e1));
     if (energy <= 1.0e-4) {
         return;
     }

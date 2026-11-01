@@ -11,7 +11,7 @@ layout(std430, binding = 17) buffer Spray { Particle spray[]; };
 layout(std430, binding = 18) buffer SprayCount { uint sprayCount[]; };
 
 const uint SPRAY_MAX = 65536u;
-const uint DROP_MAX = 16384u;
+const uint DROP_MAX = 65536u;
 const uint SET_SPRAY = 0u;
 const uint SET_DROPS = 1u;
 const float SPRAY_DROPLET = 0.0;
@@ -38,6 +38,14 @@ uint sprayHash(uint x) {
 float sprayRand(inout uint s) {
     s = sprayHash(s + 0x9e3779b9u);
     return float(s >> 8) * (1.0 / 16777216.0);
+}
+
+// Spray is only seen near the camera: thrown at the full rate within SPRAY_RANGE.x blocks of it, none past SPRAY_RANGE.y. Over a
+// whole flooded mountain the spray (and the drops) pools were full all the time with droplets far away, and the water in view
+// got none; the multiplier hfSpray changed nothing. Water drops that carry water are thrown wherever the water is.
+const vec2 SPRAY_RANGE = vec2(24.0, 96.0);
+float sprayLod(vec3 p) {
+    return 1.0 - smoothstep(SPRAY_RANGE.x, SPRAY_RANGE.y, length(G.domainOrigin.xyz + p));
 }
 
 bool particleAdd(uint which, uint into, vec3 p, vec3 v, float life, float w) {

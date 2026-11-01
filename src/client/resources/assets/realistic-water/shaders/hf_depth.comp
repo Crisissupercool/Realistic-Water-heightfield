@@ -332,9 +332,10 @@ void main() {
         if (HF_SPRAY_SCALE > 0.0 && churnA > SPRAY_CHURN_MIN && h > 0.03) {
             // Churning water throws droplets up and along with the current.
             uint s = sprayHash(a.span * 2654435761u ^ HF_SPRAY_SEED);
-            int n = int(min(SPRAY_CHURN_RATE * (churnA - SPRAY_CHURN_MIN) * HF_DT * HF_SPRAY_SCALE + sprayRand(s), 4.0));
+            vec2 origin = vec2(tileInfo[a.tile * 4u + 1u].xy * HF_TN + hfColumn(a.col)) * HF_CELL;
+            float lod = sprayLod(vec3(origin.x, floorA + h - float(HF_YMIN), origin.y));
+            int n = int(min(SPRAY_CHURN_RATE * (churnA - SPRAY_CHURN_MIN) * HF_DT * HF_SPRAY_SCALE * lod + sprayRand(s), 4.0));
             if (n > 0) {
-                vec2 origin = vec2(tileInfo[a.tile * 4u + 1u].xy * HF_TN + hfColumn(a.col)) * HF_CELL;
                 vec2 current = outDir / (HF_CELL * max(h, 0.05));
                 float cs = length(current);
                 current *= cs > 8.0 ? 8.0 / cs : 1.0;
