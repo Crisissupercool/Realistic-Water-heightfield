@@ -1012,3 +1012,7 @@ ended in straight edges where its tiles ended (in game: raised rectangles of wat
   running over the pond as over a floor. Next frame, not the frame the tile is added: capturing rebuilds the tile, and a
   rebuild is remapped before new tiles are uploaded. Needs singleplayer (it changes blocks); tiles built on chunk load
   never capture, so ponds are only taken in where a flood arrives.
+* **Seas under old flood water.** Flood water that spread over the sea before sinks existed was written back as realistic
+  water blocks on top of the vanilla surface, and read in again on every load: the top block of those columns was realistic
+  water, so no sink was set and the raised rectangles stayed. The surface search now looks down through realistic water to
+  the vanilla water under it; the sink then drains the layer on top (after /water reload or a world reload).

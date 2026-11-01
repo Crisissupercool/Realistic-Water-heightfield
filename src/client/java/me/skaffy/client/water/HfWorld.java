@@ -314,12 +314,19 @@ final class HfWorld {
 		return state.getBlock() == Blocks.WATER;
 	}
 
-	/** Y of the vanilla water block at the top of column (x, z) inside the height window, or Integer.MIN_VALUE. */
+	/**
+	 * Y of the top vanilla water block of column (x, z) inside the height window, or Integer.MIN_VALUE: the top block, or the first
+	 * one under realistic water lying on it (heightfield water that spread over the sea before it was a sink, written back as
+	 * blocks and read in again on every load).
+	 */
 	private static int surfaceWater(ClientLevel level, HfTileGrid g, int x, int z, BlockPos.MutableBlockPos p) {
 		if (!level.hasChunk(x >> 4, z >> 4)) {
 			return Integer.MIN_VALUE;
 		}
 		int y = level.getHeight(Heightmap.Types.WORLD_SURFACE, x, z) - 1;
+		while (y >= g.yMin && level.getBlockState(p.set(x, y, z)).getBlock() == ModContent.REALISTIC_WATER_BLOCK) {
+			y--;
+		}
 		return y >= g.yMin && y < g.yMax - 1 && isVanillaWater(level.getBlockState(p.set(x, y, z))) ? y : Integer.MIN_VALUE;
 	}
 
