@@ -1085,11 +1085,11 @@ plain floor: 39 blocks^3, 17 cm and rising).
   every ray going up then missed it and was fogged as if the water went on to the scene, so the view above the waterline was
   underwater. Now, under heightfield water, a ray going up with no surface in front is fogged only up to the surface height
   (view state z). Where the surface is drawn edge-on, within ~15 cm of eye height, it mirrored the ground under it through
-  hardly any water: a brown line across the screen; just over it, a bright line (the sky mirrored). Shading could not hide
-  it: drawn in the water's colour it was a dark line, drawn see-through a band of unfogged ground. Now the surface is never
-  seen edge-on near the eye: mesh.vert keeps water-surface vertices within 2-4 blocks of the eye at least 12 cm off eye
-  height, on the side the water is on (G.simA.z, the surface at the player relative to the eye from the CPU's player sample;
-  simA.w = 1 when known). Walls and falling sheets are left alone; far water is untouched. Minecraft's own underwater fog still applies whenever the eye is inside a realistic water block,
+  hardly any water. Recolouring it did not help (water colour: a dark line; see-through: a band of unfogged ground), nor
+  did keeping the surface near the eye off eye height (underwater it stuck to the head). The line is the reflection: a
+  reflected ray running almost level finds whatever lies next to the surface on the screen at a grazing slant and switches
+  between that and the fallback (sky above, fog below) from pixel to pixel. traceReflection now fades the trace out as the
+  reflected ray turns level (|R . up| from 0.2 down to 0.03), so the fallback takes over smoothly. Minecraft's own underwater fog still applies whenever the eye is inside a realistic water block,
   whose height is in 1/8 steps, so near the surface it can tint the view above the waterline.
 * **Currents seen from below.** The surface's ripples drift with the current (flow-mapped) from above; from below they stood
   still. The composite now decodes the flow for both and passes it to the from-below shading too.

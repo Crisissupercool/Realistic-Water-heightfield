@@ -128,7 +128,11 @@ vec3 traceReflection(vec3 origin, vec3 R, out float hit, out float travelled) {
             vec2 edge = smoothstep(vec2(0.0), vec2(0.08), suv) * (1.0 - smoothstep(vec2(0.92), vec2(1.0), suv));
             float travel = 1.0 - smoothstep(0.6, 1.0, float(i) / 48.0);
             float away = 1.0 - smoothstep(0.1, 0.5, R.z);
-            hit = edge.x * edge.y * travel * away;
+            // A reflected ray running almost level (the surface seen near eye height, from above or below) finds whatever lies on
+            // the screen next to the surface at a grazing slant, and switches between that and the fallback from pixel to pixel:
+            // a hard line along the waterline. Fade the trace out as the ray turns level, so the fallback takes over smoothly.
+            float level = abs(dot(R, normalize(mat3(G.view) * vec3(0.0, 1.0, 0.0))));
+            hit = edge.x * edge.y * travel * away * smoothstep(0.03, 0.2, level);
             travelled = length(b - origin);
             return texture(sceneColor, suv).rgb;
         }

@@ -47,18 +47,6 @@ void main() {
     float aer = 0.0;
     vec3 n = open ? unpackHf(bits, wall, aer) : unpackNormal(bits, wall);
     vec3 rel = G.domainOrigin.xyz + v.xyz * G.domainOrigin.w;
-    // The heightfield's water surface near the eye is kept at least EYE_GAP off eye height, on the side it is on (G.simA.z: the
-    // surface at the player relative to the eye, G.simA.w = 1 when known): with the eye at the surface it was seen edge-on, a
-    // line across the screen (the sky or the ground mirrored) that no shading could hide. Only water surfaces (not walls or
-    // falling sheets), within a few blocks; it fades out by EYE_REACH.y so far water is untouched. In every pass (front and
-    // thickness), so their depths agree; the particle domains' globals leave simA.w at 0.
-    if (open && !wall && n.y > 0.5 && G.simA.w > 0.5) {
-        const float EYE_GAP = 0.12;
-        const vec2 EYE_REACH = vec2(2.0, 4.0);
-        float k = 1.0 - smoothstep(EYE_REACH.x, EYE_REACH.y, length(rel.xz));
-        float kept = G.simA.z > 0.0 ? max(rel.y, EYE_GAP) : min(rel.y, -EYE_GAP);
-        rel.y = mix(rel.y, kept, k);
-    }
     vec4 view = G.view * vec4(rel, 1.0);
     vView = view.xyz;
     vNormal = mat3(G.view) * n;
