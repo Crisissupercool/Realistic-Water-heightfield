@@ -1037,3 +1037,19 @@ Cosmetic spray (what sheets throw where they land, droplets peeling off them, th
 now thrown at the full rate within 24 blocks of the camera, fading out to none at 96 (`sprayLod`, hf_spray.glsl). Water
 drops that carry water (splashes, rain through leaves) are thrown wherever the water is; their pool is 65,536 (was 16,384,
 +3 MB).
+
+## 32. Floods running into the sea take it in around them (as built)
+
+With seas as sinks (section 29) a flood ended at the shoreline: the vanilla sea cannot show currents or foam. Now the sea
+around where a flood runs in becomes heightfield water:
+
+* The depth pass records per group of 256 spans how much its sinks took in this step and which column took the most
+  (second stats vec4: .y taken in 1/65536 blocks^3, .z packed (taken << 16 | column)). `HfDomain.readStats` turns groups
+  taking in more than SEA_INFLOW (0.5 blocks^3/s) into inflow points.
+* `HfWorld.takeInSea` (start of each frame, singleplayer) takes the strongest point that is not within 2 x SEA_RADIUS of
+  an earlier one and captures the vanilla water within SEA_RADIUS (24) blocks of it, from the surface down under any
+  realistic water lying on it (`captureSea`, the capture path of `/water hf capture`), with its edge held at the sea's level
+  (`captureEdges`). The flood then flows on into it with currents, foam and its plunge; the vanilla sea further out stays
+  (a sink still). Skipping points near earlier ones keeps the taken-in water's own outflow at its edge from taking in the
+  next ring, and so on across the sea. A chat line reports each one. Changes blocks (the captured water becomes realistic
+  water; /water hf release turns it back).

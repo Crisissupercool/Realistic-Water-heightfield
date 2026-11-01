@@ -335,6 +335,74 @@ final class HfWorld {
 	 * A tile a flood grew into: small vanilla ponds in it join the flood (captured, so it can fill a valley with a pond in it
 	 * instead of flowing over the pond as over a floor). Needs singleplayer (it changes blocks). Returns the blocks captured.
 	 */
+	/** Blocks of sea around a point where a flood runs in that become heightfield water ({@link #takeInSea}). */
+	static final int SEA_RADIUS = 24;
+	/** Centres of the sea taken in so far ({x, z}); a new inflow this close to one is left to it. */
+	private final List<int[]> seaTaken = new ArrayList<>();
+
+	/**
+	 * Where a flood runs into a sea (a sink takes in its water, HfDomain.takeSeaInflows), the sea within {@link #SEA_RADIUS} of
+	 * that point becomes heightfield water, its edge held at the sea's level ({@link #captureEdges}): the flood then flows on into it
+	 * with currents and foam instead of ending at the shore, and the vanilla sea further out stays. At most one per call; inflows
+	 * within 2 x SEA_RADIUS of an earlier one are skipped (the taken-in water drains into the sea at its edge too, which must not
+	 * take in the next ring, and so on across the sea). Needs singleplayer (it changes blocks). Returns a message or null.
+	 */
+	@Nullable String takeInSea(ClientLevel level, HfDomain hf) {
+		List<double[]> inflows = hf.takeSeaInflows();
+		if (inflows.isEmpty() || !canWrite()) {
+			return null;
+		}
+		for (double[] in : inflows) {
+			int x = Mth.floor(in[0]);
+			int z = Mth.floor(in[1]);
+			boolean near = false;
+			for (int[] c : this.seaTaken) {
+				long dx = x - c[0];
+				long dz = z - c[1];
+				near |= dx * dx + dz * dz < 4L * SEA_RADIUS * SEA_RADIUS;
+			}
+			if (near) {
+				continue;
+			}
+			this.seaTaken.add(new int[]{x, z});
+			return this.captureSea(level, hf, x, z, SEA_RADIUS);
+		}
+		return null;
+	}
+
+	/**
+	 * The vanilla water within {@code radius} of (cx, cz) from the surface down (under any realistic water lying on it), captured
+	 * like {@link #capture}, with its edge held at its level where the water goes on outside.
+	 */
+	private @Nullable String captureSea(ClientLevel level, HfDomain hf, int cx, int cz, int radius) {
+		HfTileGrid g = hf.grid;
+		double r2 = (radius + 0.5) * (radius + 0.5);
+		Long2IntOpenHashMap water = new Long2IntOpenHashMap();
+		Map<Long, int[]> tiles = new LinkedHashMap<>();
+		BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
+		for (int z = cz - radius; z <= cz + radius; z++) {
+			for (int x = cx - radius; x <= cx + radius; x++) {
+				if ((double) (x - cx) * (x - cx) + (double) (z - cz) * (z - cz) > r2) {
+					continue;
+				}
+				int y = surfaceWater(level, g, x, z, p);
+				for (; y != Integer.MIN_VALUE && y >= g.yMin && isVanillaWater(level.getBlockState(p.set(x, y, z))); y--) {
+					water.put(BlockPos.asLong(x, y, z), Math.clamp(level.getBlockState(p).getFluidState().getAmount(), 1, 8));
+					int tx = g.tileOfBlockX(x);
+					int tz = g.tileOfBlockZ(z);
+					tiles.putIfAbsent(((long) tx << 32) ^ (tz & 0xFFFFFFFFL), new int[]{tx, tz});
+				}
+			}
+		}
+		if (water.isEmpty()) {
+			return null;
+		}
+		int[] r = this.captureBlocks(level, hf, water, tiles.values());
+		int edges = this.captureEdges(level, hf, water, cx, cz, radius);
+		return String.format("A flood ran into the sea at %d %d: %,d blocks of sea around it are now heightfield water (%d edge cells held at its level)",
+			cx, cz, r[0], edges);
+	}
+
 	/** Tiles a flood grew into this frame; their ponds are taken in next frame ({@link #takeInQueuedPonds}). */
 	private final List<Integer> pondTiles = new ArrayList<>();
 
@@ -846,6 +914,8 @@ final class HfWorld {
 	void close() {
 		this.warnedWindow = false;
 		this.pendingImports.clear();
+		this.seaTaken.clear();
+		this.pondTiles.clear();
 		if (this.world.heightfield != null) {
 			this.world.heightfield.close();
 			this.world.heightfield = null;

@@ -955,6 +955,10 @@ public final class WaterWorld {
 		ClientLevel level = mc.level;
 		if (running && level != null) {
 			this.hfWorld.takeInQueuedPonds(level, hf);
+			String sea = this.hfWorld.takeInSea(level, hf);
+			if (sea != null && mc.player != null) {
+				mc.player.sendSystemMessage(Component.literal(sea));
+			}
 		}
 		int[] dirty = grid.takeDirty();
 		int[][] grow = running && level != null
