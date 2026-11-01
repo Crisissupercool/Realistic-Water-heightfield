@@ -1258,7 +1258,13 @@ public final class WaterWorld {
 		putInts(b, o + 48, 0, 0, 0, 0);
 		putFloats(b, o + 64, 0.0F, -WaterSettings.gravity, 0.0F, hf.lastDt);
 		// simA: bed roughness and impact spread for hf_flux.comp / hf_depth.comp (hf_common.glsl HF_MANNING, HF_IMPACT_SPREAD).
-		putFloats(b, o + 80, Math.max(WaterSettings.hfManning, 0.0F), Math.max(WaterSettings.hfImpactSpread, 0.0F), 0.0F, 0.0F);
+		// simA.zw: the water surface at the player relative to the eye and whether it is known (mesh.vert keeps the drawn surface
+		// near the eye off eye height, so it is never seen edge-on as a line across the screen).
+		float[] at = this.hfWorld.freshPlayerSample();
+		boolean known = at != null && at[4] > 0.5F && mc.gameRenderer != null;
+		float surfaceToEye = known ? (float) (at[2] - mc.gameRenderer.gameRenderState().levelRenderState.cameraRenderState.pos.y) : 0.0F;
+		putFloats(b, o + 80, Math.max(WaterSettings.hfManning, 0.0F), Math.max(WaterSettings.hfImpactSpread, 0.0F), surfaceToEye,
+			known ? 1.0F : 0.0F);
 		// simB.w: hfRenderDepth, for the drawn-presence target hf_depth.comp keeps per span (hf_common.glsl).
 		putFloats(b, o + 96, WaterSettings.hfMaxSpeed, hf.cell, this.simTime, WaterSettings.hfRenderDepth);
 		putFloats(b, o + 3184, 0.0F, 0.0F, WaterSettings.nearCull, 0.0F);

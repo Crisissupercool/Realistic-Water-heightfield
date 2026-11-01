@@ -655,13 +655,6 @@ void main() {
             vec3 P = viewPosAt(uv, fd);
             vec4 clip = G.proj * vec4(P, 1.0);
             outDepth = clip.z / clip.w;
-            // With the eye at the surface the surface is seen edge-on: a line across the screen mirroring the ground under it
-            // through hardly any water (brown), and drawn in the water's colour still a dark line. Within ~3 cm of eye height
-            // it is see-through: what lies behind it shows (fogged over the distance below), and the line is gone.
-            if (!lavaPass && !sheet && viewState.w > 0.5) {
-                float dy = abs((mat3(G.invView) * P).y);
-                color = mix(texture(sceneColor, uv).rgb, color, smoothstep(0.005, 0.03, dy));
-            }
         } else if (viewState.w > 0.5) {
             // Under heightfield water with no surface drawn in front: a ray going up leaves the water at the surface height
             // (hf_probe.comp, view state z). With the eye a few cm under it the surface is nearer than the near plane and not drawn
@@ -682,12 +675,6 @@ void main() {
         vec3 P = viewPosAt(uv, fd);
         vec4 clip = G.proj * vec4(P, 1.0);
         outDepth = clip.z / clip.w;
-        // The eye just over the surface sees it edge-on as a bright line (the sky mirrored) across the screen: within ~3 cm of
-        // eye height it is see-through, as from below (falling sheets are not: they are seen side-on).
-        if (!lavaPass && !sheet) {
-            float dy = abs((mat3(G.invView) * P).y);
-            color = mix(texture(sceneColor, uv).rgb, color, smoothstep(0.005, 0.03, dy));
-        }
     }
 
     if (foam.a > 1e-4) {
