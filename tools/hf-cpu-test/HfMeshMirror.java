@@ -427,6 +427,8 @@ final class HfMeshMirror {
 		S n = pick(t, d);
 		if (n == null || linked(t, d, n)) return null;
 		float fl = floorOf(t);
+		// Into a space full to its ceiling (a flooded cave) water does not fall: no sheet (hf_mesh.comp).
+		if (depth(n) >= g.ceilOf(sim.geo[n.span()]) - floorOf(n) - 0.01F) return null;
 		float land = wet(n) ? surface(n) : floorOf(n);
 		// Until the falling water reaches where it lands, the sheet ends at the falling front (hf_mesh.comp).
 		int na = n.span() * HfTiledSim.AIR_STRIDE;

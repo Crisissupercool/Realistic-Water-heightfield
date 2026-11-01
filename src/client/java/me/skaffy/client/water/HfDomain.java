@@ -166,7 +166,7 @@ final class HfDomain implements AutoCloseable {
 	static final long SPRAY_ARGS = 16;
 	static final long DROP_ARGS = 32;
 	/** Side of the tile lookup grid (tiles), centered on the origin tile. Must match hf_spray_update.comp. */
-	static final int LOOKUP = 64;
+	static final int LOOKUP = 256;
 	final VkBuf spray;
 	final VkBuf sprayCounters;
 	private final VkBuf tileLookup;

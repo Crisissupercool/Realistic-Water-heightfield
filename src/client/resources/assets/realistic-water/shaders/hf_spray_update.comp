@@ -22,7 +22,9 @@ layout(std430, binding = 19) readonly buffer TileLookup { int tileLookup[]; };
 #define SPRAY_SEED uint(hp.p2.z)
 #define SPRAY_SET uint(hp.p2.w)
 
-const int LOOKUP = 64;
+// 256 tiles (2048 blocks each way from the origin tile). With 64, a flood reaching past 512 blocks from where the heightfield
+// started had spray falling through its water (never found it) and water drops that never landed (the drops pool filled up).
+const int LOOKUP = 256;
 const float TILE_BLOCKS = 16.0;
 const int AT_AIR = 0;
 const int AT_ABOVE_WATER = 1;

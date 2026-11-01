@@ -425,7 +425,13 @@ bool curtainOf(HfSpan t, int d, out float land, out float v0, out float q, out b
         return false;
     }
     float fl = hfGeo(t.span).x;
-    land = wet(n.span) ? surfaceOf(n.span) : hfGeo(n.span).x;
+    // Water flowing into a space that is full to its ceiling (a flooded cave under a lake floor) has no air to fall through: no
+    // sheet. Its "surface" was the cave's ceiling, and sheets hung from every edge over it, underwater.
+    vec2 gn = hfGeo(n.span);
+    if (depth[n.span] >= gn.y - gn.x - 0.01) {
+        return false;
+    }
+    land = wet(n.span) ? surfaceOf(n.span) : gn.x;
     float inAir = air[n.span * HF_AIR_STRIDE];
     float fallen = air[n.span * HF_AIR_STRIDE + 1u];
     if (inAir > 0.0 && fallen < hfFallTime(air[n.span * HF_AIR_STRIDE + 2u])) {

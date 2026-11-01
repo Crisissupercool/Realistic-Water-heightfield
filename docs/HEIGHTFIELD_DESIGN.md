@@ -1067,14 +1067,23 @@ plain floor: 39 blocks^3, 17 cm and rising).
 
 ## 34. Underwater view fixes (as built)
 
-* **Spray over the surface is hidden from below.** Seen from under the water, the spray thrown over a waterfall's foot hung
-  in the water as white sparkles. hf_probe.comp also stores how far the surface of the camera's water is above it (view
-  state z, w = 1); particle.vert hides spray particles above that height while the camera is under heightfield water.
+* **Spray from below.** hf_probe.comp also stores how far the surface of the camera's water is above it (view state z,
+  w = 1). Under heightfield water, particle.vert draws spray above that height only through Snell's window (within ~48.6
+  degrees of straight up); hidden everywhere, the falls overhead vanished from the window.
+* **Particles far from the origin.** Spray and drops find the water under them through a tile lookup centred on the
+  heightfield's origin tile; it covered 64 tiles (512 blocks each way). Past that, spray fell on through the water (white
+  sparkles under the surface) and water drops never landed: their water was lost when they expired, and the drops pool
+  stayed full (63,939/65,536). The lookup now covers 256 tiles (2048 blocks each way, 256 KB).
+* **No sheets into flooded caves.** A lake over a flooded cave (its span full to the ceiling, pressure head over it): the
+  mesh took the cave's ceiling as its surface and hung falling sheets from every edge of the lake floor over it, underwater
+  (wavy, partly black shapes on the walls). A sheet now needs air to fall through: none into a span full to its ceiling.
 * **Eye at the waterline.** With the eye a few cm under the surface the surface is nearer than the near plane and not drawn:
   every ray going up then missed it and was fogged as if the water went on to the scene, so the view above the waterline was
   underwater. Now, under heightfield water, a ray going up with no surface in front is fogged only up to the surface height
   (view state z). Where the surface is drawn edge-on, within ~15 cm of eye height, it mirrored the ground under it through
-  hardly any water: a brown line across the screen. There it fades to the water's own colour (a meniscus).
+  hardly any water: a brown line across the screen (and in the water's colour still a dark line). There it is see-through:
+  what lies behind it shows. Minecraft's own underwater fog still applies whenever the eye is inside a realistic water block,
+  whose height is in 1/8 steps, so near the surface it can tint the view above the waterline.
 * **Currents seen from below.** The surface's ripples drift with the current (flow-mapped) from above; from below they stood
   still. The composite now decodes the flow for both and passes it to the from-below shading too.
 

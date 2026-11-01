@@ -37,9 +37,10 @@ void main() {
 #endif
     vec3 rel = G.domainOrigin.xyz + p.pos.xyz * G.domainOrigin.w;
 #ifndef DROPLETS
-    // Under heightfield water (hf_probe.comp), spray over the surface is not seen through it: drawn, it hung in the water as
-    // white sparkles over every waterfall's foot.
-    if (viewState.w > 0.5 && rel.y > viewState.z) {
+    // Under heightfield water (hf_probe.comp), spray over the surface is seen only through Snell's window (within ~48.6 degrees
+    // of straight up); past it the surface mirrors the water below. Drawn everywhere, it hung in the water as white sparkles
+    // over every waterfall's foot; hidden everywhere, the falls overhead vanished from the window.
+    if (viewState.w > 0.5 && rel.y > viewState.z && rel.y < 0.66 * length(rel)) {
         gl_Position = vec4(0.0, 0.0, -2.0, 1.0);
         return;
     }
