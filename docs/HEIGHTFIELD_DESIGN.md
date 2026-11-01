@@ -1075,3 +1075,5 @@ plain floor: 39 blocks^3, 17 cm and rising).
   underwater. Now, under heightfield water, a ray going up with no surface in front is fogged only up to the surface height
   (view state z). Where the surface is drawn edge-on, within ~15 cm of eye height, it mirrored the ground under it through
   hardly any water: a brown line across the screen. There it fades to the water's own colour (a meniscus).
+* **Currents seen from below.** The surface's ripples drift with the current (flow-mapped) from above; from below they stood
+  still. The composite now decodes the flow for both and passes it to the from-below shading too.

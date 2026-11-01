@@ -556,11 +556,12 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
 }
 
 
-vec3 shadeSurfaceFromBelow(vec2 uv, vec3 n, float fd, vec3 deep) {
+vec3 shadeSurfaceFromBelow(vec2 uv, vec3 n, float fd, vec3 deep, vec2 flow) {
     vec3 P = viewPosAt(uv, fd);
     vec3 V = toEyeAt(uv);
     n = dot(n, V) < 0.0 ? -n : n;
-    vec3 wrinkled = rippleNormal(n, P, pixelFootprint(fd));
+    // Ripples drift with the current, as seen from above (the surface showed no current from below).
+    vec3 wrinkled = rippleNormal(n, P, pixelFootprint(fd), flow);
     n = normalize(mix(n, wrinkled, smoothstep(0.0, 0.15, dot(wrinkled, V))));
     float cosI = clamp(dot(n, V), 0.0, 1.0);
     const float ETA = 1.333;
@@ -627,11 +628,29 @@ void main() {
     vec3 color = texture(sceneColor, uv).rgb;
     float outDepth = sceneDev;
 
+    // Heightfield water packs aeration, the sheet flag and its velocity into the material value (see mesh_front.frag).
+    bool sheet = false;
+    float aer = 0.0;
+    vec2 flow = vec2(0.0);
+    float sheetDrop = 0.0;
+    if (hasFluid && matTagged && matId >= 0.125 && matId < 0.25) {
+        uint code = floatBitsToUint(matId) & 0x7FFFFFu;
+        aer = float(code & 63u) / 63.0;
+        sheet = (code & 64u) != 0u;
+        if (sheet) {
+            flow = SHEET_OUTWARD[(code >> 7) & 3u] * (float((code >> 9) & 63u) / 63.0 * 8.0);
+            sheetDrop = float((code >> 15) & 255u) / 255.0 * SHEET_NEAR;
+        } else {
+            float angle = float((code >> 7) & 255u) / 255.0 * 6.2831853;
+            flow = vec2(cos(angle), sin(angle)) * (float((code >> 15) & 255u) / 255.0 * 8.0);
+        }
+    }
+
     if (underwater) {
         vec3 deep = lavaPass ? G.scatter.rgb * (1.2 + ambient) : G.scatter.rgb * ambient;
         float visible = min(sceneDist, 160.0);
         if (hasFluid) {
-            color = lavaPass ? deep * 1.35 : shadeSurfaceFromBelow(uv, g.xyz, fd, deep);
+            color = lavaPass ? deep * 1.35 : shadeSurfaceFromBelow(uv, g.xyz, fd, deep, sheet ? vec2(0.0) : flow);
             visible = fd;
             vec3 P = viewPosAt(uv, fd);
             vec4 clip = G.proj * vec4(P, 1.0);
@@ -657,23 +676,6 @@ void main() {
         float fog = G.scatter.w * G.misc.x;
         color = color * exp(-G.absorb.rgb * visible * G.misc.x) + deep * (1.0 - exp(-fog * visible));
     } else if (hasFluid) {
-        // Heightfield water packs aeration, the sheet flag and its velocity into the material value (see mesh_front.frag).
-        bool sheet = false;
-        float aer = 0.0;
-        vec2 flow = vec2(0.0);
-        float sheetDrop = 0.0;
-        if (matTagged && matId >= 0.125 && matId < 0.25) {
-            uint code = floatBitsToUint(matId) & 0x7FFFFFu;
-            aer = float(code & 63u) / 63.0;
-            sheet = (code & 64u) != 0u;
-            if (sheet) {
-                flow = SHEET_OUTWARD[(code >> 7) & 3u] * (float((code >> 9) & 63u) / 63.0 * 8.0);
-                sheetDrop = float((code >> 15) & 255u) / 255.0 * SHEET_NEAR;
-            } else {
-                float angle = float((code >> 7) & 255u) / 255.0 * 6.2831853;
-                flow = vec2(cos(angle), sin(angle)) * (float((code >> 15) & 255u) / 255.0 * 8.0);
-            }
-        }
         color = lavaPass ? shadeAboveLava(uv, g.xyz, fd, ambient)
                          : shadeAboveWater(uv, g.xyz, fd, sceneDist, ambient, aer, sheet, flow, sheetDrop);
         vec4 clip = G.proj * vec4(viewPosAt(uv, fd), 1.0);
