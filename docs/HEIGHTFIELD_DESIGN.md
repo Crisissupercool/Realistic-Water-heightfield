@@ -1070,3 +1070,8 @@ plain floor: 39 blocks^3, 17 cm and rising).
 * **Spray over the surface is hidden from below.** Seen from under the water, the spray thrown over a waterfall's foot hung
   in the water as white sparkles. hf_probe.comp also stores how far the surface of the camera's water is above it (view
   state z, w = 1); particle.vert hides spray particles above that height while the camera is under heightfield water.
+* **Eye at the waterline.** With the eye a few cm under the surface the surface is nearer than the near plane and not drawn:
+  every ray going up then missed it and was fogged as if the water went on to the scene, so the view above the waterline was
+  underwater. Now, under heightfield water, a ray going up with no surface in front is fogged only up to the surface height
+  (view state z). Where the surface is drawn edge-on, within ~15 cm of eye height, it mirrored the ground under it through
+  hardly any water: a brown line across the screen. There it fades to the water's own colour (a meniscus).

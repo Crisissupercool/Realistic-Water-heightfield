@@ -633,8 +633,26 @@ void main() {
         if (hasFluid) {
             color = lavaPass ? deep * 1.35 : shadeSurfaceFromBelow(uv, g.xyz, fd, deep);
             visible = fd;
-            vec4 clip = G.proj * vec4(viewPosAt(uv, fd), 1.0);
+            vec3 P = viewPosAt(uv, fd);
+            vec4 clip = G.proj * vec4(P, 1.0);
             outDepth = clip.z / clip.w;
+            // With the eye at the surface the surface is seen edge-on: a line across the screen mirroring the ground under it
+            // through hardly any water (brown). Within ~15 cm of eye height it is drawn as the water's own colour, a meniscus.
+            if (!lavaPass && viewState.w > 0.5) {
+                float dy = abs((mat3(G.invView) * P).y);
+                color = mix(deep, color, smoothstep(0.03, 0.15, dy));
+            }
+        } else if (viewState.w > 0.5) {
+            // Under heightfield water with no surface drawn in front: a ray going up leaves the water at the surface height
+            // (hf_probe.comp, view state z). With the eye a few cm under it the surface is nearer than the near plane and not drawn
+            // at all, and the whole view above the waterline was fogged as if the water went on to the scene.
+            vec3 p0 = viewPosAt(uv, 1.0);
+            vec3 dirV = normalize(viewPosAt(uv, 2.0) - p0);
+            float up = (mat3(G.invView) * dirV).y;
+            if (up > 1.0e-4) {
+                float toSurface = viewState.z / up * -dirV.z;
+                visible = min(visible, max(toSurface, 0.0));
+            }
         }
         float fog = G.scatter.w * G.misc.x;
         color = color * exp(-G.absorb.rgb * visible * G.misc.x) + deep * (1.0 - exp(-fog * visible));
