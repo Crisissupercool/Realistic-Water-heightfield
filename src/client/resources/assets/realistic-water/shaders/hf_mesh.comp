@@ -95,6 +95,15 @@ bool wet(uint t) {
     return presence(t) > 0.0;
 }
 
+// Whether span t is full to its ceiling (a flooded cave or the space under an overhang, under pressure): its water touches the
+// rock everywhere, so it has no surface to draw, and it takes no part in its neighbors' surfaces. Drawn, its "surface" lay against
+// the ceiling and, averaged with the neighbors at every step of an uneven ceiling, cut through the cave as wavy sheets that
+// looked like air pockets.
+bool full(uint t) {
+    vec2 g = hfGeo(t);
+    return depth[t] >= g.y - g.x - 0.01;
+}
+
 float surfaceOf(uint t) {
     vec2 g = hfGeo(t);
     return min(g.x + depth[t], g.y);
@@ -248,9 +257,9 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce, out vec2 fl
         nd = dz;
         eXD = same && eXD;
     }
-    bool lx = eSX || (eSZ && eZD && eXD);
-    bool lz = eSZ || (eSX && eXD && eZD);
-    bool ld = (eSX && eXD) || (eSZ && eZD);
+    bool lx = (eSX || (eSZ && eZD && eXD)) && !full(nx.span);
+    bool lz = (eSZ || (eSX && eXD && eZD)) && !full(nz.span);
+    bool ld = ((eSX && eXD) || (eSZ && eZD)) && !full(nd.span);
     // The corner's water: our span and the spans linked to it, each weighted by how present its water is.
     float pa = presence(a.span);
     float px = lx ? presence(nx.span) : 0.0;
@@ -796,6 +805,9 @@ void main() {
         if (HF_DEBUG != 2) {
             shoreQuad(a, g, ivec2(cx, cz));
         }
+        return;
+    }
+    if (full(s)) {
         return;
     }
     float fl = g.x;

@@ -31,6 +31,8 @@ final class HfMeshMirror {
 		return Math.max(still, film);
 	}
 	static boolean wet(S s) { return presence(s) > 0.0F; }
+	/** Full to its ceiling (hf_mesh.comp full): not drawn, no part of its neighbors' corners. */
+	static boolean full(S s) { return s != null && depth(s) >= g.ceilOf(sim.geo[s.span()]) - floorOf(s) - 0.01F; }
 	static boolean joined(S a, S t) { return wet(t) && floorOf(t) < surface(a) && floorOf(a) < surface(t); }
 	static float outTo(S a, int dir) { int f = a.flux(); return f < 0 ? 0 : sim.flux[f + dir * 2] + sim.flux[f + dir * 2 + 1]; }
 	static boolean linked(S a, int dir, S t) {
@@ -91,7 +93,8 @@ final class HfMeshMirror {
 		boolean same = okDX && okDZ && dx.equals(dz);
 		if (okDX && (eXD || !(okDZ && eZD))) { nd = dx; eZD = same && eZD; }
 		else if (okDZ) { nd = dz; eXD = same && eXD; }
-		boolean lx = eSX || (eSZ && eZD && eXD), lz = eSZ || (eSX && eXD && eZD), ld = (eSX && eXD) || (eSZ && eZD);
+		boolean lx = (eSX || (eSZ && eZD && eXD)) && !full(nx), lz = (eSZ || (eSX && eXD && eZD)) && !full(nz),
+			ld = ((eSX && eXD) || (eSZ && eZD)) && !full(nd);
 		float pa = presence(a);
 		if (smooth) top = Math.max(top, Math.min(fl + FILM_MIN_DRAWN, ce));
 		float levelSum = pa * top, lo = fl, hiC = ce, depthSum = pa * (top - fl), shares = pa;
@@ -376,13 +379,13 @@ final class HfMeshMirror {
 		float worst = 0;
 		for (int t = 0; t < g.count; t++) for (int l = 0; l < g.layersUsed[t]; l++) for (int col = 0; col < g.pageSpans; col++) {
 			S a = new S(t, l, col);
-			if (!HfTileGrid.validGeo(sim.geo[a.span()]) || !wet(a)) continue;
+			if (!HfTileGrid.validGeo(sim.geo[a.span()]) || !wet(a) || full(a)) continue;
 			wetCount++;
 			for (int dir : new int[]{0, 2}) {
 				S b = pick(a, dir);
-				if (b == null || !linked(a, dir, b)) {
+				if (b == null || full(b) || !linked(a, dir, b)) {
 					// Water on a lower step that is not drawn as one surface with ours must be reached by a sheet over the edge.
-					if (b != null && wet(b) && floorOf(b) < floorOf(a) - 0.5F) {
+					if (b != null && wet(b) && !full(b) && floorOf(b) < floorOf(a) - 0.5F) {
 						if (curtainOf(a, dir) != null) sheets++;
 						else if (outTo(a, dir) > 0.001F && !startingToFall(b)) gaps++;
 					}

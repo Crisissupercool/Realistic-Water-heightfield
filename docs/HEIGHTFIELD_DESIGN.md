@@ -1074,6 +1074,10 @@ plain floor: 39 blocks^3, 17 cm and rising).
   heightfield's origin tile; it covered 64 tiles (512 blocks each way). Past that, spray fell on through the water (white
   sparkles under the surface) and water drops never landed: their water was lost when they expired, and the drops pool
   stayed full (63,939/65,536). The lookup now covers 256 tiles (2048 blocks each way, 256 KB).
+* **Flooded caves have no surface.** A span full to its ceiling (a flooded cave, the space under an overhang) is not drawn
+  and takes no part in its neighbors' corners (hf_mesh.comp full): its "surface" lay against the ceiling and, averaged with
+  the neighbors at every step of an uneven ceiling, cut through the cave as wavy, partly dark sheets that looked like air
+  pockets (in game: column L1 39/58 full, L2 24/38 full under a lake). The mirror's corner and mesh checks do the same.
 * **No sheets into flooded caves.** A lake over a flooded cave (its span full to the ceiling, pressure head over it): the
   mesh took the cave's ceiling as its surface and hung falling sheets from every edge of the lake floor over it, underwater
   (wavy, partly black shapes on the walls). A sheet now needs air to fall through: none into a span full to its ceiling.
@@ -1081,8 +1085,9 @@ plain floor: 39 blocks^3, 17 cm and rising).
   every ray going up then missed it and was fogged as if the water went on to the scene, so the view above the waterline was
   underwater. Now, under heightfield water, a ray going up with no surface in front is fogged only up to the surface height
   (view state z). Where the surface is drawn edge-on, within ~15 cm of eye height, it mirrored the ground under it through
-  hardly any water: a brown line across the screen (and in the water's colour still a dark line). There it is see-through:
-  what lies behind it shows. Minecraft's own underwater fog still applies whenever the eye is inside a realistic water block,
+  hardly any water: a brown line across the screen (and in the water's colour still a dark line). Within ~3 cm of eye
+  height it is now see-through, from below and from above (just over the surface it was a bright line, the sky mirrored);
+  falling sheets keep their shading. Minecraft's own underwater fog still applies whenever the eye is inside a realistic water block,
   whose height is in 1/8 steps, so near the surface it can tint the view above the waterline.
 * **Currents seen from below.** The surface's ripples drift with the current (flow-mapped) from above; from below they stood
   still. The composite now decodes the flow for both and passes it to the from-below shading too.
@@ -1094,3 +1099,6 @@ A flood cascading down a mountain through caves and overhangs kept about 450 til
 as walls and was never written back as blocks, so it was not swimmable. Defaults now hfMaxTiles 2048, hfMaxPages 4096,
 hfMaxFluxPages 4096 (about 490 MB of pools, was about 290). The real fix for very large floods is evicting tiles far from
 the player that are settled (backlog: pool eviction).
+* **Not yet: waterfalls seen from below.** Through the surface from below, the composite refracts the scene without any
+  water, and the front pass keeps only the nearest water surface, so a waterfall above the surface is not seen through it.
+  It needs a second water layer (or a refraction source that includes the heightfield's other surfaces).
