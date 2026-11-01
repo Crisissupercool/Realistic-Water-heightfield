@@ -980,3 +980,16 @@ slowly, and floods stopped at chunk borders.
   90 s (70 s with bed friction); canopy rain counts all water on the ground (all 3.000 b^3 reached it); staircase mesh:
   each step is either joined, a ramp or a sheet, never a gap; brink corner: only the requirement (it stays over the edge).
   New: fastFallFoot, stairStream, growthPastUnloaded.
+
+## 28. Spray on cascades again: churn recalibrated for the momentum solver (as built)
+
+After section 27, floods down steep mountains threw no spray. Spray (and churn foam) came from churn: inflow times the head
+it loses on the way in. Without momentum, water filled and spilled in surges, and the sideways losses were large (the old
+calibration: cascading 1/3 slope 20-50, threshold 8). With momentum it skims down smoothly, the sideways losses are near 0,
+and a step drop of up to HF_AIR_MIN_DROP only counted as falling (foam), never as churn.
+
+* Water dropping over a small step adds its drop to the churn (the head lost in the turbulence where it lands).
+* Recalibrated (HfCpuTest churnCalibration, wet spans over 3 cm): 99th percentile still lake 0.05, river 1:16 0.02,
+  dam-break front 0.2; 90th percentile 3 b^3/s down 1:2 steps 1.0, down 1:1 steps 1.9 (99th 3.6).
+  SPRAY_CHURN_MIN 8 -> 0.5, SPRAY_CHURN_RATE 0.12 -> 1.5 droplets/s per unit (1-5 a second per span on a cascade, about
+  what the old cascades threw), spray strength over (churn - min) / 4 instead of / 40, FOAM_CHURN 1.5-12 -> 0.3-2.5.

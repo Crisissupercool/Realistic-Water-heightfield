@@ -650,6 +650,7 @@ final class HfTiledSim {
 							airDrop += fi * drop;
 						} else if (drop > 0.0F) {
 							falling += fi * Math.min(drop, 4.0F);
+							churnSum += fi * Math.min(drop, 4.0F);
 						} else {
 							int bs = this.span(nb[0], nb[1], nb[2]);
 							float hb = this.depth[bs];
@@ -734,7 +735,7 @@ final class HfTiledSim {
 				float f = nh > 1.0e-4F ? Math.clamp(mass / nh, 0.0F, 1.0F) * foamKeep : 0.0F;
 				f = Math.max(f, 0.9F * smoothstep(0.0F, 6.0F, falling / area));
 				f = Math.max(f, 0.35F * smoothstep(5.0F, 12.0F, speed) * smoothstep(0.05F, 0.2F, nh));
-				f = Math.max(f, 0.85F * smoothstep(1.5F, 12.0F, churnSum / area) * smoothstep(0.02F, 0.1F, nh));
+				f = Math.max(f, 0.85F * smoothstep(0.3F, 2.5F, churnSum / area) * smoothstep(0.02F, 0.1F, nh));
 				if (nh > 0.03F) {
 					// Mirror of the obstacle wake foam (hf_depth.comp).
 					float ox = 0.0F, oz = 0.0F;

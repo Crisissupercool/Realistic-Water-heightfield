@@ -657,6 +657,71 @@ public final class HfCpuTest {
 		return new double[]{front, shallowest};
 	}
 
+	/** Churn (HfTiledSim.churn) percentile over wet spans (deeper than 3 cm) between frames from and to. */
+	static float churnPercentile(HfTiledSim sim, int from, int to, double p, Runnable each) {
+		java.util.ArrayList<Float> all = new java.util.ArrayList<>();
+		for (int f = 0; f < to; f++) {
+			each.run();
+			sim.frame();
+			if (f < from) {
+				continue;
+			}
+			for (int s = 0; s < sim.churn.length; s++) {
+				if (sim.depth[s] > 0.03F && HfTileGrid.validGeo(sim.geo[s])) {
+					all.add(sim.churn[s]);
+				}
+			}
+		}
+		java.util.Collections.sort(all);
+		return all.isEmpty() ? 0.0F : all.get((int) (all.size() * p));
+	}
+
+	/** {still lake p99, river 1:16 p99, dam-break front p99, 1:2 steps p90, 1:1 steps p90} of the churn per cell area. */
+	static float[] churnCalibration() {
+		long full = (1L << (C * C * C)) - 1L;
+		float[] r = new float[5];
+		{
+			HfTileGrid g = new HfTileGrid(0, 0, 0, 96, C, L, 0.25F, 4, 16, 16);
+			HfTiledSim sim = new HfTiledSim(g, voxels((x, y, z) -> y < 64 || (x < 1 || x > 14 || z < 1 || z > 14) && y < 67));
+			sim.maxNewTiles = 0;
+			sim.addTile(0, 0, (l, c) -> l == 0 ? 2.0 : 0.0);
+			r[0] = churnPercentile(sim, 300, 400, 0.99, () -> { });
+		}
+		{
+			HfTileGrid g = new HfTileGrid(0, 0, 0, 96, C, L, 0.25F, 64, 256, 256);
+			HfTiledSim sim = new HfTiledSim(g, voxels((x, y, z) -> (z < 6 || z > 9) ? y < 80 : y < 70 - Math.max(x, 0) / 16));
+			int tn = g.tn;
+			int t = sim.addTile(0, 0, (l, c) -> 0.0);
+			float cellA = g.cell * g.cell;
+			r[1] = churnPercentile(sim, 600, 900, 0.99, () -> {
+				for (int z = 12; z < 20; z++) {
+					sim.inject(t, z * tn + 1, 70.5F, 2.0F / 8.0F / 60.0F / cellA);
+				}
+			});
+		}
+		{
+			HfTileGrid g = new HfTileGrid(0, 0, 0, 96, C, L, 0.25F, 64, 256, 256);
+			HfTiledSim sim = new HfTiledSim(g, (x, y, z) -> y < 64 ? full : 0L);
+			int tn = g.tn;
+			sim.addTile(0, 0, (l, c) -> l == 0 && (c % tn) < 8 ? 1.0 : 0.0);
+			r[2] = churnPercentile(sim, 0, 300, 0.99, () -> { });
+		}
+		for (int run = 2; run >= 1; run--) {
+			int rr = run;
+			HfTileGrid g = new HfTileGrid(0, 0, 0, 120, C, L, 0.25F, 64, 256, 256);
+			HfTiledSim sim = new HfTiledSim(g, voxels((x, y, z) -> (z < 7 || z > 9) ? y < 100 : y < 90 - Math.max(x, 0) / rr));
+			int tn = g.tn;
+			int t = sim.addTile(0, 0, (l, c) -> 0.0);
+			float cellA = g.cell * g.cell;
+			r[5 - run] = churnPercentile(sim, 360, 600, 0.9, () -> {
+				for (int z = 14; z < 20; z++) {
+					sim.inject(t, z * tn + 1, 90.5F, 3.0F / 6.0F / 60.0F / cellA);
+				}
+			});
+		}
+		return r;
+	}
+
 	static boolean ledge;
 
 	/**
@@ -1626,6 +1691,14 @@ public final class HfCpuTest {
 			check(st[0] >= 25.0 && st[1] > 0.02, String.format(
 				"2 b^3/s down a staircase (1 down per 2 across): front %.1f blocks down in 10 s, shallowest wet cell behind the front %.3f (falling speed spread to all sides: 20 blocks, 0.009, pooling and spilling; no momentum: 2.6 deep pools next to dry steps)",
 				st[0], st[1]));
+		}
+
+		System.out.println("Churn calibration: cascades churn enough to spray (hf_depth.comp SPRAY_CHURN_MIN 0.5), calm water does not");
+		{
+			float[] c = churnCalibration();
+			check(c[0] < 0.5F && c[1] < 0.5F && c[2] < 0.5F && c[3] > 0.5F && c[4] > 1.0F, String.format(
+				"99th percentile: still lake %.2f, river 1:16 %.2f, dam-break front %.2f | 90th percentile: 3 b^3/s down 1:2 steps %.2f, down 1:1 steps %.2f",
+				c[0], c[1], c[2], c[3], c[4]));
 		}
 
 		System.out.println("Growth: a flood still grows where chunks are loaded while other borders wait for theirs");

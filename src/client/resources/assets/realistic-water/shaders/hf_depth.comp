@@ -25,13 +25,15 @@ layout(std430, binding = 8) writeonly buffer Stats { vec4 stats[]; };
 const float FOAM_FALL_RATE = 6.0;
 const vec2 FOAM_FAST = vec2(5.0, 12.0);
 const vec2 FOAM_STIR = vec2(1.5, 4.0);
-// Churn (blocks^2/s): water flowing in times the head it loses here (surface drop plus the velocity head it sheds), per cell area.
-// It is what turns water white: rapids down blocky slopes, a fast slope running into a pool (a hydraulic jump), a flood front,
-// water piling against an obstacle. Calm rivers and lakes stay near 0 (HfCpuTest churn calibration: still lake 0, spreading front
-// 3-6, cascading 1/3 slope 20-50, jump up to 90). Foam fades in over FOAM_CHURN, spray is thrown up above SPRAY_CHURN_MIN.
-const vec2 FOAM_CHURN = vec2(1.5, 12.0);
+// Churn (blocks^2/s): water flowing in times the head it loses here (surface drop plus the velocity head it sheds, or the step it
+// drops down), per cell area. It is what turns water white: water cascading down blocky slopes, a fast slope running into a pool
+// (a hydraulic jump), water piling against an obstacle. Calibrated with the momentum solver (HfCpuTest churnCalibration, 99th
+// percentile of wet spans): still lake 0.05, river 1:16 0.02, dam-break front 0.2, 3 b^3/s down 1:2 steps 1.2, down 1:1 steps
+// 3.6. (Without momentum, water filled and spilled in surges and the losses were ten times larger: threshold 8, foam 1.5-12.)
+// Foam fades in over FOAM_CHURN, spray is thrown up above SPRAY_CHURN_MIN.
+const vec2 FOAM_CHURN = vec2(0.3, 2.5);
 const float FOAM_CHURN_MAX = 0.85;
-const float SPRAY_CHURN_MIN = 8.0;
+const float SPRAY_CHURN_MIN = 0.5;
 // Water running past something standing in it (a trunk, a post, a block in a stream) foams in its lee and a little against its
 // front; the foam rides the current, so it trails downstream as a wake. Foam by flow speed (blocks/s) in the lee and in front.
 const vec2 WAKE_SPEED = vec2(0.1, 0.9);
@@ -43,8 +45,8 @@ const float BOW_FOAM = 0.3;
 // edge creeping out over flat ground (a few cm/s) from holding its tiles awake until it stops.
 const float RUNNING_FLOW = HF_FILM_DRAW;
 const float RUNNING_SPEED = 0.15;
-// Droplets per second per span and unit of churn above SPRAY_CHURN_MIN (times hfSpray).
-const float SPRAY_CHURN_RATE = 0.12;
+// Droplets per second per span and unit of churn above SPRAY_CHURN_MIN (times hfSpray): 1-5 a second on a cascade.
+const float SPRAY_CHURN_RATE = 1.5;
 // hfSpray while the water moves (0: no spray), the spray half to add to and a seed for this step.
 #define HF_SPRAY_SCALE hp.p1.y
 #define HF_SPRAY_INTO uint(hp.p2.z)
@@ -207,7 +209,10 @@ void main() {
                     airIn += i;
                     airDrop += i * drop;
                 } else if (drop > 0.0) {
+                    // Over a step: the head it drops down is lost in the turbulence where it lands (what it keeps goes on as
+                    // momentum). Water skimming down a blocky slope with momentum loses its head here, not sideways.
                     falling += i * min(drop, 4.0);
+                    churn += i * min(drop, 4.0);
                 } else {
                     float hb = depth[b.span];
                     float ub = i / (HF_CELL * max(hb, 0.05));
@@ -314,7 +319,7 @@ void main() {
                 vec2 current = outDir / (HF_CELL * max(h, 0.05));
                 float cs = length(current);
                 current *= cs > 8.0 ? 8.0 / cs : 1.0;
-                float strength = 0.5 + sqrt(clamp((churnA - SPRAY_CHURN_MIN) / 40.0, 0.0, 1.0));
+                float strength = 0.5 + sqrt(clamp((churnA - SPRAY_CHURN_MIN) / 4.0, 0.0, 1.0));
                 for (int k = 0; k < n; k++) {
                     vec3 p = vec3(origin.x + sprayRand(s) * HF_CELL, floorA + h - float(HF_YMIN) + 0.03, origin.y + sprayRand(s) * HF_CELL);
                     float az = sprayRand(s) * 6.2831853;
