@@ -85,14 +85,25 @@ bool projectToScreen(vec3 pos, out vec2 suv) {
     return all(greaterThanEqual(suv, vec2(0.0))) && all(lessThanEqual(suv, vec2(1.0)));
 }
 
-// What a reflected ray that the trace did not resolve sees: the scene far away in its direction, read off the screen where that
-// direction lies (as seen from the camera, which for distant things is the same), else the sky. The bare sky colour is the
-// brightest there is and stood out between traced reflections. Only things far away (from 8 to 32 blocks in): a bank next to
-// the camera is not on the reflected ray's path.
-vec3 distantReflection(vec3 Rv, vec3 Rw) {
-    vec3 sky = skyColor(Rw);
+// What a reflected ray from P that the trace did not resolve sees: the scene far away along it, read off the screen, else the
+// sky. The bare sky colour is the brightest there is and stood out between traced reflections. Parallax-corrected: the point
+// 32 blocks along the ray from P is projected, the scene's distance there taken, and the point that far along the ray projected
+// again. Taken from the camera instead (the scene in the ray's direction, like an environment map) the reflection slid with
+// the camera: jumping moved the mirrored shore across the water. A ray turned down (off a wave's face tilted toward the
+// camera) would meet the water itself; the sky below the horizon is grey, so it takes the sky mirrored up instead (grey
+// patches on wakes and waves).
+vec3 distantReflection(vec3 P, vec3 Rv, vec3 Rw) {
+    vec3 up = normalize(vec3(Rw.x, max(abs(Rw.y), 0.02), Rw.z));
+    vec3 sky = skyColor(up);
+    if (Rw.y < 0.0) {
+        Rv = mat3(G.view) * up;
+    }
     vec2 duv;
-    if (!projectToScreen(Rv * 4096.0, duv)) {
+    if (!projectToScreen(P + Rv * 32.0, duv)) {
+        return sky;
+    }
+    float d = length(viewPosAt(duv, linearDepth(duv, texture(sceneDepth, duv).r)) - P);
+    if (!projectToScreen(P + Rv * clamp(d, 8.0, 512.0), duv)) {
         return sky;
     }
     float far = smoothstep(8.0, 32.0, linearDepth(duv, texture(sceneDepth, duv).r));
@@ -574,7 +585,7 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
         ssr = traceReflection(P + n * 0.05, Rv, P, abs(level) > 0.5 ? upV * sign(level) : vec3(0.0), hit, travelled);
         hit *= ssrWeight;
     }
-    vec3 reflection = mix(distantReflection(Rv, Rw), ssr, hit);
+    vec3 reflection = mix(distantReflection(P, Rv, Rw), ssr, hit);
     // Diagnostics (hfCompositeOff 32 / 64): only the refracted water, only the reflection.
     if ((pc.debugOff & 32) != 0) {
         return water;

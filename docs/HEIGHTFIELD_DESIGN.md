@@ -1167,3 +1167,8 @@ Found along the way and kept (each a real fault, none of them the line):
   around their inflow (section 32). Both are gone: every vanilla water surface is a sink (HfWorld.voxels), so a flood lying on
   any vanilla water drains into it over HF_SINK_TIME as a plume (section 33), and vanilla water stays vanilla. The explicit
   capture command still converts on request.
+* **Reflection fallback with parallax.** A missed trace took the scene in the reflected direction as seen from the camera
+  (an environment map), so the mirrored shore slid across the water with the camera (jumping moved it). It now projects the
+  point 32 blocks along the ray from the surface point, takes the scene's distance there and projects the point that far
+  along the ray. A ray turned down, off a wave face tilted toward the camera (wakes, player waves), took the sky below the
+  horizon, which is grey: grey patches in the waves. It now takes the sky mirrored up (it would meet the water itself).
