@@ -214,6 +214,8 @@ vec2 rippleGradient(vec2 p, float t, float footprint) {
 // Flow mapping: two copies of a pattern carried along by the water, each restarted every cycle, half a cycle apart, and blended
 // by a triangle weight that is zero when a copy restarts, so the pattern moves with the current without ever visibly jumping.
 const float FLOW_CYCLE = 1.6;
+// Speeds (blocks/s) over which the still pattern gives way to the flow-mapped one.
+const vec2 FLOW_BLEND = vec2(0.03, 0.15);
 
 void flowPhases(vec2 flow, out vec2 off0, out vec2 off1, out float w0) {
     float t = G.simB.z / FLOW_CYCLE;
@@ -237,18 +239,23 @@ vec3 rippleNormal(vec3 nView, vec3 viewPos, float footprint, vec2 flow) {
     float grazing = max(abs(dot(nView, normalize(-viewPos))), 0.05);
     float t = G.simB.z * G.shadeA.z;
     float fp = footprint * scale / grazing;
-    vec2 grad;
-    if (dot(flow, flow) > 0.0025) {
+    // Still and flow-mapped ripples blend over FLOW_BLEND instead of switching at one speed: crossing it, the pattern changed
+    // all at once (the ripples and foam of slowing or speeding water seemed to reset).
+    float speed = length(flow);
+    float flowing = smoothstep(FLOW_BLEND.x, FLOW_BLEND.y, speed);
+    vec2 grad = vec2(0.0);
+    if (flowing < 1.0) {
+        grad = rippleGradient(world.xz * scale, t, fp) * (1.0 - flowing);
+    }
+    if (flowing > 0.0) {
         vec2 off0;
         vec2 off1;
         float w0;
         flowPhases(flow, off0, off1, w0);
-        grad = rippleGradient((world.xz - off0) * scale, t, fp) * w0
+        vec2 moving = rippleGradient((world.xz - off0) * scale, t, fp) * w0
             + rippleGradient((world.xz - off1) * scale + vec2(37.1, 11.3), t, fp) * (1.0 - w0);
         // Faster water is rougher.
-        grad *= 1.0 + 0.12 * min(length(flow), 6.0);
-    } else {
-        grad = rippleGradient(world.xz * scale, t, fp);
+        grad += moving * (1.0 + 0.12 * min(speed, 6.0)) * flowing;
     }
     vec3 g = vec3(grad.x, 0.0, grad.y) * G.shadeA.x;
     return normalize(mat3(G.view) * normalize(nWorld - (g - nWorld * dot(g, nWorld))));
@@ -424,8 +431,10 @@ float foamTexture(vec2 p, float coverage, float footprint) {
 // fast water.
 float flowFoam(vec2 p, vec2 flow, float coverage, float footprint) {
     float speed = length(flow);
-    if (speed < 0.05) {
-        return foamTexture(p, coverage, footprint);
+    float flowing = smoothstep(FLOW_BLEND.x, FLOW_BLEND.y, speed);
+    float still = flowing < 1.0 ? foamTexture(p, coverage, footprint) : 0.0;
+    if (flowing <= 0.0) {
+        return still;
     }
     vec2 off0;
     vec2 off1;
@@ -436,7 +445,7 @@ float flowFoam(vec2 p, vec2 flow, float coverage, float footprint) {
     vec2 b = p - off1 + vec2(13.7, 5.1);
     float fa = foamShape(foamField(a, smear, footprint), coverage, footprint);
     float fb = foamShape(foamField(b, smear, footprint), coverage, footprint);
-    return mix(fb, fa, w0);
+    return mix(still, mix(fb, fa, w0), flowing);
 }
 
 // Aerated water (heightfield only, aer from the material id): falling sheets get streaks running down them and a bumpy normal

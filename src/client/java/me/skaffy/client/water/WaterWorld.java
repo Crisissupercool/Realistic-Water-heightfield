@@ -986,6 +986,7 @@ public final class WaterWorld {
 		// Before planning, so a player moving through sleeping water wakes it this frame.
 		float[] stir = running ? this.hfWorld.stir(mc, hf) : new float[0];
 		if (running) {
+			grid.sleepSpeed = Math.max(WaterSettings.hfSleepSpeed, 0.0F);
 			act = grid.updateActive(frameDt, WaterSettings.hfSleepRate, WaterSettings.hfSleepSeconds, WaterSettings.hfFilmDepth,
 				WaterSettings.hfFilmSleepRate);
 			if (act.pages.length > 0) {

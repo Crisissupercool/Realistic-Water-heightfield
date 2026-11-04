@@ -239,6 +239,8 @@ public final class WaterSettings {
 	/** When the surface everywhere rises or falls slower than this (blocks/s) for {@link #hfSleepSeconds}, the heightfield stops simulating until woken. */
 	public static float hfSleepRate = 0.002F;
 	public static float hfSleepSeconds = 1.0F;
+	/** Water running faster than this (blocks/s) keeps its tile awake even when its surface stands still (a steady stream); 0 off. */
+	public static float hfSleepSpeed = 0.1F;
 	/** Tiles whose deepest water is below hfFilmDepth only hold a thin film and may sleep while still creeping slower than this. */
 	public static float hfFilmDepth = 0.1F;
 	public static float hfFilmSleepRate = 0.02F;

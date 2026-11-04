@@ -1131,3 +1131,18 @@ Found along the way and kept (each a real fault, none of them the line):
   emitTop turns a corner's normal to its quad's own where they differ by more than about 18 degrees (fully past 41), and a
   steep top foams (aeration up to 0.5 from 31 to 60 degrees).
 * **Diagnostics.** hfCompositeOff 32 shows only the refracted water, 64 only the reflection.
+
+## 38. Streams that keep running (as built)
+
+* **Steady streams fell asleep.** A tile sleeps when its surface rises or falls slower than hfSleepRate for hfSleepSeconds,
+  and a steady stream's surface stands still while its water runs. It froze in place, its flux pages went back, its drawn
+  current became zero, so the foam and ripples drifting with it stopped (and swapped to the still pattern), then jumped on
+  when something woke the tile. Water faster than hfSleepSpeed (0.1 blocks/s) now keeps its tile awake (not thin films,
+  which keep the film rule). HfTileGrid.sleepSpeed carries it; the CPU mirror leaves it at 0 (old behaviour).
+* **Still and moving patterns blend.** Ripples and foam switched from the still pattern to the flow-mapped one at a single
+  speed (0.05 blocks/s); now they blend from 0.03 to 0.15.
+* **Height window.** hfWindowBelow defaults to 1024 (down to the world's floor); it was 64, Y -1 with sea level 63, so a
+  flood running from a mountain into caves froze below it, invisible and not swimmable. Columns with more than hfLayers
+  (4) open spans still treat the lowest ones as solid (the links pack the target layer into 2 bits).
+* **Springs at vanilla height.** A spring holds its column at the block's top less hfSurfaceDrop (8/9, as vanilla draws a
+  source), not at the top: in a box's top row it held the water exactly at the rim and any wave spilled over.
