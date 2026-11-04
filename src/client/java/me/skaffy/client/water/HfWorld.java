@@ -447,7 +447,15 @@ final class HfWorld {
 		return this.captureBlocks(level, hf, ponds, tiles.values())[0];
 	}
 
-	/** Springs (infinite realistic water) in a tile hold their column at the top of the block, like a vanilla source: they refill it and take back any overshoot. */
+	/**
+	 * Springs (infinite realistic water) in a tile hold their column at a vanilla source's height: they refill it and take back any
+	 * overshoot. That is springLevel (the block's top less hfSurfaceDrop, 8/9 of the block as vanilla draws it); at the very top a
+	 * spring in a box's top row held the water exactly at the rim, and any wave spilled over.
+	 */
+	static float springLevel(int y) {
+		return y + 1.0F - Math.clamp(WaterSettings.hfSurfaceDrop, 0.0F, 0.5F);
+	}
+
 	private void addSpringsIn(ClientLevel level, HfDomain hf, int tile) {
 		HfTileGrid g = hf.grid;
 		int cx = Math.floorDiv(g.originX, 16) + g.tileX[tile];
@@ -466,7 +474,7 @@ final class HfWorld {
 				for (int bx = 0; bx < 16; bx++) {
 					BlockState state = section.getBlockState(bx, y & 15, bz);
 					if (RealisticWaterBlock.isInfinite(state) && state.getBlock() == ModContent.REALISTIC_WATER_BLOCK) {
-						this.setBlockReservoir(g, tile, bx, bz, y + 1.0F, HfTileGrid.RESERVOIR_FIXED, true);
+						this.setBlockReservoir(g, tile, bx, bz, springLevel(y), HfTileGrid.RESERVOIR_FIXED, true);
 					}
 				}
 			}
@@ -631,7 +639,7 @@ final class HfWorld {
 		}
 		int bx = pos.getX() - g.originX - tx * HfTileGrid.TILE_BLOCKS;
 		int bz = pos.getZ() - g.originZ - tz * HfTileGrid.TILE_BLOCKS;
-		this.setBlockReservoir(g, tile, bx, bz, pos.getY() + 1.0F, HfTileGrid.RESERVOIR_FIXED, added);
+		this.setBlockReservoir(g, tile, bx, bz, springLevel(pos.getY()), HfTileGrid.RESERVOIR_FIXED, added);
 		g.quiet[tile] = 0.0F;
 		return true;
 	}
