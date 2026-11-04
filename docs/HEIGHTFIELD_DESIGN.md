@@ -1159,3 +1159,13 @@ showed no water from outside. Such a span now gets a flat lid just under its cei
 that is not full water (solid, open, or shallower water, from that water's surface up), all flagged as walls: mesh_front.frag
 drops walls when the camera is under water, so from inside nothing stands against the cave's rock. From outside, opaque
 rock hides them by depth. Cost: one quad per full cell, more at its edges.
+
+## The line at eye height, found
+
+A tank of barrier blocks seen from outside showed it plainly: a bright band across the water exactly at eye height. The
+thin-film test in shadeAboveWater takes the vertical depth as the thickness along the view times |V . up|, which is near
+zero for every view near level, so any face seen at eye level counted as a film and had its normal bent 90 % of the way to
+up: a side face (the tank's wall, water against a bank, the face of a step) was shaded as level water seen edge-on, all
+reflection: sky white with the trace off, whatever the trace found with it on. That is why it followed the eye, stayed with
+the reflection trace and ripples off and with tops only (shore and step quads are steep tops), and was best seen from the
+side. Film now also needs the face within about 55 degrees of level (|n . up| from 0.35 to 0.6).
