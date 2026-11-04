@@ -18,18 +18,23 @@ float linearDepth(vec2 uv, float device) {
 
 void main() {
     vec2 uv = gl_FragCoord.xy * G.screen.zw;
-    float dist = min(-vView.z, linearDepth(uv, texture(sceneDepth, uv).r));
+    float scene = linearDepth(uv, texture(sceneDepth, uv).r);
+    float dist = min(-vView.z, scene);
     vec3 gn = cross(dFdx(vView), dFdy(vView));
     if (dot(gn, vNormal) < 0.0) {
         gn = -gn;
     }
     bool entering = dot(gn, -vView) > 0.0;
+    if (G.oceanA.x > 0.5) {
+        outThickness = entering && vWall < 0.5 ? max(scene - dist, 0.0) : 0.0;
+        return;
+    }
     if (vOpen > 0.5) {
         // Open (heightfield) shape: every face is measured from the scene depth, so an entry with no matching exit is
         // closed by the terrain behind it, while entry/exit pairs still cancel the offset. Capped to keep R32F precise.
-        float scene = min(linearDepth(uv, texture(sceneDepth, uv).r), 512.0);
-        float d = min(dist, scene);
-        outThickness = entering ? scene - d : d - scene;
+        float far = min(scene, 512.0);
+        float d = min(dist, far);
+        outThickness = entering ? far - d : d - far;
         return;
     }
     outThickness = entering ? -dist : dist;

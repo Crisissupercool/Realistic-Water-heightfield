@@ -6,15 +6,36 @@ layout(std430, binding = 2) readonly buffer P { float p[]; };
 layout(std430, binding = 3) readonly buffer Q { float q[]; };
 layout(std430, binding = 4) buffer X { float x[]; };
 layout(std430, binding = 5) buffer R { float r[]; };
+layout(std430, binding = 6) readonly buffer Partials { float partials[]; };
 layout(push_constant) uniform PC { ivec4 a; ivec4 b; } pc;
 
+shared float sdata[256];
+
 void main() {
+    float pq;
+    if (pc.a.z != 0) {
+        uint lt = gl_LocalInvocationID.x;
+        float s = 0.0;
+        for (int i = int(lt); i < pc.a.w; i += 256) {
+            s += partials[i];
+        }
+        sdata[lt] = s;
+        barrier();
+        for (uint k = 128u; k > 0u; k >>= 1) {
+            if (lt < k) {
+                sdata[lt] += sdata[lt + k];
+            }
+            barrier();
+        }
+        pq = sdata[0];
+    } else {
+        pq = scalars[pc.a.y];
+    }
     int t = int(GID_U);
     if (t >= G.boxMin.w) {
         return;
     }
     int i = cellIndex(boxCell(t));
-    float pq = scalars[pc.a.y];
     float alpha = abs(pq) > 1e-30 ? scalars[pc.a.x] / pq : 0.0;
     if (isnan(alpha) || isinf(alpha)) {
         alpha = 0.0;

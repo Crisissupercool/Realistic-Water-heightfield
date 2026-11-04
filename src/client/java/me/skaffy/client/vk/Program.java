@@ -15,7 +15,8 @@ import org.lwjgl.vulkan.VkPushConstantRange;
 import org.lwjgl.vulkan.VkWriteDescriptorSet;
 
 public abstract class Program implements AutoCloseable {
-	public static final int PUSH_SIZE = 64;
+	/** Vulkan guarantees at least 128 bytes; the composite pass uses 76 (upstream's 36 plus the heightfield wake). */
+	public static final int PUSH_SIZE = 128;
 	private static final int STAGES = VK10.VK_SHADER_STAGE_ALL;
 
 	protected final String name;

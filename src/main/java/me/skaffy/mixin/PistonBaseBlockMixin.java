@@ -1,6 +1,6 @@
 package me.skaffy.mixin;
 
-import me.skaffy.block.RealisticSandBlock;
+import me.skaffy.block.LooseLayerBlock;
 import net.minecraft.world.level.block.piston.PistonBaseBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import org.spongepowered.asm.mixin.Mixin;
@@ -11,6 +11,6 @@ import org.spongepowered.asm.mixin.injection.Redirect;
 public class PistonBaseBlockMixin {
 	@Redirect(method = "isPushable", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/level/block/state/BlockState;isAir()Z"))
 	private static boolean realisticWater$sandIsAir(BlockState state) {
-		return state.isAir() || state.getBlock() instanceof RealisticSandBlock;
+		return state.isAir() || state.getBlock() instanceof LooseLayerBlock;
 	}
 }

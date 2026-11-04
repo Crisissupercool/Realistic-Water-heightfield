@@ -1,0 +1,864 @@
+package me.skaffy.client.water;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import me.skaffy.RealisticWater;
+
+public final class WaterSettingsInfo {
+	public enum Cost {
+		NONE("None", "No effect on performance."),
+		LOW("Light", "Barely affects performance."),
+		MEDIUM("Medium", "Noticeable on big bodies of fluid."),
+		HIGH("Heavy", "Can cost a lot of frame time."),
+		EXTREME("Extreme", "The biggest performance lever in the mod.");
+
+		public final String label;
+		public final String meaning;
+
+		Cost(String label, String meaning) {
+			this.label = label;
+			this.meaning = meaning;
+		}
+	}
+
+	public enum Kind {
+		NUMBER,
+		INTEGER,
+		SWITCH,
+		TEXT
+	}
+
+	public record Info(String name, String category, String label, Kind kind, Cost cost, String costNote, String description, double min, double max,
+		double step) {
+	}
+
+	private static final Map<String, Info> BY_NAME = new LinkedHashMap<>();
+	private static final Map<String, List<String>> BY_CATEGORY = new LinkedHashMap<>();
+	private static String category = "";
+
+	private WaterSettingsInfo() {
+	}
+
+	public static List<String> categories() {
+		return List.copyOf(BY_CATEGORY.keySet());
+	}
+
+	public static List<String> names(String category) {
+		return BY_CATEGORY.getOrDefault(category, List.of());
+	}
+
+	public static Info get(String name) {
+		return BY_NAME.get(name);
+	}
+
+	public static List<String> search(String query) {
+		String q = query.toLowerCase().trim();
+		List<String> out = new ArrayList<>();
+		for (Info info : BY_NAME.values()) {
+			if (info.name.toLowerCase().contains(q) || info.label.toLowerCase().contains(q) || info.description.toLowerCase().contains(q)) {
+				out.add(info.name);
+			}
+		}
+		return out;
+	}
+
+	private static void category(String name) {
+		category = name;
+		BY_CATEGORY.putIfAbsent(name, new ArrayList<>());
+	}
+
+	private static void add(Info info) {
+		BY_NAME.put(info.name, info);
+		BY_CATEGORY.get(info.category).add(info.name);
+	}
+
+	private static void num(String name, String label, Cost cost, String costNote, double min, double max, double step, String description) {
+		add(new Info(name, category, label, Kind.NUMBER, cost, costNote, description, min, max, step));
+	}
+
+	private static void integer(String name, String label, Cost cost, String costNote, int min, int max, String description) {
+		add(new Info(name, category, label, Kind.INTEGER, cost, costNote, description, min, max, 1));
+	}
+
+	private static void toggle(String name, String label, Cost cost, String costNote, String description) {
+		add(new Info(name, category, label, Kind.SWITCH, cost, costNote, description, 0, 1, 1));
+	}
+
+	private static void text(String name, String label, Cost cost, String costNote, String description) {
+		add(new Info(name, category, label, Kind.TEXT, cost, costNote, description, 0, 0, 0));
+	}
+
+	private static final String LOOK = "Only changes a number in the shader.";
+	private static final String ONE_PASS = "Changes how much one compute pass does, not how many there are.";
+
+	static {
+		category("Water simulation");
+		toggle("vanillaWaterExchange", "Mix with vanilla water", Cost.LOW, "Checks blocks where flowing vanilla water appears.",
+			"Realistic water that runs into still vanilla water (lakes, the sea) joins it, and flowing vanilla water that reaches "
+				+ "realistic water turns into realistic water, so a vanilla stream keeps filling a realistic pool.");
+		integer("resolution", "Resolution", Cost.EXTREME, "Cells per block in each direction: 6 to 12 is 8x the cells and particles, so roughly 8x the GPU time and memory.", 1, 16,
+			"How many simulation cells fit along one block for water. Higher gives finer splashes, thinner sheets and smaller drops. Changing it rebuilds every water body.");
+		integer("boxMargin", "Box margin", Cost.MEDIUM, "Every extra cell of margin adds a shell of cells that are solved each step.", 0, 24,
+			"Empty cells kept around the water so it has room to move into before the simulated area grows.");
+		num("cfl", "CFL number", Cost.HIGH, "Lower means more substeps per frame for fast water.", 0.25, 6, 0.05,
+			"How many cells water may travel in one substep. Lower is more stable and accurate for fast flows but runs more substeps.");
+		num("maxDt", "Max substep time", Cost.HIGH, "Lower forces more substeps every frame, even for calm water.", 0.002, 0.1, 0.001,
+			"The longest one simulation substep may be, in seconds. Smaller is smoother and more stable.");
+		integer("maxStepsPerFrame", "Max substeps per frame", Cost.HIGH, "Each substep is a full simulation step, about 15-40 GPU dispatches.", 1, 32,
+			"Upper limit on substeps per frame while playing. When the limit is hit the water runs in slow motion instead of going unstable.");
+		num("flipRatio", "FLIP ratio", Cost.NONE, LOOK, 0.8, 1, 0.001,
+			"How much particles keep their own motion (FLIP) versus taking the smoothed grid velocity (PIC). Higher is splashier and livelier, lower is calmer and thicker.");
+		num("volumeCorrection", "Volume correction", Cost.NONE, ONE_PASS, 0, 6, 0.1,
+			"How hard the solver pushes apart particles that have bunched up, so water keeps its volume instead of slowly shrinking.");
+		num("maxSpeed", "Max speed", Cost.LOW, "Faster water needs more substeps to stay stable.", 1, 100, 1,
+			"Speed limit for water in blocks per second.");
+		num("gravity", "Gravity", Cost.LOW, "Stronger gravity means faster water and more substeps.", 0, 30, 0.1,
+			"Downward acceleration for water, lava and slime, in blocks per second squared. 9.81 is real-world gravity.");
+		num("filmFriction", "Film friction", Cost.NONE, LOOK, 0, 300, 1,
+			"How quickly a thin film of water on the ground stops sliding. Higher makes puddles settle faster, lower lets them spread thin.");
+		num("filmDepth", "Film depth", Cost.NONE, LOOK, 0, 1, 0.01,
+			"How shallow (in blocks) water has to be before film friction kicks in.");
+		num("strandedTime", "Stranded drop lifetime", Cost.LOW, "Longer means more stray droplets stay alive and simulated.", 0, 20, 0.1,
+			"Seconds a lone drop with few neighbours survives before it dries up.");
+		integer("strandedNeighbors", "Stranded neighbour count", Cost.LOW, "Fewer means more lone drops are kept alive.", 0, 64,
+			"A drop with fewer particles than this around it counts as stranded and starts drying up.");
+		num("fluidRestSpeed", "Rest speed", Cost.MEDIUM, "Higher lets still water go to sleep sooner, which saves its whole simulation cost.", 0, 2, 0.01,
+			"Below this speed (blocks per second) a body of water, lava or slime counts as calm.");
+		num("fluidRestTime", "Rest time", Cost.MEDIUM, "Shorter puts calm bodies to sleep sooner. 0 never sleeps, so everything is simulated every frame.", 0, 10, 0.1,
+			"Seconds a body must stay calm before it stops simulating until something disturbs it.");
+		integer("fluidRestWhitewater", "Rest foam limit", Cost.LOW, "Lets bodies with leftover foam sleep sooner.", 0, 2000,
+			"A body only goes to sleep when it has at most this many foam and spray particles left.");
+		num("sourceFill", "Spring fill", Cost.LOW, "Fuller springs add particles faster.", 0, 1, 0.01,
+			"How full a spring block (infinite water or lava) keeps itself, from empty to a full block.");
+		toggle("bucketMakesSource", "Bucket makes spring", Cost.NONE, "Currently unused.",
+			"Left over from an older version and currently has no effect.");
+
+		category("Pressure solver");
+		integer("cgIterations", "Solver iterations", Cost.HIGH, "Each iteration is a few more GPU dispatches every substep.", 1, 30,
+			"Rounds of the pressure solver per substep. More keeps water incompressible (no squishing or sinking) at a higher cost.");
+		integer("mgCoarseSweeps", "Coarse sweeps", Cost.MEDIUM, ONE_PASS, 1, 64,
+			"Smoothing sweeps on the coarsest multigrid level. More helps big, deep pools settle without bouncing.");
+		integer("solverBottomCells", "Bottom level size", Cost.MEDIUM, "Picks where the solver switches to one big single-group pass; the best value depends on the GPU.", 0, 65536,
+			"Multigrid levels at or below this many cells are solved in one workgroup. 0 turns this off.");
+		integer("solverSmallCells", "Small body size", Cost.MEDIUM, "Small bodies solved in one dispatch avoid dozens of tiny dispatches.", 0, 200000,
+			"Bodies with at most this many active cells use the single-dispatch solver.");
+		integer("extrapolationLayers", "Velocity extrapolation", Cost.LOW, "One extra pass per layer per substep.", 0, 12,
+			"How many cells the water's velocity is carried out into the air, so flying drops keep moving correctly.");
+
+		category("Whitewater and foam");
+		toggle("whitewater", "Whitewater", Cost.HIGH, "Spawns and simulates up to millions of extra foam, spray and bubble particles.",
+			"Foam on the surface, spray in the air and bubbles under water, spawned where water is fast, turbulent or breaking.");
+		num("wwTrappedAirRate", "Trapped air rate", Cost.MEDIUM, "More rate means more whitewater particles.", 0, 200, 1,
+			"How much whitewater spawns where water churns and traps air (waterfalls, impacts).");
+		num("wwWaveCrestRate", "Wave crest rate", Cost.MEDIUM, "More rate means more whitewater particles.", 0, 200, 1,
+			"How much whitewater spawns on sharp wave crests.");
+		num("wwEnergyMin", "Energy minimum", Cost.MEDIUM, "Lower means calmer water spawns whitewater too.", 0, 20, 0.1,
+			"Water slower than this spawns no whitewater at all.");
+		num("wwEnergyMax", "Energy maximum", Cost.LOW, "Lower reaches full spawning sooner.", 0, 40, 0.1,
+			"Water this energetic spawns whitewater at the full rate.");
+		num("wwTrappedAirMin", "Trapped air minimum", Cost.LOW, "Lower spawns more.", 0, 40, 0.1,
+			"How churned-up water has to be before it traps air.");
+		num("wwTrappedAirMax", "Trapped air maximum", Cost.LOW, "Lower spawns more.", 0, 60, 0.1,
+			"Churn at which trapped-air spawning is at full strength.");
+		num("wwWaveCrestMin", "Wave crest minimum", Cost.LOW, "Lower spawns more.", 0, 10, 0.05,
+			"How sharp a crest has to be before it makes foam.");
+		num("wwWaveCrestMax", "Wave crest maximum", Cost.LOW, "Lower spawns more.", 0, 20, 0.05,
+			"Crest sharpness at which foam spawning is at full strength.");
+		num("wwFoamLifeMin", "Foam life minimum", Cost.MEDIUM, "Longer-lived foam means more particles alive at once.", 0, 20, 0.1,
+			"Shortest time a foam particle lasts, in seconds.");
+		num("wwFoamLifeMax", "Foam life maximum", Cost.MEDIUM, "Longer-lived foam means more particles alive at once.", 0, 30, 0.1,
+			"Longest time a foam particle lasts, in seconds.");
+		num("wwBubbleBuoyancy", "Bubble buoyancy", Cost.NONE, LOOK, 0, 10, 0.1,
+			"How fast bubbles rise back up through the water.");
+		num("wwBubbleDrag", "Bubble drag", Cost.NONE, LOOK, 0, 5, 0.05,
+			"How strongly bubbles are carried along by the water around them.");
+		num("wwSprayDrag", "Spray drag", Cost.NONE, LOOK, 0, 5, 0.05,
+			"Air resistance on spray droplets.");
+		num("wwSprayThreshold", "Spray threshold", Cost.NONE, LOOK, 0, 20, 0.5,
+			"Whitewater with fewer water neighbours than this counts as spray (flying droplets).");
+		num("wwBubbleThreshold", "Bubble threshold", Cost.NONE, LOOK, 0, 30, 0.5,
+			"Whitewater with more water neighbours than this counts as an underwater bubble; in between is surface foam.");
+		integer("wwMaxPerParticle", "Max spawn per particle", Cost.HIGH, "Caps how many whitewater particles one water particle can create per substep.", 0, 16,
+			"Upper limit on whitewater spawned by a single water particle in one substep.");
+		integer("wwCellLimit", "Max per cell", Cost.HIGH, "Raising it lets dense foam pile up to many more particles.", 0, 100,
+			"No more whitewater spawns in a cell that already holds this many.");
+		num("wwRadius", "Whitewater size", Cost.LOW, "Bigger sprites cover more pixels.", 0.001, 0.1, 0.001,
+			"Size of one spray or bubble particle, in blocks.");
+		num("wwMaxPixels", "Whitewater max pixels", Cost.LOW, "Bigger sprites up close cost more fill rate.", 0.5, 20, 0.1,
+			"Largest a whitewater particle can appear on screen, in pixels, so close-up spray stays fine.");
+		num("foamCoverage", "Foam coverage", Cost.NONE, LOOK, 0, 5, 0.05,
+			"How opaque and white foam looks where it gathers.");
+		num("foamSize", "Foam size", Cost.LOW, "Bigger foam splats cover more pixels.", 0.5, 10, 0.1,
+			"Size multiplier for surface foam splats.");
+		num("foamBubbleSize", "Foam bubble size", Cost.NONE, LOOK, 0.005, 0.5, 0.005,
+			"Size of the bubble lace pattern drawn into foam, in blocks.");
+		num("bubbleAlpha", "Bubble opacity", Cost.NONE, LOOK, 0, 1, 0.01,
+			"How visible underwater bubbles are.");
+		num("sprayAlpha", "Spray opacity", Cost.NONE, LOOK, 0, 1, 0.01,
+			"How visible spray droplets are.");
+
+		category("Surface mesh");
+		integer("surfaceSubdivision", "Surface subdivision", Cost.EXTREME, "Mesh voxels grow with the cube of this: 2 to 3 is about 3.4x the surface work.", 1, 4,
+			"How many times finer than the simulation the water surface is meshed. Higher is smoother and more detailed. Takes effect when a body's area is rebuilt (/water reload).");
+		num("surfaceKernel", "Surface kernel", Cost.HIGH, "Each particle touches kernel^3 voxels when the surface is built.", 1, 6, 0.1,
+			"How far (in fine voxels) each particle reaches when building the surface. Bigger is smoother and blobbier.");
+		num("surfaceRadius", "Surface radius", Cost.NONE, ONE_PASS, 0.2, 3, 0.05,
+			"Radius of the sphere around each particle that makes up the surface.");
+		num("surfaceIso", "Surface threshold", Cost.NONE, ONE_PASS, 0.05, 1.5, 0.01,
+			"Where the surface is drawn: lower makes water look fuller and thin sheets hold together, higher shrinks it.");
+		num("dropletThreshold", "Droplet threshold", Cost.LOW, "More particles drawn as separate droplets.", 0, 2, 0.01,
+			"Particles in places thinner than this are drawn as separate round droplets instead of being part of the mesh.");
+		num("nearCull", "Near cull", Cost.NONE, LOOK, 0, 1, 0.01,
+			"Surface closer to the camera than this (in blocks) is skipped, so it doesn't cut through the view.");
+		toggle("surfaceGather", "Gather surface", Cost.MEDIUM, "On is much faster on most GPUs (fewer atomics); off uses the older splat path.",
+			"Builds the surface field by having each voxel gather nearby particles instead of particles scattering into voxels.");
+		toggle("sortParticles", "Sort particles", Cost.MEDIUM, "Costs a sort per frame but makes the gather and particle passes several times faster.",
+			"Keeps particles in memory order by cell. Only used with Gather surface.");
+		toggle("surfaceInteriorSkip", "Skip interior", Cost.MEDIUM, "Skips surface work deep inside water, which saves a lot on big pools.",
+			"Doesn't build surface detail for the inside of deep water, where it can never be seen.");
+		integer("surfaceInteriorCount", "Interior depth", Cost.LOW, "Higher skips less.", 1, 16,
+			"How deep inside the water (in cells) the surface work starts being skipped.");
+		toggle("wallFill", "Fill to walls", Cost.MEDIUM, "One extra pass over the surface field each time it is rebuilt.",
+			"Makes the surface reach all the way to blocks it touches, like vanilla water, instead of stopping a little short of walls.");
+		num("wallFillReach", "Wall fill reach", Cost.LOW, "A wider reach reads more voxels per pass.", 0, 3, 0.05,
+			"How far from a wall (in cells) the surface is straightened out to meet it.");
+		toggle("sheetFill", "Sheet fill", Cost.MEDIUM, "Adds a blur pass over the surface field.",
+			"Smooths very thin sheets of water so they don't break into holes and noodles.");
+		num("sheetSmoothing", "Sheet smoothing", Cost.NONE, ONE_PASS, 0, 6, 0.1,
+			"How strongly Sheet fill smooths thin sheets.");
+		num("particleRadius", "Particle radius", Cost.LOW, "Bigger droplets cover more pixels.", 0.05, 1.5, 0.01,
+			"Size of one particle drawn as a droplet, in cells.");
+
+		category("Water look");
+		toggle("waterSeaLook", "Look like the sea", Cost.NONE, LOOK,
+			"Placed realistic water (buckets) uses the realistic ocean's look and its settings (colour, tint, glints) instead of the settings here.");
+		num("thicknessScale", "Thickness scale", Cost.NONE, LOOK, 0, 4, 0.05,
+			"Multiplies how deep the water looks for colour and light absorption.");
+		num("refraction", "Refraction", Cost.NONE, LOOK, 0, 1, 0.01,
+			"How much the world behind water is bent.");
+		num("absorbR", "Absorption red", Cost.NONE, LOOK, 0, 5, 0.01,
+			"How quickly red light fades through water. Higher red absorption makes deep water bluer.");
+		num("absorbG", "Absorption green", Cost.NONE, LOOK, 0, 5, 0.01,
+			"How quickly green light fades through water.");
+		num("absorbB", "Absorption blue", Cost.NONE, LOOK, 0, 5, 0.01,
+			"How quickly blue light fades through water.");
+		num("scatterR", "Scatter red", Cost.NONE, LOOK, 0, 1, 0.01,
+			"Red part of the colour light picks up inside water.");
+		num("scatterG", "Scatter green", Cost.NONE, LOOK, 0, 1, 0.01,
+			"Green part of the colour light picks up inside water.");
+		num("scatterB", "Scatter blue", Cost.NONE, LOOK, 0, 1, 0.01,
+			"Blue part of the colour light picks up inside water.");
+		num("scatterDensity", "Scatter density", Cost.NONE, LOOK, 0, 5, 0.01,
+			"How murky water is: higher shows more of the scatter colour and less of what's behind it.");
+		num("underwaterFog", "Underwater fog", Cost.NONE, LOOK, 0, 2, 0.01,
+			"How thick the fog is when your head is under water.");
+		toggle("underwaterMirror", "Underwater mirror", Cost.NONE, LOOK,
+			"Looking up from under water, the surface past about 48 degrees acts as a mirror like real water (total internal reflection), "
+				+ "showing dark deep water there. Off shows what is above the surface everywhere.");
+		num("surfaceSmoothing", "Surface smoothing", Cost.LOW, "Wider smoothing reads more neighbours per pixel.", 0, 1, 0.01,
+			"How much the surface normals are smoothed. Higher is glassier, lower shows more of the particle shapes.");
+		num("detailStrength", "Ripple strength", Cost.NONE, LOOK, 0, 2, 0.01,
+			"Strength of the small procedural ripples on the surface.");
+		num("detailScale", "Ripple scale", Cost.NONE, LOOK, 0.5, 20, 0.1,
+			"How tightly packed the small ripples are.");
+		num("detailSpeed", "Ripple speed", Cost.NONE, LOOK, 0, 5, 0.05,
+			"How fast the small ripples move.");
+		num("roughness", "Roughness", Cost.NONE, LOOK, 0.01, 0.7, 0.01,
+			"Lower gives sharp sun glints, higher spreads them into a soft sheen.");
+		num("specular", "Sun glint", Cost.NONE, LOOK, 0, 20, 0.1,
+			"Brightness of sun reflections.");
+		num("wetDarkening", "Wet darkening", Cost.NONE, LOOK, 0, 1, 0.01,
+			"How much the ground under thin water looks darker, like wet stone or grass.");
+		num("filmShading", "Film shading", Cost.NONE, LOOK, 0, 1, 0.01,
+			"Flattens the lighting of very thin water so puddles don't get a glassy rim.");
+
+		category("Lava");
+		integer("lavaResolution", "Resolution", Cost.EXTREME, "Same as water: doubling it is roughly 8x the cost.", 1, 16,
+			"Simulation cells per block for lava. Changing it rebuilds every lava body.");
+		num("lavaFlipRatio", "FLIP ratio", Cost.NONE, LOOK, 0.8, 1, 0.0001,
+			"How much lava keeps its own motion versus the smoothed grid velocity.");
+		num("lavaMaxSpeed", "Max speed", Cost.LOW, "Faster lava needs more substeps.", 0.5, 40, 0.1,
+			"Speed limit for lava in blocks per second. Low keeps it slow and heavy.");
+		num("lavaFilmFriction", "Film friction", Cost.NONE, LOOK, 0, 500, 1,
+			"How quickly thin lava stops spreading.");
+		num("lavaFilmDepth", "Film depth", Cost.NONE, LOOK, 0, 1, 0.01,
+			"How shallow lava has to be before film friction kicks in.");
+		num("lavaStrandedTime", "Stranded drop lifetime", Cost.LOW, "Longer keeps more stray blobs alive.", 0, 30, 0.1,
+			"Seconds a lone blob of lava survives.");
+		integer("lavaStrandedNeighbors", "Stranded neighbour count", Cost.LOW, "Fewer keeps more blobs alive.", 0, 64,
+			"Lava with fewer particles than this around it counts as stranded.");
+		num("lavaRefraction", "Refraction", Cost.NONE, LOOK, 0, 1, 0.01,
+			"How much lava bends what's behind it.");
+		num("lavaAbsorbR", "Absorption red", Cost.NONE, LOOK, 0, 20, 0.05,
+			"How quickly red light fades through lava.");
+		num("lavaAbsorbG", "Absorption green", Cost.NONE, LOOK, 0, 20, 0.05,
+			"How quickly green light fades through lava.");
+		num("lavaAbsorbB", "Absorption blue", Cost.NONE, LOOK, 0, 20, 0.05,
+			"How quickly blue light fades through lava.");
+		num("lavaScatterR", "Glow red", Cost.NONE, LOOK, 0, 3, 0.01,
+			"Red part of lava's glow.");
+		num("lavaScatterG", "Glow green", Cost.NONE, LOOK, 0, 3, 0.01,
+			"Green part of lava's glow.");
+		num("lavaScatterB", "Glow blue", Cost.NONE, LOOK, 0, 3, 0.01,
+			"Blue part of lava's glow.");
+		num("lavaScatterDensity", "Glow density", Cost.NONE, LOOK, 0, 10, 0.05,
+			"How quickly lava reaches full glow as it gets deeper.");
+		num("lavaUnderwaterFog", "Inside fog", Cost.NONE, LOOK, 0, 2, 0.01,
+			"Fog when your head is inside lava.");
+		num("lavaSurfaceSmoothing", "Surface smoothing", Cost.LOW, "Wider smoothing reads more neighbours per pixel.", 0, 1, 0.01,
+			"How smooth the lava surface looks.");
+		num("lavaDetailStrength", "Ripple strength", Cost.NONE, LOOK, 0, 2, 0.01,
+			"Strength of small surface ripples on lava.");
+		num("lavaRoughness", "Roughness", Cost.NONE, LOOK, 0.01, 0.7, 0.01,
+			"How spread out sun reflections on lava are.");
+		num("lavaSpecular", "Sun glint", Cost.NONE, LOOK, 0, 20, 0.1,
+			"Brightness of sun reflections on lava.");
+		toggle("lavaFlowSounds", "Lava sounds", Cost.LOW, "Plays a few sounds per second near moving lava.",
+			"Bubbling and popping sounds from moving lava.");
+		toggle("lavaIgniteFlammables", "Lava sets fires", Cost.LOW, "A random tick check on each lava block, like vanilla lava.",
+			"Lets realistic lava set nearby flammable blocks on fire, like vanilla lava.");
+		toggle("lavaWaterMixing", "Water + lava = stone", Cost.LOW, "Checks where lava and water touch a few times per second.",
+			"Lava that touches water turns into cobblestone, and a lava spring into obsidian, like vanilla.");
+		num("lavaMixLavaMin", "Mix: lava needed", Cost.NONE, "Doesn't change the cost.", 0.01, 1, 0.01,
+			"How full of lava a block must be before touching water turns it to cobblestone. Lower reacts to thin lava.");
+		num("lavaMixWaterMin", "Mix: water needed", Cost.NONE, "Doesn't change the cost.", 0.01, 1, 0.01,
+			"How full of water a block must be to cool the lava next to it. Lower lets a few drops make stone.");
+
+		category("Slime");
+		integer("slimeResolution", "Resolution", Cost.EXTREME, "Same as water: doubling it is roughly 8x the cost.", 1, 16,
+			"Simulation cells per block for slime. Changing it rebuilds every slime body.");
+		num("slimeViscosity", "Thickness", Cost.LOW, "Doesn't change the cost; Thickness passes does.", 0, 10, 0.05,
+			"How thick and gooey slime is (its viscosity). Higher flows slower and holds together; 0 makes it flow like water.");
+		integer("slimeViscosityIterations", "Thickness passes", Cost.MEDIUM, "Each pass is one more GPU dispatch over every face, every substep.", 0, 32,
+			"How many solver passes the thickness gets per substep. More makes high Thickness values actually feel that thick.");
+		num("slimeAdhesion", "Stickiness", Cost.NONE, LOOK, 0, 100, 0.5,
+			"How strongly slime sticks to blocks it touches. High values let it cling to walls and ceilings and only slowly drip off.");
+		num("slimeEntityStick", "Sticks to mobs", Cost.NONE, LOOK, 0, 1, 0.01,
+			"How much slime touching a player or mob gets dragged along with it. 1 sticks completely.");
+		num("slimeRestSpeed", "Hold speed", Cost.NONE, LOOK, 0, 3, 0.05,
+			"Slime slower than this (blocks per second) starts holding its shape. This is what keeps a placed block of slime standing.");
+		num("slimeRestTime", "Hold delay", Cost.NONE, LOOK, 0, 2, 0.01,
+			"Seconds slime has to be slow before it holds its shape.");
+		num("slimeWakeSpeed", "Wobble limit", Cost.NONE, LOOK, 0, 10, 0.05,
+			"How hard slime has to be pushed (blocks per second) before it lets go and flows again.");
+		num("slimeFlipRatio", "FLIP ratio", Cost.NONE, LOOK, 0.5, 1, 0.001,
+			"How much slime keeps its own motion. Lower is more damped and sluggish.");
+		num("slimeVolumeCorrection", "Volume correction", Cost.NONE, ONE_PASS, 0, 40, 0.5,
+			"How hard squashed slime pushes back out to its normal size, so it can't be squeezed into a small ball.");
+		num("slimeMaxSpeed", "Max speed", Cost.LOW, "Faster slime needs more substeps.", 0.5, 40, 0.1,
+			"Speed limit for slime in blocks per second. This is a big part of why it moves so slowly.");
+		num("slimeFilmFriction", "Film friction", Cost.NONE, LOOK, 0, 500, 1,
+			"How quickly thin slime stops spreading on the ground.");
+		num("slimeFilmDepth", "Film depth", Cost.NONE, LOOK, 0, 1, 0.01,
+			"How shallow slime has to be before film friction kicks in.");
+		num("slimeStrandedTime", "Stranded blob lifetime", Cost.LOW, "Longer keeps more stray blobs alive.", 0, 60, 0.5,
+			"Seconds a lone blob of slime survives.");
+		integer("slimeStrandedNeighbors", "Stranded neighbour count", Cost.LOW, "Fewer keeps more blobs alive.", 0, 64,
+			"Slime with fewer particles than this around it counts as stranded. Low so small blobs and strings survive.");
+		num("slimeOpacity", "Opacity", Cost.NONE, LOOK, 0, 1, 0.01,
+			"How solid slime looks where it is thin. 1 hides everything behind it; thick slime is always fully opaque.");
+		num("slimeBrightness", "Brightness", Cost.NONE, LOOK, 0, 3, 0.01,
+			"Overall brightness of the slime texture.");
+		num("slimeInsideOpacity", "Inside view", Cost.NONE, LOOK, 0, 1, 0.01,
+			"How much green covers the screen while your head is inside slime. 1 is completely blind.");
+		num("slimeFogDistance", "Inside fog distance", Cost.NONE, LOOK, 0.05, 8, 0.05,
+			"How far you can see (in blocks) while your head is inside slime.");
+		num("slimeSurfaceSmoothing", "Surface smoothing", Cost.LOW, "Wider smoothing reads more neighbours per pixel.", 0, 1, 0.01,
+			"How smooth and glossy the slime surface looks.");
+		toggle("slimeSounds", "Slime sounds", Cost.LOW, "Plays a few sounds per second near moving slime.",
+			"Squishing sounds from moving slime.");
+
+		category("Sand");
+		integer("sandResolution", "Resolution", Cost.EXTREME, "Doubling it is roughly 8x the particles and grid; sand also runs many substeps.", 1, 24,
+			"Simulation cells per block for sand. Higher gives finer grains and more detailed piles. Changing it rebuilds every sand body.");
+		num("sandFrictionAngle", "Friction angle", Cost.NONE, LOOK, 0, 60, 0.5,
+			"How steep sand can pile before it slides, in degrees.");
+		num("sandCohesion", "Cohesion", Cost.NONE, LOOK, 0, 0.5, 0.001,
+			"How much sand sticks to itself, like damp sand. 0 is perfectly dry.");
+		num("sandStiffness", "Stiffness", Cost.HIGH, "Stiffer sand needs more, shorter substeps to stay stable.", 1, 500, 0.5,
+			"How stiff a grain packing is. Higher feels more solid but costs more substeps.");
+		num("sandWallFriction", "Wall friction", Cost.NONE, LOOK, 0, 2, 0.01,
+			"How much sand grips the blocks it slides along.");
+		num("sandCfl", "CFL number", Cost.HIGH, "Lower means more substeps.", 0.05, 1, 0.01,
+			"Stability margin for sand substeps. Lower is safer and slower.");
+		integer("sandMaxStepsPerFrame", "Max substeps per frame", Cost.HIGH, "Each substep is a full sand step.", 1, 64,
+			"Upper limit on sand substeps per frame. When hit, sand runs in slow motion.");
+		num("sandImpactDamping", "Impact damping", Cost.NONE, LOOK, 0, 2, 0.01,
+			"Soaks up energy when sand hits the ground hard, so it splats instead of bouncing.");
+		num("sandImpactRate", "Impact rate", Cost.NONE, LOOK, 0, 20, 0.1,
+			"How fast sand has to be squashed before it counts as an impact.");
+		num("sandImpactCompression", "Impact compression", Cost.NONE, LOOK, 0, 0.9, 0.01,
+			"How much an impact can pack sand down without springing back.");
+		num("sandRestSpeed", "Rest speed", Cost.MEDIUM, "Higher lets sand freeze sooner, which skips its work.", 0, 1, 0.005,
+			"Sand slower than this (blocks per second) starts to settle.");
+		num("sandRestTime", "Rest time", Cost.MEDIUM, "Shorter freezes settled sand sooner.", 0, 2, 0.01,
+			"Seconds sand has to be slow before it freezes in place.");
+		num("sandWakeAccel", "Wake acceleration", Cost.LOW, "Lower wakes frozen sand more easily.", 0, 5, 0.05,
+			"How hard frozen sand has to be pushed, as a fraction of gravity, before it moves again.");
+		num("sandSurfaceIso", "Surface threshold", Cost.NONE, LOOK, 0.05, 1.5, 0.01,
+			"Where the sand surface sits, used to decide which grains are on the outside.");
+		num("sandSurfaceSmoothing", "Surface smoothing", Cost.NONE, LOOK, 0, 1, 0.01,
+			"How smooth the sand's surface normals are, which shades the grains.");
+		num("sandGrainSize", "Grain size", Cost.LOW, "Bigger grains cover more pixels.", 0.002, 0.05, 0.001,
+			"Radius of one drawn sand grain, in blocks.");
+		integer("sandGrainsPerParticle", "Grains per particle", Cost.HIGH, "Every surface particle draws this many grains: the main sand drawing cost.", 1, 128,
+			"How many grains are drawn for each sand particle near the surface. More looks denser.");
+		num("sandGrainSpread", "Grain spread", Cost.NONE, LOOK, 0, 2, 0.01,
+			"How far grains scatter around their particle.");
+		num("sandGrainMinPixels", "Grain minimum pixels", Cost.LOW, "Bigger far grains cover more pixels.", 0, 4, 0.05,
+			"Smallest a grain can appear on screen, so far-away sand doesn't flicker.");
+		num("sandBrightness", "Brightness", Cost.NONE, LOOK, 0, 3, 0.01,
+			"Overall brightness of the sand.");
+		toggle("sandSounds", "Sand sounds", Cost.LOW, "Plays a few sounds per second near moving sand.",
+			"Sliding and impact sounds from moving sand.");
+
+		category("Leaves");
+		integer("leafResolution", "Resolution", Cost.MEDIUM, "Cells per block for stacking; more cells means a finer pile shape but a bigger grid.", 2, 16,
+			"How finely leaf piles are stacked: each block is split into this many cells per side, and each cell holds a few leaves. Changing it rebuilds every pile.");
+		integer("leavesPerBlock", "Leaves per block", Cost.MEDIUM, "Cost grows with the number of leaves: 400 is about twice the work of 200.", 8, 4000,
+			"How many separate leaves one Realistic Leaves block is made of. Only affects blocks placed after the change.");
+		integer("leafCellCapacity", "Leaves per cell", Cost.NONE, "Doesn't change the cost.", 1, 16,
+			"How many leaves fit in one stacking cell before the rest are pushed aside. Higher makes thinner, denser piles.");
+		num("leafSize", "Leaf size", Cost.LOW, "Bigger leaves cover more pixels.", 0.05, 1, 0.01,
+			"Width of one leaf in blocks. 0.3125 matches Minecraft's pixel size for the 5-pixel leaf texture.");
+		num("leafFallSpeed", "Fall speed", Cost.NONE, LOOK, 0.1, 10, 0.05,
+			"Top speed a leaf falls through air, in blocks per second. Lower floats more.");
+		num("leafSinkSpeed", "Sink speed in water", Cost.NONE, LOOK, 0.02, 5, 0.01,
+			"Top speed a leaf sinks through water (realistic or vanilla), in blocks per second.");
+		num("leafAirDrag", "Air glide", Cost.NONE, LOOK, 0.1, 20, 0.1,
+			"How quickly air slows a leaf's sideways motion, per second. Lower lets kicked or blown leaves fly further.");
+		num("leafFlutter", "Flutter", Cost.NONE, LOOK, 0, 3, 0.05,
+			"How far falling leaves swing side to side.");
+		num("leafTumbleRate", "Tumble rate", Cost.NONE, LOOK, 0, 20, 0.1,
+			"How fast falling leaves rock and tumble.");
+		num("leafGroundFriction", "Ground friction", Cost.NONE, LOOK, 0, 50, 0.5,
+			"How quickly leaves stop sliding once they lie on something.");
+		integer("leafRepose", "Pile steepness", Cost.NONE, "Doesn't change the cost.", 1, 8,
+			"How many cells a leaf may stick out over an edge before it slides off. 1 gives low spread-out mounds, higher gives steeper heaps.");
+		num("leafShuffleSpeed", "Settle speed", Cost.NONE, LOOK, 0.1, 10, 0.1,
+			"How fast leaves are pushed out of overfull cells and slide down pile slopes, in blocks per second.");
+		num("leafRestSpeed", "Rest speed", Cost.NONE, LOOK, 0, 1, 0.01,
+			"Below this speed a supported leaf counts as still and soon falls asleep.");
+		num("leafRestTime", "Rest time", Cost.NONE, LOOK, 0, 5, 0.05,
+			"Seconds a leaf has to stay still before it sleeps. Sleeping piles cost almost nothing.");
+		num("leafWakeSpeed", "Wake speed", Cost.NONE, LOOK, 0, 5, 0.05,
+			"A sleeping leaf wakes when something pushes it faster than this.");
+		num("leafKick", "Kick strength", Cost.NONE, LOOK, 0, 5, 0.05,
+			"How hard players and mobs kick leaves up when walking through a pile.");
+		num("leafBurnTime", "Burn time", Cost.NONE, LOOK, 0.05, 10, 0.05,
+			"Seconds a leaf glows and chars in lava or fire before it is gone.");
+		num("leafWindStrength", "Wind strength", Cost.NONE, LOOK, 0, 20, 0.1,
+			"Wind speed during rain, in blocks per second. Thunderstorms blow twice as hard. There is no wind in clear weather.");
+		num("leafWindLift", "Wind lift", Cost.LOW, "Lifted leaves stay awake, so stronger lift keeps more of the pile simulated.", 0, 5, 0.05,
+			"How often gusts pick resting leaves back up during rain.");
+		num("leafMaxSpeed", "Max speed", Cost.NONE, LOOK, 1, 50, 0.5,
+			"Speed limit for leaves in blocks per second, so blasts don't fling them out of the world.");
+		integer("leafMaxStepsPerFrame", "Max steps per frame", Cost.MEDIUM, "Each step is three small compute passes per pile.", 1, 32,
+			"Upper limit on leaf substeps per frame.");
+		num("leafBrightness", "Brightness", Cost.NONE, LOOK, 0.2, 3, 0.05,
+			"Brightness of the leaves.");
+		toggle("leafSounds", "Leaf sounds", Cost.LOW, "Plays a few sounds per second near moving leaves.",
+			"Rustling sounds from leaves that are kicked up or blown around.");
+
+		category("Realistic blocks");
+		toggle("grabBodies", "Grab realistic blocks", Cost.NONE, "Nothing runs unless you hold something.",
+			"Hold right-click with an empty hand on a realistic block, boat or lit realistic TNT to pick it up and carry it; let go to "
+				+ "drop or throw it. Where right-click already does something (chests, doors, boarding a boat) use sneak + right-click.");
+		num("grabStrength", "Grab strength", Cost.NONE, "Doesn't change the cost.", 0, 200000, 500,
+			"How hard you can pull what you hold, in newtons. A plank block weighs about 300 kg, stone about 1250 kg: what's heavier "
+				+ "than this can carry only drags or stays put.");
+		toggle("opGrabbing", "OP Grabbing", Cost.NONE, "Doesn't change the cost.",
+			"Grab anything however heavy. Only your grip ignores the weight: the blocks still weigh, fall, push and collide as usual.");
+		toggle("grabCarrying", "Grab what carries you", Cost.NONE, "Doesn't change the cost.",
+			"Allow grabbing the block or boat you stand on or ride. Off by default, since carrying the thing under you lets you fly.");
+		text("blockGravityPerBlock", "Gravity per block", Cost.NONE, "Only read when a body's gravity is worked out.",
+			"Gravity for particular blocks, overriding the slider above. Write them as a list, like "
+				+ "minecraft:stone=32, minecraft:white_wool=3. A body of mixed blocks falls at the mass-weighted average, so one "
+				+ "stone block in a crate of wool barely changes it. Unknown names are ignored.");
+		num("blockGravity", "Gravity", Cost.NONE, "Changes one number in the rigid body solver; it costs nothing.", 0, 40, 0.1,
+			"How hard realistic blocks fall, in blocks per second squared. 9.81 is real gravity, which looks floaty next to "
+				+ "Minecraft's own falling blocks at about 32. Applies to every realistic block, including boats.");
+
+		category("Water pump");
+		num("waveMakerRate", "Pump rate", Cost.NONE, LOOK, 0.1, 30, 0.1,
+			"How much of the water behind a fully powered water pump it moves to the front each second (4 = about four blocks of water per second). Weaker redstone signals pump less.");
+		num("waveMakerSpeed", "Jet speed scale", Cost.NONE, LOOK, 0.1, 5, 0.05,
+			"Multiplies how fast water leaves the front for every speed setting (slow 2, medium 4, fast 14 blocks per second).");
+
+		category("TNT and explosions");
+		toggle("tntReactions", "Explosions push fluids", Cost.LOW, "One small pass per explosion per body it reaches.",
+			"Makes realistic water, lava, slime and sand get blasted away by TNT and other explosions.");
+		num("tntBlastSpeed", "Blast strength", Cost.LOW, "Stronger blasts throw particles faster, which needs more substeps for a moment.", 0, 60, 0.5,
+			"How fast fluid right next to a TNT-sized explosion is thrown, in blocks per second. Bigger explosions scale it up.");
+		num("tntBlastReach", "Blast reach", Cost.NONE, LOOK, 0, 6, 0.05,
+			"How far the push reaches, as a multiple of the explosion's radius. The push fades to nothing at this distance.");
+		num("tntUpwardBias", "Upward bias", Cost.NONE, LOOK, 0, 2, 0.05,
+			"Tilts the push upward so fluid sprays up into the air instead of only sideways.");
+		num("tntScatter", "Scatter", Cost.NONE, LOOK, 0, 1, 0.01,
+			"Randomness in the push direction, so the splash breaks up instead of moving as one shell.");
+
+		category("Sounds");
+		toggle("flowSounds", "Water sounds", Cost.LOW, "Plays a few sounds per second near moving water.",
+			"Flowing and splashing sounds from moving water.");
+		toggle("boilingSounds", "Boiling sounds", Cost.LOW, "A few looping sounds near hot water.",
+			"The hiss of water about to boil and the bubbling of a rolling boil, loudest just before it boils like a real pot.");
+		num("boilingSoundVolume", "Boiling sound volume", Cost.NONE, "Only changes volume.", 0, 2, 0.05,
+			"Volume of boiling and simmering water, on top of the fluid sound volume.");
+		num("flowSoundVolume", "Fluid sound volume", Cost.NONE, "Only changes volume.", 0, 3, 0.05,
+			"Volume of all realistic water, lava, slime and sand sounds.");
+
+		category("Shader packs");
+		toggle("vitrailInsidePack", "Inside Vitrail packs (experimental)", Cost.LOW,
+			"Shades fluids twice per pixel while on; falls back to drawing on top if Vitrail changes.",
+			"With a Vitrail shader pack running, draws fluids into the pack's image before its effects, so its fog, bloom, tone mapping "
+				+ "and colour grading reach them, and so do its shadows: water in a shadow, like next to a floating block, can lose its tint "
+				+ "and show the ground. Fluids then can't refract what's behind them, and glass behind water is drawn over it. "
+				+ "Off draws fluids over the finished pack image instead: no pack shadows or fog on them, but real refraction and reflections.");
+		toggle("debugWaterLayers", "Debug: show water layers", Cost.NONE, LOOK,
+			"Paints what the water passes drew in solid colours instead of shading it: green the sea's surface, blue placed realistic water, "
+				+ "yellow a surface hidden behind something in the depth buffer, magenta a fluid pixel without a material. For finding why water vanishes.");
+		num("packWaterOpacity", "Water surface tint with packs", Cost.NONE, LOOK, 0, 1, 0.01,
+			"Inside a shader pack realistic water can't bend or reflect the pack's picture, so thin water would vanish. This much of the "
+				+ "surface is always tinted while a pack runs.");
+		num("packWaterVisibility", "Water visibility with packs", Cost.NONE, LOOK, 0, 3, 0.05,
+			"While a shader pack runs, water glows with this much more of its own blue-green scattered colour, so it stands out "
+				+ "through the pack's fog and grading. It adds light, so it doesn't darken the water. 0 looks the same as without a pack.");
+		num("packWaterTint", "Water tint with packs", Cost.NONE, LOOK, 0, 3, 0.05,
+			"While a shader pack runs, water filters what's behind it this much more toward blue-green. The total amount of light "
+				+ "it takes stays the same, so it gets more coloured, not darker. 0 looks the same as without a pack.");
+		toggle("packShadows", "Shadows with packs", Cost.MEDIUM, "Reads sand, leaves and slime back from the GPU a few times a second and marches toward the sun per grain, leaf and pixel.",
+			"While a shader pack runs, sand, leaves and slime get shadows from blocks, trees and each other, and cast shadows into the pack's "
+				+ "shadow map. Casting works with Vitrail packs that draw entity shadows.");
+		num("packShadowStrength", "Shadow darkness", Cost.NONE, LOOK, 0, 1, 0.01,
+			"How much sunlight sand, leaves and slime lose in full shadow. 0 turns the shadows on them off but keeps the ones they cast.");
+		toggle("packShadowPerLeaf", "Shadow for every leaf", Cost.MEDIUM, "Reads every leaf's position back and adds one quad per leaf to the shadow pass.",
+			"Every realistic leaf casts its own leaf-shaped shadow. Off, leaf piles cast shadows shaped like sand piles instead.");
+		toggle("packDrawMaterials", "Pack draws sand, slime, leaves", Cost.MEDIUM, "Reads their surfaces and every leaf back from the GPU each frame.",
+			"While a Vitrail pack runs, sand and slime (as smooth surfaces) and leaves are drawn by the pack itself, so they get all of its lighting, "
+				+ "shadows, fog, reflections and colour grading. They then trail the simulation by a few frames. Off draws them ourselves.");
+		integer("packShadowDetail", "Shadow shape detail", Cost.MEDIUM, "Higher reads back and draws many more caster boxes; 8 and above is heavy on big piles.", 1, 16,
+			"How many pieces per block the shadow of sand and slime (and leaves, with every-leaf shadows off) is built from. "
+				+ "1 casts block-sized steps, 4 follows the pile's shape closely.");
+
+		category("Rain");
+		toggle("realisticRain", "Realistic rain", Cost.MEDIUM, "Simulates and draws every drop on the GPU.",
+			"Replaces vanilla's rain sheets with falling drops that streak, splash back off the ground, push realistic water and hiss on lava. Snow stays vanilla.");
+		integer("rainRadius", "Rain radius", Cost.MEDIUM, "The number of drops grows with the square of it.", 4, 512,
+			"How far around you, in blocks, realistic drops fall.");
+		num("rainDensity", "Rain density", Cost.MEDIUM, "More drops to move and draw.", 0, 20, 0.05,
+			"Drops per square block at full rain; thunderstorms double it.");
+		num("rainFallSpeed", "Drop speed", Cost.NONE, LOOK, 1, 40, 0.5,
+			"How fast drops fall, in blocks per second. Real heavy rain falls at about 9.");
+		num("rainStreakTime", "Streak length", Cost.NONE, LOOK, 0, 0.2, 0.005,
+			"The exposure each streak shows, in seconds: longer streaks look like heavier, faster rain.");
+		num("rainOpacity", "Drop opacity", Cost.NONE, LOOK, 0, 1, 0.01,
+			"How visible each streak is.");
+		num("rainWind", "Rain wind", Cost.NONE, LOOK, 0, 10, 0.1,
+			"How hard the wind slants the rain, in blocks per second; storms blow harder.");
+		num("rainSplashDroplets", "Splash droplets", Cost.LOW, "More small particles per impact.", 0, 12, 0.5,
+			"Droplets thrown up where a drop hits the ground.");
+		num("rainKick", "Rain stirs water", Cost.LOW, "Two small passes over rained-on realistic water.", 0, 5, 0.05,
+			"How hard each drop pushes realistic water it lands on, in blocks per second, so the surface really dimples. 0 turns it off.");
+		num("rainLavaSteam", "Steam from rain on lava", Cost.LOW, "Steam points over rained-on lava.", 0, 1, 0.005,
+			"Eighths of a block of water each drop on lava turns to steam. 0 turns it off.");
+		num("rainFeed", "Rain feeds water", Cost.LOW, "Adds a few particles to realistic water now and then.", 0, 2, 0.005,
+			"How many blocks of depth a minute rain adds to realistic water it falls on. 0 turns it off.");
+
+		category("Realistic kelp");
+		toggle("realisticKelp", "Realistic kelp", Cost.MEDIUM, "Only kelp that moves is simulated; still kelp sleeps.",
+			"Kelp near you becomes soft ropes that float up, sway, part around you and can't pass through each other. Hold right-click "
+				+ "on it with an empty hand to grab and drag it. Client-side only: other players see normal kelp.");
+		integer("kelpRadius", "Kelp range", Cost.MEDIUM, "More kelp to scan, keep and draw; only moving kelp costs simulation time.", 16, 256,
+			"How far from you kelp becomes realistic. Further out it's vanilla kelp.");
+		num("kelpSway", "Kelp sway", Cost.LOW, "Swaying kelp near you never sleeps.", 0, 5, 0.05,
+			"How strongly a slow current sways kelp near you. 0 keeps it still until something touches it.");
+		num("kelpBuoyancy", "Kelp buoyancy", Cost.NONE, LOOK, 0, 30, 0.5, "How hard kelp floats up in water, in blocks per second squared.");
+		num("kelpWaterDrag", "Kelp water drag", Cost.NONE, LOOK, 0, 20, 0.1, "How quickly moving kelp slows down in water. Higher is lazier.");
+		num("kelpStiffness", "Kelp stiffness", Cost.NONE, LOOK, 0, 1, 0.01, "How much kelp resists bending. 0 is a limp rope.");
+		toggle("kelpSelfCollision", "Kelp collides with kelp", Cost.LOW, "A spatial hash over the moving kelp each substep.",
+			"Whether kelp strands bump into each other and themselves, so they can be wrapped and tangled.");
+
+		category("Realistic ocean (experimental)");
+		toggle("realisticOcean", "Realistic vanilla water (experimental)", Cost.HIGH,
+			"Draws all vanilla water with waves; only simulates the water right around whatever moves it.",
+			"Experimental: still being worked on, expect bugs. Vanilla water (oceans, rivers, lakes) is drawn as realistic water with rolling waves, and the server keeps the wave crests as real water around you. "
+				+ "Turning it off puts every block it changed in the loaded chunks around you back to vanilla water. Works from the title screen too: it applies when you join.");
+		toggle("oceanPackDrawsSea", "Shader pack draws the sea", Cost.NONE, "Draws less than the mod's own sea.",
+			"While a shader pack runs, the pack draws the sea's surface its own way (its colours, ripples, reflections, foam and underwater fog). "
+				+ "With Vitrail the pack's water still rolls with the mod's waves and shows the wakes of boats, swimmers and pumps; with other "
+				+ "shader mods the sea stays calm, so boats float on what you see, and wakes show only as splashes and foam. "
+				+ "Off draws the mod's own sea inside the pack instead.");
+		integer("oceanResolution", "Sea simulation resolution", Cost.EXTREME, "Cells per block in every simulated sea zone; cost grows with its cube.", 1, 12,
+			"Simulation cells per block where the sea is simulated around you, boats and other things moving the water.");
+		integer("oceanSimRadius", "Sea simulation reach", Cost.HIGH, "Each zone's area grows with its square.", 2, 64,
+			"How far around something moving the water, in blocks, the sea is simulated. Beyond it the water just follows the calm waves.");
+		integer("oceanSimDepth", "Sea simulation depth", Cost.HIGH, "Each zone's cost grows with its depth.", 1, 32,
+			"How many blocks below the calm surface are simulated. Anything deeper than this doesn't move the water at all.");
+		toggle("oceanSimUnderwater", "Simulate around divers", Cost.HIGH, "A deep zone follows every diving player.",
+			"Whether the sea is simulated around a player who swims under the surface. Off: only a player at the surface stirs it "
+				+ "(foam already made stays); TNT, explosions, pumps and boats are simulated however deep they are either way.");
+		integer("oceanSimHeadroom", "Sea simulation headroom", Cost.MEDIUM, "Taller zones cost more.", 1, 16,
+			"How many blocks above the calm surface a zone reaches, for waves and splashes.");
+		num("oceanSettleTime", "Sea settle time", Cost.MEDIUM, "Zones live this much longer after something stops moving.", 0, 30, 0.1,
+			"Seconds the sea keeps being simulated after whatever moved it has gone or stopped, so wakes and splashes can settle.");
+		num("oceanSnapDeviation", "Sea snap threshold", Cost.LOW, "Lower keeps zones alive longer.", 0, 4, 0.01,
+			"How close a settling zone's water has to move to the calm waves (average difference, blocks per second) before it snaps back to them.");
+		num("oceanWaveHeight", "Wave height", Cost.NONE, LOOK, 0, 4, 0.05,
+			"How big the sea's waves are; 1 is a gentle swell, rain makes them bigger and thunderstorms bigger still. Rivers and lakes only ripple.");
+		integer("oceanServerRadius", "Wave water reach", Cost.MEDIUM, "Block updates on the server and their packets grow with its square.", 0, 160,
+			"How far around you, in blocks, the server keeps wave crests and troughs as real water you can swim in. 0 keeps the sea's blocks vanilla.");
+		num("oceanEdgeBand", "Zone edge band", Cost.NONE, LOOK, 0.5, 16, 0.25,
+			"How wide the band along a zone's sides is, in blocks, where its water is pulled back to the calm sea so it meets the drawn waves.");
+		num("oceanEdgePull", "Zone edge pull", Cost.NONE, LOOK, 0, 40, 0.5,
+			"How hard water in the edge band is pulled toward the calm sea's motion, per second.");
+		num("oceanEdgeRefill", "Zone edge refill", Cost.LOW, "One pass over the zone per substep.", 0, 40, 0.5,
+			"How fast missing water in the edge band is topped up from the open sea, per second.");
+		num("oceanEdgeDrain", "Zone edge drain", Cost.NONE, LOOK, 0, 40, 0.5,
+			"How fast extra water piled above the calm surface in the edge band runs off, per second.");
+		num("oceanCalming", "Sea calming", Cost.NONE, LOOK, 0, 5, 0.05,
+			"How fast wakes and splashes in the simulated sea die down by themselves, per second, so the area can snap back to the calm waves.");
+		num("oceanSurfaceOpacity", "Sea surface tint", Cost.NONE, LOOK, 0, 1, 0.01,
+			"How much the sea's surface is tinted blue however shallow it is, like vanilla water's texture. Keeps shallow water visible, also "
+				+ "under shader packs, which can't refract it.");
+		num("oceanThicknessScale", "Sea depth tint", Cost.NONE, LOOK, 0, 5, 0.05,
+			"How much the sea's depth counts toward its colour. Only the sea: realistic water placed from buckets has its own.");
+		num("oceanRefraction", "Sea refraction", Cost.NONE, LOOK, 0, 1, 0.01, "How much the sea bends what's under it.");
+		num("oceanAbsorbR", "Sea absorption red", Cost.NONE, LOOK, 0, 2, 0.005, "How fast red light fades with depth in the sea, per block.");
+		num("oceanAbsorbG", "Sea absorption green", Cost.NONE, LOOK, 0, 2, 0.005, "How fast green light fades with depth in the sea, per block.");
+		num("oceanAbsorbB", "Sea absorption blue", Cost.NONE, LOOK, 0, 2, 0.005, "How fast blue light fades with depth in the sea, per block.");
+		num("oceanScatterR", "Sea colour red", Cost.NONE, LOOK, 0, 1, 0.005, "Red of the light the sea's water itself gives back.");
+		num("oceanScatterG", "Sea colour green", Cost.NONE, LOOK, 0, 1, 0.005, "Green of the light the sea's water itself gives back.");
+		num("oceanScatterB", "Sea colour blue", Cost.NONE, LOOK, 0, 1, 0.005, "Blue of the light the sea's water itself gives back.");
+		num("oceanScatterDensity", "Sea colour strength", Cost.NONE, LOOK, 0, 2, 0.005,
+			"How quickly deep sea turns into its own colour instead of showing the floor. Lower is clearer.");
+		num("oceanUnderwaterFog", "Sea underwater fog", Cost.NONE, LOOK, 0, 2, 0.005, "How thick the sea looks while you're under it.");
+		num("oceanDetailStrength", "Sea ripples", Cost.NONE, LOOK, 0, 2, 0.01, "Strength of the fine ripples drawn on the sea.");
+		num("oceanRoughness", "Sea roughness", Cost.NONE, LOOK, 0.01, 0.7, 0.005, "How blurry the sun's glints on the sea are.");
+		num("oceanSpecular", "Sea glint", Cost.NONE, LOOK, 0, 30, 0.1, "How bright the sun's glints on the sea are.");
+		num("oceanFlipRatio", "Sea splashiness", Cost.NONE, "Only changes a blend in the simulation.", 0.5, 1, 0.001,
+			"How lively the simulated sea around things moving it is. Lower is calmer and smoother.");
+		toggle("oceanWhitewater", "Sea foam and spray", Cost.MEDIUM, "Foam, bubble and spray particles in simulated sea zones.",
+			"Whether boats, swimming and splashes in the sea make foam, bubbles and spray.");
+		num("oceanWhitecaps", "Whitecaps", Cost.NONE, LOOK, 0, 3, 0.05,
+			"How much white foam big waves carry on their crests and leave in streaks behind them. Also drawn over a shader pack's "
+				+ "water. 0 turns it off.");
+		num("oceanWhitecapStart", "Whitecap wave height", Cost.NONE, LOOK, 0.05, 5, 0.05,
+			"How high (in blocks) a wave must reach before it starts to foam; at 2.5 times this the crests are covered. Rain and "
+				+ "thunder make waves higher.");
+		integer("oceanWhitecapRadius", "Whitecap range (shader packs)", Cost.LOW, "Whitecaps are built on the CPU each frame under a pack.", 8, 512,
+			"How far from you whitecaps are drawn on a shader pack's water. Without a pack they cover the whole sea.");
+		num("packFoamSize", "Foam fleck size (shader packs)", Cost.LOW, "One quad per foam particle under a pack.", 0.02, 1, 0.01,
+			"Size in blocks of each piece of foam, spray or bubble drawn through a shader pack.");
+
+		category("Water temperature");
+		toggle("waterTemperature", "Water temperature", Cost.LOW, "A few more reads per particle each substep; heated water stays awake instead of sleeping.",
+			"Water has a temperature: magma, lava, fire, campfires and lit furnaces heat it, ice and snow cool it, hot and cold water mix, and at 100 degrees it boils away into steam.");
+		num("waterHeatTimeScale", "Heat time scale", Cost.LOW, "Hot water keeps simulating while it is above the steam wisp temperature.", 0, 1000, 1,
+			"Cooling to the air, ice and snow, and heat mixing through the water are real physics in real seconds (a block is a cubic "
+				+ "metre: hot water takes hours to cool). This speeds those up by that much; 1 is real time. Heaters have their own times below.");
+		num("waterMixing", "Heat mixing", Cost.NONE, LOOK, 0, 0.05, 0.0001,
+			"How fast heat spreads through water by stirring too small to simulate, in square metres per second. Warm water rising "
+				+ "and cold sinking is simulated on top of it. About 0.0005 for still water; 0.00000014 is pure conduction.");
+		num("airHeatTransfer", "Heat loss to the air", Cost.NONE, LOOK, 0, 200, 1,
+			"Heat transfer coefficient between the water's open surface and the air, in W/m²K (about 10-25 outdoors). Evaporation "
+				+ "is added on top and grows steeply when the water is hot. Water never cools below the biome's own temperature.");
+		num("iceHeatTransfer", "Ice and snow contact", Cost.NONE, LOOK, 0, 2000, 10,
+			"Heat transfer coefficient between water and ice or snow next to it (at 0 degrees), in W/m²K.");
+		num("magmaWaterTemperature", "Magma warms water to", Cost.NONE, LOOK, 0, 120, 1,
+			"Degrees a magma block quickly brings the water touching it or standing over it to. Below 100 it never boils it.");
+		num("magmaHeatReach", "Magma heat reach", Cost.NONE, LOOK, 0, 8, 0.5,
+			"How many blocks of water above a magma block it warms, less with every block up. Heat doesn't pass solid blocks.");
+		num("magmaHeatTime", "Magma heating time", Cost.NONE, LOOK, 0.1, 120, 0.1,
+			"Seconds for water over magma to get most of the way to its temperature.");
+		num("lavaBoilTime", "Lava boiling time", Cost.NONE, LOOK, 0.01, 10, 0.01,
+			"Water touching lava boils away into steam in about this many seconds (and the lava turns to cobblestone or obsidian).");
+		num("fireWaterTemperature", "Fire heats water to", Cost.NONE, LOOK, 0, 150, 1,
+			"Degrees fire and lit campfires heat the water touching them toward. It needs to be well above 100 for that water to boil, "
+				+ "as the water around keeps cooling it.");
+		num("fireHeatTime", "Fire heating time", Cost.NONE, LOOK, 1, 600, 1,
+			"Seconds for water touching fire to get most of the way to its temperature: with 120 degrees, 12 brings it to a boil in about half a minute, like a pot over a fire.");
+		num("furnaceWaterTemperature", "Furnace heats water to", Cost.NONE, LOOK, 0, 150, 1,
+			"Degrees a lit furnace, smoker or blast furnace heats the water touching it toward.");
+		num("furnaceHeatTime", "Furnace heating time", Cost.NONE, LOOK, 1, 1200, 1,
+			"Seconds for water touching a lit furnace to get most of the way to its temperature.");
+		num("boilChurn", "Boiling churn", Cost.NONE, LOOK, 0, 40, 0.5,
+			"How hard boiling stirs the water at the hot spot, in blocks per second squared.");
+		num("boilSteam", "Boiling steam", Cost.MEDIUM, "More steam means more steam points.", 0, 5, 0.05,
+			"How much steam boiling water and hot water give off. 1 turns each boiled-away bit of water into its own volume of steam.");
+		num("steamWispTemperature", "Steam wisp temperature", Cost.LOW, "Water above it keeps simulating so it can steam.", 30, 100, 1,
+			"Water hotter than this lets off thin wisps of steam from its surface before it boils.");
+		num("boilBubbleSize", "Boiling bubble size", Cost.NONE, LOOK, 0, 0.5, 0.01,
+			"Diameter of the biggest vapour bubbles in boiling water, in blocks. Needs whitewater on.");
+		num("boilBubbleRise", "Boiling bubble rise", Cost.NONE, LOOK, 0.1, 5, 0.05,
+			"How fast vapour bubbles rise through the water, in blocks per second.");
+		num("boilBubbleRate", "Boiling bubble streams", Cost.LOW, "Each bubble is one whitewater particle.", 0, 40, 0.5,
+			"Bubbles a second rising from one nucleation spot at a full boil. Bubbles come from a few fixed spots on the hot surface, like in a real pot.");
+		num("boilClingTemperature", "Clinging bubbles from", Cost.NONE, LOOK, 30, 99, 1,
+			"Above this temperature, tiny bubbles start forming and clinging to the heated bottom and sides before the water boils.");
+		num("boilingDamage", "Scalding damage", Cost.NONE, "Only checked by the server for blocks hot enough to scald.", 0, 4, 0.05,
+			"Hot water hurts players and mobs whose feet are in it: 1 health point at an average of 60 degrees, rising to 4 at 100 "
+				+ "(2 points are one heart), times this. Hits come as often as vanilla allows, like a magma block. Fire Resistance protects "
+				+ "completely. 0 turns it off.");
+
+		category("Steam");
+		num("steamParticleSize", "Steam particle size", Cost.HIGH, "Halving it makes eight times as many points for the same steam.", 0.005, 1, 0.005,
+			"Size of each soft point steam is made of, in blocks. Smaller is finer and smoother, with many more points.");
+		integer("steamResolution", "Steam collision cells", Cost.LOW, "Only the grid steam bumps into blocks with.", 1, 16,
+			"Cells per block for how exactly steam follows block shapes.");
+		num("steamExpansion", "Steam expansion", Cost.MEDIUM, "More volume means more points.", 0.5, 30, 0.5,
+			"How many times its volume water puffs up to when it turns to steam.");
+		num("steamLifetime", "Steam lifetime", Cost.LOW, "Longer keeps more points alive at once.", 0.5, 60, 0.5,
+			"Seconds a puff of steam lasts before it has thinned away.");
+		num("steamBuoyancy", "Steam rise", Cost.NONE, LOOK, 0, 10, 0.05,
+			"How hard hot steam rises, in blocks per second squared; it weakens as the steam cools.");
+		num("steamDrag", "Steam drag", Cost.NONE, LOOK, 0, 10, 0.05,
+			"How quickly steam loses speed in the air.");
+		num("steamSwirl", "Steam swirl", Cost.NONE, LOOK, 0, 5, 0.05,
+			"How much steam curls and drifts around.");
+		num("steamBurst", "Steam burst", Cost.NONE, LOOK, 0, 10, 0.05,
+			"How fast fresh steam bursts outward, in blocks per second.");
+		num("steamEntityPush", "Steam push", Cost.NONE, LOOK, 0, 5, 0.05,
+			"How strongly players and mobs shove steam aside as they walk through it.");
+		num("steamOpacity", "Steam opacity", Cost.NONE, LOOK, 0, 1, 0.01,
+			"How opaque each point is at its centre. Dense steam you can't see through comes from many points overlapping.");
+		num("steamDarkShade", "Steam dark shade", Cost.NONE, LOOK, 0, 1, 0.01,
+			"Brightness of the darkest points; each point is somewhere between this and the light shade.");
+		num("steamLightShade", "Steam light shade", Cost.NONE, LOOK, 0, 1, 0.01,
+			"Brightness of the lightest points.");
+
+		category("Clip recording");
+		integer("renderMaxStepsPerFrame", "Max substeps per clip frame", Cost.HIGH, "Only while /water render records; higher makes recording slower but more accurate.", 1, 256,
+			"Upper limit on substeps per frame while recording a clip with /water render.");
+		text("ffmpeg", "ffmpeg path", Cost.NONE, "Only used when a clip finishes.",
+			"Full path to ffmpeg for /water render. Leave empty to look in the usual places.");
+		toggle("renderFreezeWorld", "Freeze world while recording", Cost.NONE, "Only while recording.",
+			"Stops the world ticking while a clip records, so mobs and time don't run ahead of the slowed-down simulation.");
+		toggle("renderSteadyPreview", "Steady preview", Cost.NONE, "Only while recording.",
+			"Paces the on-screen preview while recording so it plays as smooth slow motion instead of stuttering.");
+		num("renderCameraSmoothing", "Camera smoothing", Cost.NONE, "Only while recording.", 0, 1, 0.01,
+			"Seconds of smoothing on mouse look while recording, so pans in the clip come out even.");
+
+		// Heightfield fork (docs/HEIGHTFIELD_DESIGN.md): floods, rivers and waterfalls on a layered heightfield instead of particles.
+		category("Heightfield water (fork)");
+		toggle("hfOwnsWater", "Heightfield owns water", Cost.MEDIUM, "Large floods cost far less than particles.",
+			"Realistic water goes to the heightfield (chunk loads, placed water, springs) instead of the particle simulation.");
+		toggle("hfSyncBlocks", "Write back to blocks", Cost.LOW, "A few tiles of block writes per frame.",
+			"Writes the heightfield's water back into realistic water blocks, so you can swim in it and it is saved. Singleplayer or hosting only.");
+		num("hfSyncInterval", "Block sync interval", Cost.LOW, "Shorter writes moving water to blocks more often.", 0.1, 10, 0.1,
+			"Seconds between block syncs of a tile while its water moves; settled tiles sync once when they fall asleep.");
+		integer("hfSyncTilesPerFrame", "Block sync tiles per frame", Cost.LOW, "More tiles written per frame.", 1, 16,
+			"How many tiles are written back to blocks each frame.");
+		integer("hfCellsPerBlock", "Cells per block", Cost.EXTREME, "Doubling it is 4x the columns.", 1, 4,
+			"Heightfield columns along one block. Applies to the next flood.");
+		integer("hfLayers", "Layers", Cost.HIGH, "Each layer is another span per column.", 1, 4,
+			"How many water layers one column can hold (caves and overhangs stacked above each other). Applies to the next flood.");
+		num("hfMinOpening", "Min opening", Cost.NONE, "Topology only.", 0.05, 1, 0.05,
+			"Gaps lower than this (blocks) are treated as solid by the heightfield.");
+		integer("hfMaxTiles", "Max tiles", Cost.HIGH, "GPU memory for the tile tables.", 64, 8192,
+			"Most 16x16-block tiles a heightfield can hold. Read when a flood starts.");
+		integer("hfMaxPages", "Max span pages", Cost.HIGH, "About 36 KB of GPU memory each.", 256, 16384,
+			"Span pages: one per used layer of a tile. Read when a flood starts.");
+		integer("hfMaxFluxPages", "Max flux pages", Cost.HIGH, "About 48 KB of GPU memory each.", 256, 16384,
+			"Flux pages, held by tiles being simulated. Too few and moving water stands still at tile borders. Read when a flood starts.");
+		integer("hfMaxQuads", "Max surface quads", Cost.MEDIUM, "80 B each.", 10000, 2000000,
+			"Quads in the heightfield's surface mesh.");
+		integer("hfWindowBelow", "Window below", Cost.LOW, "Deeper windows cost little; empty sky and solid rock are skipped.", 0, 1024,
+			"How far a new heightfield reaches below the player or sea level, whichever is lower.");
+		integer("hfWindowAbove", "Window above", Cost.LOW, "-1 reaches the build limit.", -1, 1024,
+			"Blocks above the player the heightfield reaches; -1 up to the build limit.");
+		integer("hfMaxNewTilesPerFrame", "New tiles per frame", Cost.MEDIUM, "Each new tile is a topology build on the CPU.", 0, 16,
+			"How many tiles a spreading flood may add per frame.");
+		num("hfCfl", "CFL number", Cost.HIGH, "Lower means more substeps.", 0.05, 1, 0.01,
+			"How far water may travel in one substep, in columns.");
+		integer("hfMaxStepsPerFrame", "Max substeps per frame", Cost.HIGH, "Each substep is a full solver step.", 1, 32,
+			"Upper limit on heightfield substeps per frame; past it the water runs in slow motion.");
+		num("hfDamping", "Damping", Cost.NONE, LOOK, 0.9, 1, 0.001,
+			"Linear drag on the flow (per 1/60 s). Bed friction holds back thin fast water.");
+		num("hfFriction", "Friction", Cost.NONE, LOOK, 0, 1, 0.01,
+			"Extra friction on the flow.");
+		num("hfMaxSpeed", "Max speed", Cost.LOW, "Faster water needs more substeps.", 1, 100, 1,
+			"Speed limit for heightfield water, in blocks per second.");
+		num("hfManning", "Bed roughness", Cost.NONE, LOOK, 0, 0.1, 0.001,
+			"Manning roughness of the ground: thin fast water is held back, deep water barely. Real ground is about 0.025-0.035.");
+		num("hfImpactSpread", "Impact spread", Cost.NONE, LOOK, 0, 1, 0.05,
+			"Share of the momentum of water landing from a fall that turns into flow spreading out from where it lands.");
+		num("hfMinFlowDepth", "Min flow depth", Cost.NONE, LOOK, 0, 0.1, 0.001,
+			"Water thinner than this does not flow sideways, so a flood stops spreading once its edge is this thin.");
+		num("hfSleepRate", "Sleep rate", Cost.MEDIUM, "Higher lets calm water stop simulating sooner.", 0, 0.05, 0.0005,
+			"When the surface rises or falls slower than this (blocks/s) everywhere for the sleep time, the water stops simulating until woken.");
+		num("hfSleepSeconds", "Sleep time", Cost.MEDIUM, "Shorter puts calm water to sleep sooner.", 0, 10, 0.1,
+			"Seconds the water must stay calm before it sleeps.");
+		num("hfFilmDepth", "Film depth", Cost.LOW, "Thin films may sleep while still creeping.", 0, 1, 0.01,
+			"Tiles whose deepest water is below this only hold a thin film.");
+		num("hfFilmSleepRate", "Film sleep rate", Cost.LOW, "Higher lets films sleep sooner.", 0, 0.2, 0.001,
+			"A film tile may sleep while it still creeps slower than this (blocks/s).");
+		num("hfRenderDepth", "Drawn depth", Cost.NONE, LOOK, 0, 0.2, 0.001,
+			"Water thinner than this is not drawn, so still films do not shimmer.");
+		num("hfSurfaceDrop", "Surface drop", Cost.NONE, LOOK, 0, 0.5, 0.001,
+			"Lowers the drawn surface like vanilla's 8/9-high water (blocks, for water at least half a block deep).");
+		num("hfCurtainMinFlow", "Waterfall threshold", Cost.LOW, "Lower draws more falling sheets.", 0, 0.01, 0.0001,
+			"Outflow over an edge (blocks^3/s) above which a falling sheet is drawn.");
+		num("hfCurrentDrag", "Current pull (player)", Cost.NONE, LOOK, 0, 1, 0.01,
+			"How strongly moving water pulls the player along.");
+		toggle("hfEntityCurrents", "Currents carry entities", Cost.LOW, "Samples the water under nearby entities.",
+			"Moving heightfield water carries mobs, items and boats.");
+		num("hfEntityDrag", "Current pull (mobs)", Cost.NONE, LOOK, 0, 1, 0.01,
+			"Per-tick pull of a mob toward the water's velocity, times how much of it is under water.");
+		num("hfFloodPush", "Flood push", Cost.NONE, LOOK, 0, 2, 0.01,
+			"Extra pull on mobs growing with depth times speed squared: fast floods knock mobs off their feet.");
+		num("hfFloatDrag", "Current pull (floating)", Cost.NONE, LOOK, 0, 1, 0.01,
+			"Per-tick pull of floating things (items, boats) toward the surface current.");
+		integer("hfEntitySamples", "Entities sampled", Cost.LOW, "One water sample each per frame.", 0, 128,
+			"Entities sampled per frame, nearest first.");
+		num("hfEntityRange", "Entity range", Cost.LOW, "Farther reaches more entities.", 0, 128, 1,
+			"How far from the player entities are sampled (blocks).");
+		integer("hfEntityStir", "Entities stirring", Cost.LOW, "Each adds a wake source.", 0, 32,
+			"Entities in water that stir it like the player (waves, wakes), nearest first.");
+		num("hfStirStrength", "Player stirring", Cost.NONE, LOOK, 0, 4, 0.05,
+			"How hard the player pushes the water when moving through it; 0 turns it off.");
+		num("hfRipples", "Wake strength", Cost.LOW, "The wake rings are drawn per pixel.", 0, 4, 0.05,
+			"How strongly the player makes wake and splash rings; 0 turns them off.");
+		num("hfRippleNormal", "Wake relief", Cost.NONE, LOOK, 0, 10, 0.1,
+			"How much the wake bends the surface when shading.");
+		num("hfWakeLife", "Wake life", Cost.LOW, "Longer keeps more rings alive.", 0.1, 20, 0.1,
+			"Seconds the wake's waves take to fade to about a third.");
+		num("hfWakeFoam", "Wake foam", Cost.NONE, LOOK, 0, 4, 0.05,
+			"How white the churned water right behind a swimmer shows; 0 off.");
+		num("hfSplash", "Splash size", Cost.LOW, "Bigger splashes throw more drops.", 0, 4, 0.05,
+			"How big a crater and ring wave a body hitting the water makes; 0 turns splashes off.");
+		num("hfFoam", "Foam", Cost.NONE, LOOK, 0, 2, 0.05,
+			"How white foam and falling water show; 0 off.");
+		num("hfFoamLife", "Foam life", Cost.NONE, LOOK, 0.1, 10, 0.1,
+			"Seconds foam takes to fade to about a third once nothing churns the water.");
+		num("hfSpray", "Spray", Cost.MEDIUM, "Spray and mist are particles.", 0, 4, 0.05,
+			"How much spray falling sheets throw (droplets and mist at their foot); 0 turns it off.");
+		num("hfSprayRadius", "Spray droplet size", Cost.NONE, LOOK, 0.005, 0.2, 0.005,
+			"Radius of a spray droplet (blocks).");
+		num("hfMistSize", "Mist size", Cost.LOW, "Bigger puffs cover more pixels.", 0.05, 2, 0.05,
+			"Radius of a mist puff (blocks).");
+		num("hfMistAlpha", "Mist opacity", Cost.NONE, LOOK, 0, 0.2, 0.005,
+			"How opaque one mist puff is.");
+		num("hfDropRadius", "Splash drop size", Cost.NONE, LOOK, 0.005, 0.2, 0.005,
+			"Radius of a splash's water drops (blocks).");
+		integer("hfDebugMesh", "Debug: mesh parts", Cost.NONE, "Diagnostic.", 0, 2,
+			"0 normal, 1 only water tops, 2 only side walls.");
+		integer("hfCompositeOff", "Debug: shading parts off", Cost.NONE, "Diagnostic.", 0, 127,
+			"Turns parts of the water shading off (add to combine): 1 reflection trace, 2 ripples, 4 foam, 8 wake; 32 shows only the light "
+				+ "through the water, 64 only the reflection.");
+		toggle("hfEditProbe", "Debug: edit probe", Cost.NONE, "Diagnostic.",
+			"Reports in chat when a block edit makes heightfield water jump.");
+
+		category("Other");
+		for (String name : WaterSettings.fields().keySet()) {
+			if (!BY_NAME.containsKey(name)) {
+				RealisticWater.LOGGER.warn("Setting {} has no description in the settings menu", name);
+				add(new Info(name, category, name, Kind.TEXT, Cost.NONE, "", "No description yet.", 0, 0, 0));
+			}
+		}
+		if (BY_CATEGORY.get("Other").isEmpty()) {
+			BY_CATEGORY.remove("Other");
+		}
+	}
+}

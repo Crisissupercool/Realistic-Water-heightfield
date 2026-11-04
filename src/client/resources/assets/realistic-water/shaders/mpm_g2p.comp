@@ -50,23 +50,18 @@ vec3 collideStatic(vec3 x, vec3 xn, inout vec3 v) {
 
 vec3 collideEntities(vec3 x, inout vec3 v) {
     for (int e = 0; e < numEntities(); e++) {
-        vec3 lo = entMin(e);
-        vec3 hi = entMax(e);
-        if (any(lessThan(x, lo)) || any(greaterThan(x, hi))) {
+        vec3 s;
+        vec3 n;
+        if (!entInside(e, x, 0.0, s, n)) {
             continue;
         }
-        vec3 dLo = x - lo;
-        vec3 dHi = hi - x;
         vec3 ve = entVel(e);
-        int axis = 0;
-        float best = 1e9;
-        float dir = 1.0;
-        for (int a = 0; a < 3; a++) {
-            if (dLo[a] < best) { best = dLo[a]; axis = a; dir = -1.0; }
-            if (dHi[a] < best) { best = dHi[a]; axis = a; dir = 1.0; }
+        x = s;
+        float vn = dot(v, n);
+        float en = dot(ve, n);
+        if (vn < en) {
+            v += n * (en - vn);
         }
-        x[axis] = dir > 0.0 ? hi[axis] + 0.01 : lo[axis] - 0.01;
-        v[axis] = dir * max(dir * v[axis], dir * ve[axis]);
     }
     return x;
 }

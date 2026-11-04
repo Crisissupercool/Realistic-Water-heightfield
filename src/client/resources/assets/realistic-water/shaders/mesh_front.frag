@@ -14,14 +14,18 @@ layout(location = 10) in vec2 vQuadUV;
 layout(location = 11) flat in float vBilinear;
 layout(location = 12) in vec2 vFlow;
 layout(location = 0) out vec4 outG;
-layout(location = 1) out float outMat;
+layout(location = 1) out vec4 outMat;
+#define REGION_LIGHT_BINDING 4
+#include "region_light.glsl"
+#define PACK_SHADOW_BINDING 5
+#include "sun_shadow.glsl"
 
 void main() {
     float dist = -vView.z;
     if (dist < G.surf.z) {
         discard;
     }
-    if (viewState.x > 0.5 && vWall > 0.5) {
+    if ((viewState.x > 0.5 || G.oceanA.x > 0.5) && vWall > 0.5) {
         discard;
     }
     vec3 n = vNormal;
@@ -32,7 +36,8 @@ void main() {
         n = mix(mix(vN0, vN1, t.x), mix(vN3, vN2, t.x), t.y);
         aer = mix(mix(vAer4.x, vAer4.y, t.x), mix(vAer4.w, vAer4.z, t.x), t.y);
     }
-    outG = vec4(normalize(n), dist);
+    n = normalize(n);
+    outG = vec4(n, dist);
     if (vBilinear > 0.5) {
         // Heightfield water: aeration, the falling-sheet flag and the water velocity are packed into the mantissa of a value in
         // [0.125, 0.25), inside the 0.25 tolerance composite.frag allows for water (the fluid meshes write exactly 0):
@@ -53,8 +58,13 @@ void main() {
             code = uint(aer * 63.0 + 0.5) | (uint(fract(angle / 6.2831853 + 1.0) * 255.0 + 0.5) << 7)
                 | (uint(speed / 8.0 * 255.0 + 0.5) << 15);
         }
-        outMat = uintBitsToFloat((124u << 23) | code);
+        // Lit as open sky (block light 0, sky light 15): the heightfield has no light grid of its own yet. Never a sea pixel, no
+        // pack shadow lookup.
+        outMat = vec4(uintBitsToFloat((124u << 23) | code), 0.0, 1.0, 0.0);
     } else {
-        outMat = G.matA.x;
+        vec3 rel = (G.invView * vec4(vView, 1.0)).xyz;
+        vec3 nWorld = mat3(G.invView) * n;
+        float shadowed = abs(G.matA.x - 3.0) < 0.5 ? 1.0 - sunShadowFactor(relToSim(rel + nWorld * 0.1)) : 0.0;
+        outMat = vec4(G.matA.x, regionLightAt(relToSim(rel + nWorld * 0.5)), G.oceanA.x > 0.1 ? 2.0 : shadowed);
     }
 }

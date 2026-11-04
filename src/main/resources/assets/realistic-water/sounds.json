@@ -1,0 +1,19 @@
+{
+  "block.wave_maker.run": {
+    "subtitle": "subtitles.realistic-water.block.wave_maker.run",
+    "sounds": [
+      {
+        "name": "realistic-water:block/wave_maker",
+        "stream": true
+      }
+    ]
+  },
+  "block.realistic_water.boil": {
+    "subtitle": "subtitles.realistic-water.block.realistic_water.boil",
+    "sounds": [
+      {
+        "name": "realistic-water:block/boiling"
+      }
+    ]
+  }
+}

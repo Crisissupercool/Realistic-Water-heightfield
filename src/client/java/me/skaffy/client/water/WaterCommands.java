@@ -7,6 +7,7 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.DoubleArgumentType;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import java.lang.reflect.Field;
 import java.util.Map;
@@ -15,90 +16,117 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.commands.CommandBuildContext;
 import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.permissions.Permissions;
 import net.minecraft.world.phys.Vec3;
 
 public final class WaterCommands {
 	private WaterCommands() {
 	}
 
+	private static LiteralArgumentBuilder<FabricClientCommandSource> op(String name) {
+		return literal(name).requires(WaterCommands::isOperator);
+	}
+
+	private static boolean isOperator(FabricClientCommandSource source) {
+		return source.getPlayer().permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER);
+	}
+
 	public static void register(CommandDispatcher<FabricClientCommandSource> dispatcher, CommandBuildContext context) {
 		dispatcher.register(literal("water")
-			.then(literal("stats").executes(c -> {
+			.executes(WaterCommands::openMenu)
+			.then(op("gui").executes(WaterCommands::openMenu))
+			.then(op("stats").executes(c -> {
 				c.getSource().sendFeedback(Component.literal(WaterWorld.get().statsLine()));
 				return 1;
 			}))
-			.then(literal("pause").executes(c -> {
+			.then(op("pause").executes(c -> {
 				boolean paused = WaterWorld.get().togglePause();
 				c.getSource().sendFeedback(Component.literal(paused ? "Simulation paused" : "Simulation running"));
 				return 1;
 			}))
-			.then(literal("reload").executes(c -> {
+			.then(op("reload").executes(c -> {
 				WaterWorld.get().reload(c.getSource().getLevel());
 				c.getSource().sendFeedback(Component.literal("Re-reading realistic water blocks around you into fresh simulations"));
 				return 1;
 			}))
-			.then(literal("ball")
+			.then(op("ball")
 				.executes(c -> ball(c, 3, Material.WATER))
 				.then(argument("size", IntegerArgumentType.integer(1, 64)).executes(c -> ball(c, IntegerArgumentType.getInteger(c, "size"), Material.WATER))))
-			.then(literal("sand")
+			.then(op("sand")
 				.executes(c -> ball(c, 2, Material.SAND))
 				.then(argument("size", IntegerArgumentType.integer(1, 64)).executes(c -> ball(c, IntegerArgumentType.getInteger(c, "size"), Material.SAND))))
-			.then(literal("lava")
+			.then(op("lava")
 				.executes(c -> ball(c, 3, Material.LAVA))
 				.then(argument("size", IntegerArgumentType.integer(1, 64)).executes(c -> ball(c, IntegerArgumentType.getInteger(c, "size"), Material.LAVA))))
-			.then(literal("remove")
+			.then(op("slime")
+				.executes(c -> ball(c, 2, Material.SLIME))
+				.then(argument("size", IntegerArgumentType.integer(1, 64)).executes(c -> ball(c, IntegerArgumentType.getInteger(c, "size"), Material.SLIME))))
+			.then(op("leaves")
+				.executes(c -> ball(c, 2, Material.LEAVES))
+				.then(argument("size", IntegerArgumentType.integer(1, 64)).executes(c -> ball(c, IntegerArgumentType.getInteger(c, "size"), Material.LEAVES))))
+			.then(op("remove")
 				.executes(c -> {
 					WaterWorld.get().removeAll(Minecraft.getInstance().options.renderDistance().get() + 2, Material.WATER);
 					c.getSource().sendFeedback(Component.literal("Removing all realistic water around you (springs included)"));
 					return 1;
 				})
-				.then(literal("sand").executes(c -> {
+				.then(op("sand").executes(c -> {
 					WaterWorld.get().removeAll(Minecraft.getInstance().options.renderDistance().get() + 2, Material.SAND);
 					c.getSource().sendFeedback(Component.literal("Removing all realistic sand around you"));
 					return 1;
 				}))
-				.then(literal("lava").executes(c -> {
+				.then(op("lava").executes(c -> {
 					WaterWorld.get().removeAll(Minecraft.getInstance().options.renderDistance().get() + 2, Material.LAVA);
 					c.getSource().sendFeedback(Component.literal("Removing all realistic lava around you (springs included)"));
 					return 1;
+				}))
+				.then(op("slime").executes(c -> {
+					WaterWorld.get().removeAll(Minecraft.getInstance().options.renderDistance().get() + 2, Material.SLIME);
+					c.getSource().sendFeedback(Component.literal("Removing all realistic slime around you"));
+					return 1;
+				}))
+				.then(op("leaves").executes(c -> {
+					WaterWorld.get().removeAll(Minecraft.getInstance().options.renderDistance().get() + 2, Material.LEAVES);
+					c.getSource().sendFeedback(Component.literal("Removing all realistic leaves around you"));
+					return 1;
 				})))
-			.then(literal("flood")
+			.then(op("flood")
 				.executes(c -> flood(c, 12, 3.0))
 				.then(argument("radius", IntegerArgumentType.integer(2, 120))
 					.executes(c -> flood(c, IntegerArgumentType.getInteger(c, "radius"), 3.0))
 					.then(argument("height", DoubleArgumentType.doubleArg(0.1, 48.0))
 						.executes(c -> flood(c, IntegerArgumentType.getInteger(c, "radius"), DoubleArgumentType.getDouble(c, "height"))))))
-			.then(literal("hf")
-				.then(literal("stats").executes(c -> {
+			.then(op("hf")
+				.then(op("stats").executes(c -> {
 					c.getSource().sendFeedback(Component.literal(WaterWorld.get().heightfieldStats()));
 					return 1;
 				}))
-				.then(literal("column").executes(c -> {
+				.then(op("column").executes(c -> {
 					c.getSource().sendFeedback(Component.literal(WaterWorld.get().heightfieldColumn(Minecraft.getInstance())));
 					return 1;
 				}))
-				.then(literal("capture")
+				.then(op("capture")
 					.executes(c -> capture(c, 24))
 					.then(argument("radius", IntegerArgumentType.integer(1, 64)).executes(c -> capture(c, IntegerArgumentType.getInteger(c, "radius")))))
-				.then(literal("release").executes(c -> {
+				.then(op("release").executes(c -> {
 					c.getSource().sendFeedback(Component.literal(WaterWorld.get().releaseWater()));
 					return 1;
 				}))
-				.then(literal("clear").executes(c -> {
+				.then(op("clear").executes(c -> {
 					c.getSource().sendFeedback(Component.literal(WaterWorld.get().clearHeightfield(c.getSource().getLevel())));
 					return 1;
 				})))
-			.then(literal("set")
+			.then(op("set")
 				.then(argument("name", StringArgumentType.word())
 					.suggests((c, b) -> SharedSuggestionProvider.suggest(WaterSettings.fields().keySet(), b))
 					.then(argument("value", StringArgumentType.greedyString()).executes(WaterCommands::set))))
-			.then(literal("settings").executes(WaterCommands::listSettings))
-			.then(literal("render")
+			.then(op("settings").executes(WaterCommands::listSettings))
+			.then(op("render")
 				.executes(c -> {
 					c.getSource().sendFeedback(Component.literal(ClipRecorder.get().statusLine()));
 					return 1;
 				})
-				.then(literal("stop").executes(c -> {
+				.then(op("stop").executes(c -> {
 					c.getSource().sendFeedback(Component.literal(ClipRecorder.get().stop("stopped")));
 					return 1;
 				}))
@@ -113,12 +141,12 @@ public final class WaterCommands {
 		double half = size * 0.5;
 		WaterWorld.get().addEmitter(new WaterRegion.Emitter(
 			center.x - half, center.y - half, center.z - half, center.x + half, center.y + half, center.z + half, 0, 0, 0), material);
-		String name = switch (material) {
-			case SAND -> "sand";
-			case LAVA -> "lava";
-			default -> "water";
-		};
-		c.getSource().sendFeedback(Component.literal("Dropped a " + size + "^3 block cube of " + name));
+		c.getSource().sendFeedback(Component.literal("Dropped a " + size + "^3 block cube of " + material.label()));
+		return 1;
+	}
+
+	private static int openMenu(CommandContext<FabricClientCommandSource> c) {
+		WaterSettingsScreen.openNextTick();
 		return 1;
 	}
 
@@ -144,6 +172,7 @@ public final class WaterCommands {
 		String value = StringArgumentType.getString(c, "value");
 		try {
 			c.getSource().sendFeedback(Component.literal(name + " = " + WaterSettings.set(name, value)));
+			WaterSettings.save();
 		} catch (ReflectiveOperationException | NumberFormatException e) {
 			c.getSource().sendError(Component.literal("Unknown setting or bad value: " + name));
 		}

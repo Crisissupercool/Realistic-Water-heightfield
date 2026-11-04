@@ -83,10 +83,16 @@ public final class VkTex implements AutoCloseable {
 	}
 
 	public static void copy(VkCommandBuffer cb, long srcImage, long dstImage, int aspect, int width, int height) {
+		copy(cb, srcImage, dstImage, aspect, 0, 0, width, height);
+	}
+
+	public static void copy(VkCommandBuffer cb, long srcImage, long dstImage, int aspect, int x, int y, int width, int height) {
 		try (MemoryStack stack = MemoryStack.stackPush()) {
 			VkImageCopy.Buffer region = VkImageCopy.calloc(1, stack);
 			region.srcSubresource().aspectMask(aspect).mipLevel(0).baseArrayLayer(0).layerCount(1);
 			region.dstSubresource().aspectMask(aspect).mipLevel(0).baseArrayLayer(0).layerCount(1);
+			region.srcOffset().set(x, y, 0);
+			region.dstOffset().set(x, y, 0);
 			region.extent().set(width, height, 1);
 			VK10.vkCmdCopyImage(cb, srcImage, VK10.VK_IMAGE_LAYOUT_GENERAL, dstImage, VK10.VK_IMAGE_LAYOUT_GENERAL, region);
 		}

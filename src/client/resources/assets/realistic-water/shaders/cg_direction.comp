@@ -1,12 +1,35 @@
 #version 450
 #include "common.glsl"
 layout(local_size_x = 256) in;
-layout(std430, binding = 1) readonly buffer Scalars { float scalars[]; };
+layout(std430, binding = 1) buffer Scalars { float scalars[]; };
 layout(std430, binding = 2) readonly buffer Z { float z[]; };
 layout(std430, binding = 3) buffer P { float p[]; };
+layout(std430, binding = 4) readonly buffer Partials { float partials[]; };
 layout(push_constant) uniform PC { ivec4 a; ivec4 b; } pc;
 
+shared float sdata[256];
+
 void main() {
+    float rz = 0.0;
+    if (pc.a.w != 0) {
+        uint lt = gl_LocalInvocationID.x;
+        float s = 0.0;
+        for (int i = int(lt); i < pc.b.x; i += 256) {
+            s += partials[i];
+        }
+        sdata[lt] = s;
+        barrier();
+        for (uint k = 128u; k > 0u; k >>= 1) {
+            if (lt < k) {
+                sdata[lt] += sdata[lt + k];
+            }
+            barrier();
+        }
+        rz = sdata[0];
+        if (GROUP_ID == 0u && lt == 0u) {
+            scalars[pc.a.y] = rz;
+        }
+    }
     int t = int(GID_U);
     if (t >= G.boxMin.w) {
         return;
@@ -17,7 +40,8 @@ void main() {
         return;
     }
     float old = scalars[pc.a.z];
-    float beta = abs(old) > 1e-30 ? scalars[pc.a.y] / old : 0.0;
+    float fresh = pc.a.w != 0 ? rz : scalars[pc.a.y];
+    float beta = abs(old) > 1e-30 ? fresh / old : 0.0;
     if (isnan(beta) || isinf(beta)) {
         beta = 0.0;
     }

@@ -76,7 +76,9 @@ public record HfBlocksPayload(byte mode, long[] positions, byte[] amounts) imple
 			if (RealisticWaterBlock.isInfinite(current)) {
 				continue;
 			}
-			boolean ours = RealisticWaterFluid.isRealistic(current.getFluidState()) && current.getBlock() == ModContent.REALISTIC_WATER_BLOCK;
+			// The Realistic Ocean's water (an ocean origin) belongs to the ocean, never to the heightfield.
+			boolean ours = RealisticWaterFluid.isRealistic(current.getFluidState()) && current.getBlock() == ModContent.REALISTIC_WATER_BLOCK
+				&& !RealisticWaterBlock.isOcean(current);
 			int amount = this.amounts[i];
 			BlockState target;
 			switch (this.mode) {

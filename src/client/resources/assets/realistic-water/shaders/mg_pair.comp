@@ -1,0 +1,121 @@
+#version 450
+#include "common.glsl"
+#include "mg_common.glsl"
+layout(local_size_x = 256) in;
+layout(std430, binding = 1) readonly buffer MgFlags { uint mgFlags[]; };
+layout(std430, binding = 2) readonly buffer B { float b[]; };
+layout(std430, binding = 3) readonly buffer X { float x[]; };
+layout(std430, binding = 4) readonly buffer CoarseX { float coarseX[]; };
+layout(std430, binding = 5) writeonly buffer Out { float outX[]; };
+
+#define TX 8
+#define TY 8
+#define TZ 8
+#define H 2
+#define LX (TX + 2 * H)
+#define LY (TY + 2 * H)
+#define LZ (TZ + 2 * H)
+#define LOAD (LX * LY * LZ)
+#define INACTIVE 0xFFFFFFFFu
+
+shared float sx[LOAD];
+shared uint sf[LOAD];
+
+int localIndex(ivec3 l) {
+    return l.x + LX * (l.y + LY * l.z);
+}
+
+ivec3 localCell(int idx) {
+    return ivec3(idx % LX, (idx / LX) % LY, idx / (LX * LY));
+}
+
+float relax(ivec3 l, ivec3 c, float self, bool init) {
+    float s = 0.0;
+    float n = 0.0;
+    for (int k = 0; k < 6; k++) {
+        uint ty = sf[localIndex(l + MG_NB[k])];
+        if (ty == INACTIVE) {
+            n += 1.0;
+            continue;
+        }
+        if (ty == CELL_SOLID) {
+            continue;
+        }
+        n += 1.0;
+        if (ty == CELL_FLUID && !init) {
+            s += sx[localIndex(l + MG_NB[k])];
+        }
+    }
+    if (n > 0.0) {
+        return (b[lvlIndex(c, pc.dims)] + s) / n;
+    }
+    return self;
+}
+
+void main() {
+    int level = pc.misc.z;
+    int tile = int(GROUP_ID);
+    int tilesX = pc.misc2.y;
+    int tilesY = pc.misc2.z;
+    ivec3 boxMin = lvlBoxMin(level);
+    ivec3 boxMax = lvlBoxMax(level, pc.dims);
+    ivec3 size = boxMax - boxMin;
+    int tilesZ = (size.z + TZ - 1) / TZ;
+    if (tile >= tilesX * tilesY * tilesZ) {
+        return;
+    }
+    ivec3 origin = boxMin + ivec3(tile % tilesX, (tile / tilesX) % tilesY, tile / (tilesX * tilesY)) * ivec3(TX, TY, TZ);
+    int lid = int(gl_LocalInvocationID.x);
+    bool init = pc.misc.y != 0;
+    bool prolong = pc.misc2.x != 0;
+    int first = pc.misc.x;
+
+    for (int idx = lid; idx < LOAD; idx += 256) {
+        ivec3 c = origin - H + localCell(idx);
+        if (!lvlActive(c, pc.dims, level)) {
+            sf[idx] = INACTIVE;
+            sx[idx] = 0.0;
+            continue;
+        }
+        int i = lvlIndex(c, pc.dims);
+        uint f = mgFlags[i];
+        float v = x[i];
+        if (prolong && f == CELL_FLUID) {
+            v += coarseX[lvlIndex(c / 2, pc.cdims)];
+        }
+        if (init && f != CELL_FLUID) {
+            v = 0.0;
+        }
+        sf[idx] = f;
+        sx[idx] = v;
+    }
+    barrier();
+
+    for (int idx = lid; idx < LOAD; idx += 256) {
+        ivec3 l = localCell(idx);
+        if (any(lessThan(l, ivec3(1))) || any(greaterThanEqual(l, ivec3(LX - 1, LY - 1, LZ - 1)))) {
+            continue;
+        }
+        ivec3 c = origin - H + l;
+        if (sf[idx] != CELL_FLUID || ((c.x + c.y + c.z) & 1) != first) {
+            continue;
+        }
+        sx[idx] = relax(l, c, sx[idx], init);
+    }
+    barrier();
+
+    ivec3 l = ivec3(0);
+    for (int idx = lid; idx < TX * TY * TZ; idx += 256) {
+        l = ivec3(H) + ivec3(idx % TX, (idx / TX) % TY, idx / (TX * TY));
+        ivec3 c = origin - H + l;
+        if (any(greaterThanEqual(c, boxMax))) {
+            continue;
+        }
+        int li = localIndex(l);
+        float v = sx[li];
+        if (sf[li] == CELL_FLUID && ((c.x + c.y + c.z) & 1) != first) {
+            v = relax(l, c, v, false);
+        }
+        outX[lvlIndex(c, pc.dims)] = v;
+    }
+}

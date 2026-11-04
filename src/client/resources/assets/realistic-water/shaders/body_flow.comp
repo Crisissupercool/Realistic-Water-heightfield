@@ -1,0 +1,43 @@
+#version 450
+#include "common.glsl"
+layout(local_size_x = 64) in;
+layout(std430, binding = 1) readonly buffer Vel { float vel[]; };
+layout(std430, binding = 2) readonly buffer Flags { uint cellFlags[]; };
+layout(std430, binding = 3) buffer Points { vec4 points[]; };
+layout(push_constant) uniform PC { ivec4 a; ivec4 b; } pc;
+
+bool fluidAt(ivec3 c) {
+    return inBox(c) && (cellFlags[cellIndex(c)] & 0xFFu) == CELL_FLUID;
+}
+
+void main() {
+    int i = int(GID_U);
+    if (i >= pc.a.x) {
+        return;
+    }
+    ivec3 c = ivec3(floor(points[2 * i].xyz));
+    int res = max(int(G.camGrid.w + 0.5), 1);
+    vec4 flow = vec4(0.0);
+    vec4 surface = vec4(0.0);
+    if (fluidAt(c)) {
+        vec3 u = 0.5 * vec3(
+            vel[faceIndex(0, c)] + vel[faceIndex(0, c + ivec3(1, 0, 0))],
+            vel[faceIndex(1, c)] + vel[faceIndex(1, c + ivec3(0, 1, 0))],
+            vel[faceIndex(2, c)] + vel[faceIndex(2, c + ivec3(0, 0, 1))]);
+        flow = vec4(u / G.camGrid.w, 1.0);
+        int y = c.y;
+        for (int k = 0; k < 3 * res && fluidAt(ivec3(c.x, y + 1, c.z)); k++) {
+            y++;
+        }
+        surface = vec4(float(y + 1), 1.0, 0.0, 0.0);
+    } else {
+        for (int k = 1; k <= 2 * res; k++) {
+            if (fluidAt(c - ivec3(0, k, 0))) {
+                surface = vec4(float(c.y - k + 1), 1.0, 0.0, 0.0);
+                break;
+            }
+        }
+    }
+    points[2 * i] = flow;
+    points[2 * i + 1] = surface;
+}

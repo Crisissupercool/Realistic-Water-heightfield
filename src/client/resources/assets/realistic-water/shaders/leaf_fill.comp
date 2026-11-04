@@ -1,0 +1,34 @@
+#version 450
+#include "common.glsl"
+#include "leaf.glsl"
+layout(local_size_x = 64) in;
+layout(std430, binding = 1) readonly buffer Count { uint cellCount[]; };
+layout(std430, binding = 2) readonly buffer Speed { uint cellSpeed[]; };
+layout(std430, binding = 3) writeonly buffer Fill { uint fill[]; };
+layout(push_constant) uniform PC { ivec4 a; ivec4 b; } pc;
+
+void main() {
+    int t = int(GID_U);
+    ivec3 nb = pc.b.xyz;
+    if (t >= nb.x * nb.y * nb.z) {
+        return;
+    }
+    int res = int(G.camGrid.w);
+    ivec3 block = pc.a.xyz + ivec3(t % nb.x, (t / nb.x) % nb.y, t / (nb.x * nb.y));
+    float sum = 0.0;
+    float speed = 0.0;
+    for (int k = 0; k < res * res * res; k++) {
+        ivec3 c = block * res + ivec3(k % res, (k / res) % res, k / (res * res));
+        if (!inBox(c)) {
+            continue;
+        }
+        int i = cellIndex(c);
+        sum += float(cellTotal(cellCount[i]));
+        speed = max(speed, uintBitsToFloat(cellSpeed[i]));
+    }
+    float blocks = sum / float(max(pc.a.w, 1));
+    uint full = uint(clamp(blocks, 0.0, 1.0) * 255.0 + 0.5);
+    uint fast = uint(clamp(speed / float(res) * 16.0, 0.0, 255.0));
+    uint over = uint(clamp(blocks, 0.0, 31.99) * 2048.0 + 0.5);
+    fill[t] = full | (fast << 8) | (over << 16);
+}

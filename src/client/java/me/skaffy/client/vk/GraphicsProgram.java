@@ -1,5 +1,7 @@
 package me.skaffy.client.vk;
 
+import org.jspecify.annotations.Nullable;
+
 import java.nio.LongBuffer;
 import java.util.Map;
 import org.lwjgl.system.MemoryStack;
@@ -25,7 +27,7 @@ import org.lwjgl.vulkan.VkRenderingInfo;
 import org.lwjgl.vulkan.VkViewport;
 
 public final class GraphicsProgram extends Program {
-	public enum Blend { NONE, ADD }
+	public enum Blend { NONE, ADD, PREMULTIPLIED }
 
 	public record State(int colorFormat, int depthFormat, boolean depthTest, boolean depthWrite, int depthCompare, Blend blend, int extraColorFormat) {
 		public State(int colorFormat, int depthFormat, boolean depthTest, boolean depthWrite, int depthCompare, Blend blend) {
@@ -58,11 +60,17 @@ public final class GraphicsProgram extends Program {
 			VkPipelineColorBlendAttachmentState.Buffer blend = VkPipelineColorBlendAttachmentState.calloc(colorAttachments, stack);
 			for (int i = 0; i < colorAttachments; i++) {
 				blend.get(i).colorWriteMask(0xF);
-			}
-			if (state.blend == Blend.ADD) {
-				blend.get(0).blendEnable(true)
-					.srcColorBlendFactor(VK10.VK_BLEND_FACTOR_ONE).dstColorBlendFactor(VK10.VK_BLEND_FACTOR_ONE).colorBlendOp(VK10.VK_BLEND_OP_ADD)
-					.srcAlphaBlendFactor(VK10.VK_BLEND_FACTOR_ONE).dstAlphaBlendFactor(VK10.VK_BLEND_FACTOR_ONE).alphaBlendOp(VK10.VK_BLEND_OP_ADD);
+				if (state.blend == Blend.ADD) {
+					blend.get(i).blendEnable(true)
+						.srcColorBlendFactor(VK10.VK_BLEND_FACTOR_ONE).dstColorBlendFactor(VK10.VK_BLEND_FACTOR_ONE).colorBlendOp(VK10.VK_BLEND_OP_ADD)
+						.srcAlphaBlendFactor(VK10.VK_BLEND_FACTOR_ONE).dstAlphaBlendFactor(VK10.VK_BLEND_FACTOR_ONE).alphaBlendOp(VK10.VK_BLEND_OP_ADD);
+				} else if (state.blend == Blend.PREMULTIPLIED) {
+					blend.get(i).blendEnable(true)
+						.srcColorBlendFactor(VK10.VK_BLEND_FACTOR_ONE).dstColorBlendFactor(VK10.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA)
+						.colorBlendOp(VK10.VK_BLEND_OP_ADD)
+						.srcAlphaBlendFactor(VK10.VK_BLEND_FACTOR_ONE).dstAlphaBlendFactor(VK10.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA)
+						.alphaBlendOp(VK10.VK_BLEND_OP_ADD);
+				}
 			}
 			VkPipelineColorBlendStateCreateInfo colorBlend = VkPipelineColorBlendStateCreateInfo.calloc(stack).sType$Default()
 				.attachmentCount(colorAttachments)
@@ -101,6 +109,16 @@ public final class GraphicsProgram extends Program {
 		}
 	}
 
+	private static int @Nullable [] area;
+
+	public static void setArea(int x, int y, int width, int height) {
+		area = new int[]{x, y, width, height};
+	}
+
+	public static void clearArea() {
+		area = null;
+	}
+
 	public static void begin(VkCommandBuffer cb, int width, int height, long colorView, float[] clearColor, long depthView) {
 		begin(cb, width, height, colorView, clearColor, 0L, null, depthView);
 	}
@@ -133,10 +151,12 @@ public final class GraphicsProgram extends Program {
 					color.get(1).clearValue(clear);
 				}
 			}
-			VkRect2D area = VkRect2D.calloc(stack);
-			area.extent().set(width, height);
+			int[] a = area != null ? area : new int[]{0, 0, width, height};
+			VkRect2D renderArea = VkRect2D.calloc(stack);
+			renderArea.offset().set(a[0], a[1]);
+			renderArea.extent().set(a[2], a[3]);
 			VkRenderingInfo info = VkRenderingInfo.calloc(stack).sType$Default()
-				.renderArea(area)
+				.renderArea(renderArea)
 				.layerCount(1)
 				.pColorAttachments(color);
 			if (depthView != 0L) {
@@ -152,7 +172,8 @@ public final class GraphicsProgram extends Program {
 			VkViewport.Buffer vp = VkViewport.calloc(1, stack).x(0).y(0).width(width).height(height).minDepth(0.0F).maxDepth(1.0F);
 			VK10.vkCmdSetViewport(cb, 0, vp);
 			VkRect2D.Buffer scissor = VkRect2D.calloc(1, stack);
-			scissor.get(0).extent().set(width, height);
+			scissor.get(0).offset().set(a[0], a[1]);
+			scissor.get(0).extent().set(a[2], a[3]);
 			VK10.vkCmdSetScissor(cb, 0, scissor);
 		}
 	}

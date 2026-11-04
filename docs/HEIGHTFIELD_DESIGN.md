@@ -1182,3 +1182,39 @@ Found along the way and kept (each a real fault, none of them the line):
   mirror, so looking down from a few blocks the rings were opaque sky-blue bands over water that otherwise shows its bed.
   Physically right, but it read as wrong. The wake may now add at most WAKE_FRESNEL (0.12) to the Fresnel the water would
   have without it; seen at a low angle, where the water already reflects, the rings keep their full look.
+
+## 40. Merged with upstream 1.3.1: Sodium, shader packs, Realistic Ocean (as built)
+
+Upstream 1.3.1 (Sodium options, Vitrail shader packs, Realistic Ocean, slime, leaves, steam, rain, pumps, temperature, the
+settings GUI) is merged on top of prototype 2. What had to change for the heightfield to live in upstream's renderer:
+
+* **Material target is RGBA32F.** Upstream made the material target four channels (material, block light, sky light, sea or
+  shadow flag) in half floats. Heightfield quads pack aeration, the sheet flag and their flow into the mantissa of the first
+  channel (23 bits, section 37), which a half float cannot hold, so the target is 32-bit float (WaterRenderer.MATERIAL_FORMAT,
+  shared with OceanRenderer's front pass, about 16 MB more at 1080p). Heightfield quads write block light 0 and sky light 15:
+  the heightfield has no light grid yet, so its water is lit like open sky, as before the merge (dark caves still show it lit).
+* **Bindings and push constants.** mesh_front.frag now reads upstream's region light (binding 4) and pack shadow map (5);
+  the heightfield's per-vertex flow moved to binding 6 and heightfield bodies bind a dummy for the region light. The
+  composite's wake buffer moved to binding 12 and its wake push constants follow upstream's nine (76 bytes; Program.PUSH_SIZE
+  is 128 now, the Vulkan minimum).
+* **Composite.** Upstream's composite structure is kept (readable area, slime, sea colours and whitecaps, vanilla lightmap
+  lighting, the two-pass layer output for shader packs) with the heightfield's shading inside it: the reflection trace,
+  parallax fallback, film test, wake, flow-mapped ripples and foam, sheets and the under-heightfield fog. In layer output
+  (Vitrail) the screen is not the final scene, so the trace and the fallback use the sky only, and the scene behind comes from
+  behindAt like upstream's. World positions use w = 1: upstream moved the view bobbing out of the projection into the view
+  matrix, so it has a translation now. Upstream's underwater mirror setting is honoured: off (the default) the surface seen
+  from below stays see-through; on, the heightfield's traced mirror is used.
+* **Particle types.** Upstream's boiling bubbles use particle types 3 and up, which the heightfield used for mist (3) and drops
+  (4+). Heightfield spray is drawn with pc.b.w > 0, and particle.vert and whitewater.frag read the types as heightfield types
+  only then; heightfield spray never counts as surface foam (upstream laces that).
+* **Realistic Ocean water is not the heightfield's.** It is a realistic water block with an ocean origin. HfWorld.ours
+  excludes it everywhere the heightfield reads or writes blocks (import, block sync, springs, the server's HfBlocksPayload), and
+  it counts as vanilla water: solid, with a sink at its surface, so a flood running into the Realistic Ocean drains into it.
+* **Solid voxels.** Upstream widens boxes thinner than a cell to one cell, so panes and bars stop particle water. The heightfield
+  keeps that sideways (panes and bars now block floods) but not upward: a carpet or a closed trapdoor would have become a
+  half-block floor at 2 cells per block (SolidCache widenThinY = false for the heightfield).
+* **Frame.** The heightfield is recorded after the particle regions, as before, inside upstream's frame (FrameTarget, layer
+  depth copy, ocean draw); its mesh build runs outside upstream's interleaved recording (it may grow its buffers), and a
+  heightfield body makes the composite cover the whole screen instead of upstream's fluid-area scissor.
+* **Settings.** The heightfield's settings have their own category, "Heightfield water (fork)", in the settings screen and the
+  Sodium options page, and are saved with the others (upstream persists settings now).

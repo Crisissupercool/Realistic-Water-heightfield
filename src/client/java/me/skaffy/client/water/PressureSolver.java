@@ -26,6 +26,8 @@ final class PressureSolver implements AutoCloseable {
 	private final VkBuf mgFlags;
 	private final VkBuf mgB;
 	private final VkBuf mgX;
+	private final VkBuf mgXAlt;
+	private final VkBuf zAlt;
 	private final VkBuf r;
 	private final VkBuf z;
 	private final VkBuf p;
@@ -45,6 +47,10 @@ final class PressureSolver implements AutoCloseable {
 	private final ComputeProgram cgUpdate;
 	private final ComputeProgram cgDirection;
 	private final ComputeProgram coarse;
+	private final ComputeProgram bottom;
+	private final ComputeProgram whole;
+	private final ComputeProgram pair;
+	private int bottomLevel;
 
 	private static final class Programs {
 		final ComputeProgram flags0;
@@ -59,6 +65,9 @@ final class PressureSolver implements AutoCloseable {
 		final ComputeProgram cgUpdate;
 		final ComputeProgram cgDirection;
 		final ComputeProgram coarse;
+		final ComputeProgram bottom;
+		final ComputeProgram whole;
+		final ComputeProgram pair;
 
 		Programs() {
 			int U = Desc.UBO;
@@ -72,15 +81,18 @@ final class PressureSolver implements AutoCloseable {
 			this.cgApply = new ComputeProgram("cg_apply.comp", U, S, S, S, S);
 			this.cgDot = new ComputeProgram("cg_dot.comp", U, S, S, S);
 			this.cgReduce = new ComputeProgram("cg_reduce.comp", U, S, S);
-			this.cgUpdate = new ComputeProgram("cg_update.comp", U, S, S, S, S, S);
-			this.cgDirection = new ComputeProgram("cg_direction.comp", U, S, S, S);
+			this.cgUpdate = new ComputeProgram("cg_update.comp", U, S, S, S, S, S, S);
+			this.cgDirection = new ComputeProgram("cg_direction.comp", U, S, S, S, S);
 			this.coarse = new ComputeProgram("mg_coarse.comp", U, S, S, S);
+			this.bottom = new ComputeProgram("mg_bottom.comp", U, S, S, S, S, S);
+			this.whole = new ComputeProgram("mg_solve_small.comp", U, S, S, S, S, S, S, S, S, S, S);
+			this.pair = new ComputeProgram("mg_pair.comp", U, S, S, S, S, S);
 		}
 
 		void close() {
 			for (ComputeProgram p : new ComputeProgram[]{
 				this.flags0, this.coarsen, this.smooth, this.restrict, this.prolong, this.cgInit, this.cgApply, this.cgDot, this.cgReduce,
-				this.cgUpdate, this.cgDirection, this.coarse
+				this.cgUpdate, this.cgDirection, this.coarse, this.bottom, this.whole, this.pair
 			}) {
 				p.close();
 			}
@@ -126,6 +138,8 @@ final class PressureSolver implements AutoCloseable {
 		this.mgFlags = VkBuf.device(total * 4L, 0);
 		this.mgB = VkBuf.device(total * 4L, 0);
 		this.mgX = VkBuf.device(total * 4L, 0);
+		this.mgXAlt = VkBuf.device(total * 4L, 0);
+		this.zAlt = VkBuf.device(this.fineCells * 4L, 0);
 		this.r = VkBuf.device(this.fineCells * 4L, 0);
 		this.z = VkBuf.device(this.fineCells * 4L, 0);
 		this.p = VkBuf.device(this.fineCells * 4L, 0);
@@ -146,6 +160,9 @@ final class PressureSolver implements AutoCloseable {
 		this.cgUpdate = p.cgUpdate;
 		this.cgDirection = p.cgDirection;
 		this.coarse = p.coarse;
+		this.bottom = p.bottom;
+		this.whole = p.whole;
+		this.pair = p.pair;
 	}
 
 	int levels() {
@@ -166,6 +183,10 @@ final class PressureSolver implements AutoCloseable {
 		}
 		this.partialCount = ComputeProgram.groups(this.boxCells(0), 256);
 		this.partialSlots = ComputeProgram.launched(this.partialCount);
+		this.bottomLevel = this.levels - 1;
+		while (this.bottomLevel > 0 && this.boxCells(this.bottomLevel - 1) <= WaterSettings.solverBottomCells) {
+			this.bottomLevel--;
+		}
 	}
 
 	private int boxCells(int l) {
@@ -202,15 +223,30 @@ final class PressureSolver implements AutoCloseable {
 		this.smooth(cb, ubo, l, parity, false);
 	}
 
+	static boolean fuseRestrict = true;
+
+	private void restrict(VkCommandBuffer cb, Desc ubo, int l, boolean smoothNext) {
+		smoothNext &= fuseRestrict;
+		this.restrict.bind(cb, ubo, Desc.ssbo(this.mgFlags), Desc.ssbo(this.levelB(l)), Desc.ssbo(this.levelX(l)),
+			Desc.ssbo(this.mgB), Desc.ssbo(this.mgX));
+		int[] push = java.util.Arrays.copyOf(this.push(l, l + 1, 0, 0), 13);
+		push[12] = smoothNext ? 1 : 0;
+		this.restrict.push(cb, push);
+		this.restrict.dispatch(cb, this.boxGroups(l + 1), 1, 1);
+		Vk.barrier(cb);
+	}
+
 	private void vcycle(VkCommandBuffer cb, Desc ubo) {
+		if (WaterSettings.solverBottomCells > 0) {
+			this.vcycleWithBottom(cb, ubo);
+			return;
+		}
 		for (int l = 0; l < this.levels - 1; l++) {
-			this.smooth(cb, ubo, l, 0, l == 0);
+			if (l == 0 || !fuseRestrict) {
+				this.smooth(cb, ubo, l, 0, l == 0);
+			}
 			this.smooth(cb, ubo, l, 1);
-			this.restrict.bind(cb, ubo, Desc.ssbo(this.mgFlags), Desc.ssbo(this.levelB(l)), Desc.ssbo(this.levelX(l)),
-				Desc.ssbo(this.mgB), Desc.ssbo(this.mgX));
-			this.restrict.push(cb, this.push(l, l + 1, 0, 0));
-			this.restrict.dispatch(cb, this.boxGroups(l + 1), 1, 1);
-			Vk.barrier(cb);
+			this.restrict(cb, ubo, l, l + 1 < this.levels - 1);
 		}
 		int coarsest = this.levels - 1;
 		int[] push = this.push(coarsest, coarsest, 0, this.levels == 1 ? 1 : 0);
@@ -230,6 +266,85 @@ final class PressureSolver implements AutoCloseable {
 		}
 	}
 
+	static boolean fusePairs = true;
+
+	private void pair(VkCommandBuffer cb, Desc ubo, int l, VkBuf in, VkBuf coarse, VkBuf out, int first, boolean init, boolean prolong) {
+		int[] b = this.box[l];
+		int sx = b[3] - b[0];
+		int sy = b[4] - b[1];
+		int sz = b[5] - b[2];
+		if (sx <= 0 || sy <= 0 || sz <= 0) {
+			return;
+		}
+		int tx = (sx + 7) / 8;
+		int ty = (sy + 7) / 8;
+		int tz = (sz + 7) / 8;
+		int[] push = java.util.Arrays.copyOf(this.push(l, prolong ? l + 1 : l, first, init ? 1 : 0), 16);
+		push[12] = prolong ? 1 : 0;
+		push[13] = tx;
+		push[14] = ty;
+		this.pair.bind(cb, ubo, Desc.ssbo(this.mgFlags), Desc.ssbo(this.levelB(l)), Desc.ssbo(in), Desc.ssbo(coarse), Desc.ssbo(out));
+		this.pair.push(cb, push);
+		this.pair.dispatch(cb, tx * ty * tz, 1, 1);
+		Vk.barrier(cb);
+	}
+
+	private void vcycleWithBottomPaired(VkCommandBuffer cb, Desc ubo) {
+		int b = this.bottomLevel;
+		this.pair(cb, ubo, 0, this.z, this.z, this.zAlt, 0, true, false);
+		this.restrictFrom(cb, ubo, 0, this.zAlt, 1 < b);
+		for (int l = 1; l < b; l++) {
+			this.smooth(cb, ubo, l, 1);
+			this.restrictFrom(cb, ubo, l, this.mgX, l + 1 < b);
+		}
+		this.bottom.bind(cb, ubo, Desc.ssbo(this.mgFlags), Desc.ssbo(this.r), Desc.ssbo(this.z), Desc.ssbo(this.mgB), Desc.ssbo(this.mgX));
+		this.bottom.push(cb, b, this.levels, Math.max(1, WaterSettings.mgCoarseSweeps));
+		this.bottom.dispatch(cb, 1, 1, 1);
+		Vk.barrier(cb);
+		for (int l = b - 1; l >= 0; l--) {
+			VkBuf in = l == 0 ? this.zAlt : this.mgX;
+			VkBuf coarse = l + 1 == b ? this.mgX : this.mgXAlt;
+			VkBuf out = l == 0 ? this.z : this.mgXAlt;
+			this.pair(cb, ubo, l, in, coarse, out, 1, false, true);
+		}
+	}
+
+	private void restrictFrom(VkCommandBuffer cb, Desc ubo, int l, VkBuf fineX, boolean smoothNext) {
+		this.restrict.bind(cb, ubo, Desc.ssbo(this.mgFlags), Desc.ssbo(this.levelB(l)), Desc.ssbo(fineX), Desc.ssbo(this.mgB), Desc.ssbo(this.mgX));
+		int[] push = java.util.Arrays.copyOf(this.push(l, l + 1, 0, 0), 13);
+		push[12] = smoothNext && fuseRestrict ? 1 : 0;
+		this.restrict.push(cb, push);
+		this.restrict.dispatch(cb, this.boxGroups(l + 1), 1, 1);
+		Vk.barrier(cb);
+	}
+
+	private void vcycleWithBottom(VkCommandBuffer cb, Desc ubo) {
+		int b = this.bottomLevel;
+		if (fusePairs && fuseRestrict && b >= 1) {
+			this.vcycleWithBottomPaired(cb, ubo);
+			return;
+		}
+		for (int l = 0; l < b; l++) {
+			if (l == 0 || !fuseRestrict) {
+				this.smooth(cb, ubo, l, 0, l == 0);
+			}
+			this.smooth(cb, ubo, l, 1);
+			this.restrict(cb, ubo, l, l + 1 < b);
+		}
+		this.bottom.bind(cb, ubo, Desc.ssbo(this.mgFlags), Desc.ssbo(this.r), Desc.ssbo(this.z), Desc.ssbo(this.mgB), Desc.ssbo(this.mgX));
+		this.bottom.push(cb, b, this.levels, Math.max(1, WaterSettings.mgCoarseSweeps));
+		this.bottom.dispatch(cb, 1, 1, 1);
+		Vk.barrier(cb);
+		for (int l = b - 1; l >= 0; l--) {
+			this.prolong.bind(cb, ubo, Desc.ssbo(this.mgFlags), Desc.ssbo(this.levelX(l)), Desc.ssbo(this.mgX));
+			this.prolong.push(cb, this.push(l, l + 1, 0, 0));
+			this.prolong.dispatch(cb, this.boxGroups(l), 1, 1);
+			Vk.barrier(cb);
+			this.smooth(cb, ubo, l, 1);
+			this.smooth(cb, ubo, l, 0);
+		}
+	}
+
 	private void reduce(VkCommandBuffer cb, Desc ubo, int slot) {
 		this.cgReduce.bind(cb, ubo, Desc.ssbo(this.partials), Desc.ssbo(this.scalars));
 		this.cgReduce.push(cb, this.partialSlots, slot);
@@ -237,15 +352,16 @@ final class PressureSolver implements AutoCloseable {
 		Vk.barrier(cb);
 	}
 
-	private void dot(VkCommandBuffer cb, Desc ubo, VkBuf a, VkBuf b, int slot) {
-		this.cgDot.bind(cb, ubo, Desc.ssbo(a), Desc.ssbo(b), Desc.ssbo(this.partials));
-		this.cgDot.dispatch(cb, this.partialCount, 1, 1);
-		Vk.barrier(cb);
-		this.reduce(cb, ubo, slot);
-	}
-
 	void solve(VkCommandBuffer cb, Desc ubo, VkBuf cellFlags, VkBuf b, VkBuf x, int iterations, int[] activeBox) {
 		this.setBox(activeBox);
+		if (this.boxCells(0) <= WaterSettings.solverSmallCells) {
+			this.whole.bind(cb, ubo, Desc.ssbo(this.mgFlags), Desc.ssbo(this.r), Desc.ssbo(this.z), Desc.ssbo(this.mgB), Desc.ssbo(this.mgX),
+				Desc.ssbo(cellFlags), Desc.ssbo(b), Desc.ssbo(x), Desc.ssbo(this.p), Desc.ssbo(this.q));
+			this.whole.push(cb, this.levels, iterations, Math.max(1, WaterSettings.mgCoarseSweeps));
+			this.whole.dispatch(cb, 1, 1, 1);
+			Vk.barrier(cb);
+			return;
+		}
 		int groups = this.partialCount;
 		this.flags0.bind(cb, ubo, Desc.ssbo(cellFlags), Desc.ssbo(this.mgFlags));
 		this.flags0.dispatch(cb, groups, 1, 1);
@@ -262,23 +378,24 @@ final class PressureSolver implements AutoCloseable {
 		this.cgInit.dispatch(cb, groups, 1, 1);
 		Vk.barrier(cb);
 
+		boolean fused = fuseReductions && this.partialSlots <= FUSE_PARTIALS;
 		this.vcycle(cb, ubo);
 		int rz = RZ0;
-		this.dot(cb, ubo, this.r, this.z, rz);
-		this.cgDirection.bind(cb, ubo, Desc.ssbo(this.scalars), Desc.ssbo(this.z), Desc.ssbo(this.p));
-		this.cgDirection.push(cb, 1, 0, 0);
-		this.cgDirection.dispatch(cb, groups, 1, 1);
-		Vk.barrier(cb);
+		this.dot(cb, ubo, this.r, this.z, rz, fused);
+		this.direction(cb, ubo, true, rz, 0, fused);
 
 		for (int k = 0; k < iterations; k++) {
 			this.cgApply.bind(cb, ubo, Desc.ssbo(this.mgFlags), Desc.ssbo(this.p), Desc.ssbo(this.q), Desc.ssbo(this.partials));
 			this.cgApply.push(cb, this.push(0, 0, 0, 0));
 			this.cgApply.dispatch(cb, groups, 1, 1);
 			Vk.barrier(cb);
-			this.reduce(cb, ubo, PQ);
+			if (!fused) {
+				this.reduce(cb, ubo, PQ);
+			}
 
-			this.cgUpdate.bind(cb, ubo, Desc.ssbo(this.scalars), Desc.ssbo(this.p), Desc.ssbo(this.q), Desc.ssbo(x), Desc.ssbo(this.r));
-			this.cgUpdate.push(cb, rz, PQ);
+			this.cgUpdate.bind(cb, ubo, Desc.ssbo(this.scalars), Desc.ssbo(this.p), Desc.ssbo(this.q), Desc.ssbo(x), Desc.ssbo(this.r),
+				Desc.ssbo(this.partials));
+			this.cgUpdate.push(cb, rz, PQ, fused ? 1 : 0, this.partialSlots);
 			this.cgUpdate.dispatch(cb, groups, 1, 1);
 			Vk.barrier(cb);
 			if (k == iterations - 1) {
@@ -287,19 +404,36 @@ final class PressureSolver implements AutoCloseable {
 
 			this.vcycle(cb, ubo);
 			int next = 1 - rz;
-			this.dot(cb, ubo, this.r, this.z, next);
-			this.cgDirection.bind(cb, ubo, Desc.ssbo(this.scalars), Desc.ssbo(this.z), Desc.ssbo(this.p));
-			this.cgDirection.push(cb, 0, next, rz);
-			this.cgDirection.dispatch(cb, groups, 1, 1);
-			Vk.barrier(cb);
+			this.dot(cb, ubo, this.r, this.z, next, fused);
+			this.direction(cb, ubo, false, next, rz, fused);
 			rz = next;
 		}
+	}
+
+	static boolean fuseReductions = true;
+
+	private static final int FUSE_PARTIALS = 1024;
+
+	private void dot(VkCommandBuffer cb, Desc ubo, VkBuf a, VkBuf b, int slot, boolean fused) {
+		this.cgDot.bind(cb, ubo, Desc.ssbo(a), Desc.ssbo(b), Desc.ssbo(this.partials));
+		this.cgDot.dispatch(cb, this.partialCount, 1, 1);
+		Vk.barrier(cb);
+		if (!fused) {
+			this.reduce(cb, ubo, slot);
+		}
+	}
+
+	private void direction(VkCommandBuffer cb, Desc ubo, boolean first, int fresh, int old, boolean fused) {
+		this.cgDirection.bind(cb, ubo, Desc.ssbo(this.scalars), Desc.ssbo(this.z), Desc.ssbo(this.p), Desc.ssbo(this.partials));
+		this.cgDirection.push(cb, first ? 1 : 0, fresh, old, fused ? 1 : 0, this.partialSlots);
+		this.cgDirection.dispatch(cb, this.partialCount, 1, 1);
+		Vk.barrier(cb);
 	}
 
 	@Override
 	public void close() {
 		for (AutoCloseable c : new AutoCloseable[]{
-			this.mgFlags, this.mgB, this.mgX, this.r, this.z, this.p, this.q, this.partials, this.scalars
+			this.mgFlags, this.mgB, this.mgX, this.mgXAlt, this.zAlt, this.r, this.z, this.p, this.q, this.partials, this.scalars
 		}) {
 			try {
 				c.close();

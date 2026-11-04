@@ -15,7 +15,12 @@ layout(std430, binding = 8) readonly buffer Pot { vec2 potential[]; };
 layout(std430, binding = 9) writeonly buffer WwDst { Particle wwDst[]; };
 layout(std430, binding = 10) readonly buffer WwCount { int wwCount[]; };
 layout(std430, binding = 11) readonly buffer Count { int cellCount[]; };
+layout(std430, binding = 12) readonly buffer Heat { int cellHeat[]; };
+layout(std430, binding = 14) buffer HeatEvents { uint eventCount; uint eventPad0; uint eventPad1; uint eventPad2; vec4 events[]; };
 layout(push_constant) uniform PC { ivec4 a; ivec4 b; } pc;
+#define REGION_LIGHT_BINDING 13
+#include "region_light.glsl"
+#include "ocean_zone.glsl"
 
 #include "gridsample.glsl"
 
@@ -58,34 +63,97 @@ bool waterFilm(vec3 x, inout vec3 v, inout vec3 dx, inout float dryness) {
     return dryness < 1.0;
 }
 
-vec3 collideStatic(vec3 x, vec3 xn, inout vec3 v) {
-    if (solidAt(x)) {
-        ivec3 c = ivec3(floor(x));
-        const ivec3 OUT[6] = ivec3[](ivec3(0, 1, 0), ivec3(1, 0, 0), ivec3(-1, 0, 0), ivec3(0, 0, 1), ivec3(0, 0, -1), ivec3(0, -1, 0));
-        for (int k = 0; k < 6; k++) {
-            ivec3 nc = c + OUT[k];
-            if (!inGrid(nc) || staticSolid[cellIndex(nc)] == 0u) {
-                v = vec3(OUT[k]) * 2.0;
-                return vec3(nc) + 0.5;
-            }
+void slimeAdhere(vec3 x, inout vec3 v, inout vec3 dx) {
+    const vec3 SIDES[6] = vec3[](vec3(0.6, 0.0, 0.0), vec3(-0.6, 0.0, 0.0), vec3(0.0, 0.6, 0.0), vec3(0.0, -0.6, 0.0), vec3(0.0, 0.0, 0.6),
+        vec3(0.0, 0.0, -0.6));
+    for (int k = 0; k < 6; k++) {
+        if (solidAt(x + SIDES[k])) {
+            float damp = exp(-G.matA.y * DT);
+            v *= damp;
+            dx *= damp;
+            return;
         }
+    }
+}
+
+bool slimeSupported(vec3 x) {
+    ivec3 c = ivec3(floor(x));
+    for (int k = 1; k <= 32; k++) {
+        ivec3 b = c - ivec3(0, k, 0);
+        if (!inGrid(b)) {
+            return false;
+        }
+        if (staticSolid[cellIndex(b)] != 0u) {
+            return true;
+        }
+        if (countAt(b) == 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+vec3 escapeSolid(vec3 x, inout vec3 v) {
+    ivec3 c = ivec3(floor(x));
+    vec3 f = x - vec3(c);
+    const ivec3 OUT[6] = ivec3[](ivec3(0, 1, 0), ivec3(1, 0, 0), ivec3(-1, 0, 0), ivec3(0, 0, 1), ivec3(0, 0, -1), ivec3(0, -1, 0));
+    float best = 9.0;
+    int pick = -1;
+    for (int k = 0; k < 6; k++) {
+        ivec3 nc = c + OUT[k];
+        if (inGrid(nc) && staticSolid[cellIndex(nc)] != 0u) {
+            continue;
+        }
+        int a = OUT[k].x != 0 ? 0 : OUT[k].y != 0 ? 1 : 2;
+        float d = OUT[k][a] > 0 ? 1.0 - f[a] : f[a];
+        if (d < best - 0.02) {
+            best = d;
+            pick = k;
+        }
+    }
+    if (pick < 0) {
         return x;
     }
+    vec3 n = vec3(OUT[pick]);
+    int a = OUT[pick].x != 0 ? 0 : OUT[pick].y != 0 ? 1 : 2;
+    vec3 r = x;
+    r[a] = n[a] > 0.0 ? float(c[a] + 1) + 0.05 : float(c[a]) - 0.05;
+    float vn = dot(v, n);
+    if (vn < 0.0) {
+        v -= n * vn;
+    }
+    return r;
+}
+
+vec3 collideStatic(vec3 x, vec3 xn, inout vec3 v) {
+    if (solidAt(x)) {
+        return escapeSolid(x, v);
+    }
+    vec3 d = xn - x;
+    float m = max(abs(d.x), max(abs(d.y), abs(d.z)));
+    int n = clamp(int(ceil(m / 0.45)), 1, 32);
+    vec3 stepD = d / float(n);
     vec3 r = x;
     const int ORDER[3] = int[](1, 0, 2);
-    for (int k = 0; k < 3; k++) {
-        int a = ORDER[k];
-        vec3 t = r;
-        t[a] = xn[a];
-        if (!solidAt(t)) {
-            r = t;
-        } else {
-            float edge = xn[a] > r[a] ? floor(r[a]) + 0.999 : floor(r[a]) + 0.001;
-            t[a] = edge;
+    for (int s = 0; s < n; s++) {
+        vec3 goal = r + stepD;
+        for (int k = 0; k < 3; k++) {
+            int a = ORDER[k];
+            if (stepD[a] == 0.0) {
+                continue;
+            }
+            vec3 t = r;
+            t[a] = goal[a];
             if (!solidAt(t)) {
                 r = t;
+            } else {
+                t[a] = stepD[a] > 0.0 ? floor(r[a]) + 0.999 : floor(r[a]) + 0.001;
+                if (!solidAt(t)) {
+                    r = t;
+                }
+                v[a] = 0.0;
+                stepD[a] = 0.0;
             }
-            v[a] = 0.0;
         }
     }
     return r;
@@ -93,25 +161,231 @@ vec3 collideStatic(vec3 x, vec3 xn, inout vec3 v) {
 
 vec3 collideEntities(vec3 x, inout vec3 v) {
     for (int e = 0; e < numEntities(); e++) {
-        vec3 lo = entMin(e);
-        vec3 hi = entMax(e);
-        if (any(lessThan(x, lo)) || any(greaterThan(x, hi))) {
+        vec3 s;
+        vec3 n;
+        if (!entInside(e, x, 0.0, s, n)) {
             continue;
         }
-        vec3 dLo = x - lo;
-        vec3 dHi = hi - x;
         vec3 ve = entVel(e);
-        int axis = 0;
-        float best = 1e9;
-        float dir = 1.0;
-        for (int a = 0; a < 3; a++) {
-            if (dLo[a] < best) { best = dLo[a]; axis = a; dir = -1.0; }
-            if (dHi[a] < best) { best = dHi[a]; axis = a; dir = 1.0; }
+        x = s;
+        float vn = dot(v, n);
+        float en = dot(ve, n);
+        if (vn < en) {
+            v += n * (en - vn);
         }
-        x[axis] = dir > 0.0 ? hi[axis] + 0.01 : lo[axis] - 0.01;
-        v[axis] = dir * max(dir * v[axis], dir * ve[axis]);
+        if (isSlime()) {
+            v = mix(v, ve, G.matA.z);
+        }
     }
     return x;
+}
+
+float intakeFill(vec3 lo, vec3 hi) {
+    int wet = 0;
+    for (int k = 0; k < 27; k++) {
+        vec3 f = (vec3(k % 3, (k / 3) % 3, k / 9) + 0.5) / 3.0;
+        if (countAt(ivec3(floor(mix(lo, hi, f)))) > 0) {
+            wet++;
+        }
+    }
+    return float(wet) / 27.0;
+}
+
+vec3 pumpWater(vec3 x, inout vec3 v, inout uint seed) {
+    for (int e = 0; e < numEntities(); e++) {
+        if (!entIsPump(e)) {
+            continue;
+        }
+        vec3 lo = G.ent[e * 3].xyz;
+        vec3 hi = G.ent[e * 3 + 1].xyz;
+        vec3 shift = G.ent[e * 3 + 2].xyz;
+        vec3 dir = normalize(shift);
+        float speed = G.ent[e * 3 + 1].w;
+        vec3 back = -dir * (hi.x - lo.x);
+        vec3 pullLo = min(lo, lo + back);
+        vec3 pullHi = max(hi, hi + back);
+        if (any(lessThan(x, pullLo)) || any(greaterThan(x, pullHi))) {
+            continue;
+        }
+        float along = dot(v, dir);
+        if (along < 0.5 * speed) {
+            v += dir * min(0.5 * speed - along, 3.0 * speed * DT);
+        }
+        if (any(lessThan(x, lo)) || any(greaterThan(x, hi))) {
+            return x;
+        }
+        float chance = G.ent[e * 3].w * DT / max(intakeFill(lo, hi), 0.08);
+        if (rand(seed) < chance && !solidAt(x + shift)) {
+            x += shift;
+            v = dir * speed + (v - dir * dot(v, dir)) * 0.3;
+        }
+        return x;
+    }
+    return x;
+}
+
+#define THERMAL_SHIFT 20u
+#define VANILLA_SINK 0x40000000u
+#define LATENT_HEAT 539.2
+
+uint lightWordAt(vec3 x) {
+    int res = max(int(G.camGrid.w + 0.5), 1);
+    ivec3 n = max(G.dims.xyz / res, ivec3(1));
+    ivec3 b = ivec3(floor(x / float(res)));
+    if (any(lessThan(b, ivec3(0))) || any(greaterThanEqual(b, n))) {
+        return 0u;
+    }
+    return regionLight[b.x + n.x * (b.y + n.y * b.z)];
+}
+
+uint thermalAt(vec3 x) {
+    return (lightWordAt(x) >> THERMAL_SHIFT) & 7u;
+}
+
+#define MAX_MAGMA_REACH 8
+
+void heatEvent(vec3 x, float kind) {
+    uint o = atomicAdd(eventCount, 1u);
+    if (o < uint(pc.b.z)) {
+        events[o] = vec4(x, kind);
+    }
+}
+
+float expansion(float t) {
+    const float T[7] = float[](0.0, 4.0, 20.0, 40.0, 60.0, 80.0, 100.0);
+    const float B[7] = float[](-6.8e-5, 0.0, 2.07e-4, 3.85e-4, 5.23e-4, 6.43e-4, 7.52e-4);
+    if (t <= T[0]) {
+        return B[0];
+    }
+    for (int i = 1; i < 7; i++) {
+        if (t <= T[i]) {
+            return mix(B[i - 1], B[i], (t - T[i - 1]) / (T[i] - T[i - 1]));
+        }
+    }
+    return B[6];
+}
+
+bool stepHeat(vec3 x, inout vec3 v, inout float temp, inout uint seed, out bool heated) {
+    heated = false;
+    float res = G.camGrid.w;
+    ivec3 c = ivec3(floor(x));
+    int sumHeat = 0;
+    int sumCount = 0;
+    for (int k = 0; k < 27; k++) {
+        ivec3 q = c + ivec3(k % 3, (k / 3) % 3, k / 9) - 1;
+        if (inBox(q)) {
+            int i = cellIndex(q);
+            sumHeat += cellHeat[i];
+            sumCount += cellCount[i];
+        }
+    }
+    float around = temp;
+    if (sumCount > 0) {
+        around = float(sumHeat) / (float(sumCount) * HEAT_FP);
+        temp += (around - temp) * (1.0 - exp(-G.heatA.z * DT));
+    }
+    float perFlux = G.heatA.w * DT;
+    float magmaTarget = -1.0;
+    bool lava = false;
+    for (int k = 1; k < 7; k++) {
+        vec3 o = vec3(0.0);
+        o[(k - 1) >> 1] = (k & 1) == 1 ? 1.0 : -1.0;
+        uint code = thermalAt(x + o);
+        if (code == 1u) {
+            magmaTarget = G.heatC.x;
+        } else if (code == 2u) {
+            lava = true;
+        } else if (code == 3u || code == 4u) {
+            float target = code == 3u ? G.heatC.z : G.heatC.w;
+            float rate = code == 3u ? G.heatE.z : G.heatE.w;
+            if (temp < target) {
+                temp += (target - temp) * (1.0 - exp(-rate * DT));
+            }
+            heated = true;
+        } else if (code >= 5u) {
+            temp += G.heatB.y * (0.0 - temp) * perFlux;
+        }
+    }
+    if (magmaTarget < 0.0 && G.heatC.y > 0.0) {
+        int reach = min(int(ceil(G.heatC.y)), MAX_MAGMA_REACH);
+        for (int d = 1; d <= reach; d++) {
+            uint word = lightWordAt(x - vec3(0.0, float(d) * res, 0.0));
+            if (((word >> THERMAL_SHIFT) & 7u) == 1u) {
+                float fade = clamp(1.0 - float(d - 1) / G.heatC.y, 0.0, 1.0);
+                magmaTarget = mix(G.heatA.y, G.heatC.x, fade);
+                break;
+            }
+            if ((word & 0x100u) != 0u) {
+                break;
+            }
+        }
+    }
+    if (magmaTarget >= 0.0) {
+        if (temp < magmaTarget) {
+            temp += (magmaTarget - temp) * (1.0 - exp(-G.heatE.x * DT));
+        }
+        heated = true;
+    }
+    if (lava) {
+        heated = true;
+        temp = max(temp, 100.0);
+        if (rand(seed) < 1.0 - exp(-G.heatE.y * DT)) {
+            return false;
+        }
+    }
+    if (countAt(c + ivec3(0, 1, 0)) == 0) {
+        float ambient = G.heatA.y;
+        float t = temp * 0.01;
+        float ta = ambient * 0.01;
+        float q = G.heatB.x * (temp - ambient) + 6000.0 * max(t * t * t - ta * ta * ta, 0.0);
+        temp = max(temp - q * perFlux, min(temp, ambient));
+    }
+    v.y += -G.gravityDt.y * expansion(temp) * (temp - around) * DT;
+    temp = max(temp, 0.0);
+    if (temp > 100.0) {
+        float excess = temp - 100.0;
+        temp = 100.0;
+        vec3 kick = vec3(rand(seed) - 0.5, rand(seed), rand(seed) - 0.5);
+        v += kick * G.heatB.z * DT;
+        if (rand(seed) < excess / LATENT_HEAT) {
+            return false;
+        }
+    }
+    if (temp > G.heatB.w && countAt(c + ivec3(0, 1, 0)) == 0
+        && rand(seed) < 0.05 * (temp - G.heatB.w) / max(100.0 - G.heatB.w, 1.0) * DT) {
+        heatEvent(x, 1.0);
+    }
+    return true;
+}
+
+void spawnBubble(vec3 x, vec3 v, float kind, float size, inout uint seed) {
+    if (pc.b.y == 0) {
+        return;
+    }
+    uint o = atomicAdd(counters[pc.b.x], 1u);
+    if (o < uint(G.caps.y)) {
+        float life = kind >= WW_CLING ? 1.5 + 3.0 * rand(seed) : 8.0;
+        wwDst[o] = Particle(vec4(x, life), vec4(v, kind + clamp(size, 0.02, 0.999)));
+    }
+}
+
+void boilBubbles(vec3 x, inout vec3 v, float temp, bool heated, inout uint seed) {
+    if (heated && temp >= 85.0 && temp < 99.5 && rand(seed) < 0.05 * DT) {
+        heatEvent(x, 2.0);
+    }
+    if (heated && temp >= G.heatD.w && temp < 99.0 && rand(seed) < 0.06 * DT) {
+        spawnBubble(x, vec3(0.0), WW_CLING, 0.08 + 0.15 * rand(seed), seed);
+    }
+    if (heated && temp >= 96.0) {
+        uint site = hash(uint(worldCell(x).x) * 73856093u ^ uint(worldCell(x).y) * 19349663u ^ uint(worldCell(x).z) * 83492791u);
+        float strength = clamp((temp - 96.0) / 4.0, 0.0, 1.0);
+        if ((site & 15u) == 0u && rand(seed) < G.heatD.z / G.simA.y * strength * DT) {
+            spawnBubble(x, vec3(0.0, 0.3 * G.heatD.y * G.camGrid.w, 0.0), WW_VAPOUR, 0.25 + 0.5 * strength * rand(seed), seed);
+        }
+    }
+    if (temp >= 99.5 && countAt(ivec3(floor(x)) + ivec3(0, 1, 0)) == 0 && rand(seed) < 2.0 * DT) {
+        v.y += 0.08 * G.heatB.z * rand(seed);
+    }
 }
 
 void emitWhitewater(uint id, vec3 x, vec3 v) {
@@ -145,6 +419,23 @@ void emitWhitewater(uint id, vec3 x, vec3 v) {
     }
 }
 
+bool oceanRelax(vec3 x, inout vec3 v, inout vec3 dx, inout uint seed, out float deviation) {
+    deviation = 0.0;
+    float surface;
+    vec3 target;
+    if (!oceanTarget(x, surface, target)) {
+        return true;
+    }
+    float res = G.camGrid.w;
+    vec3 off = (v - target) / res;
+    deviation = min(dot(off, off), 16.0);
+    float w = oceanBand(x);
+    float a = 1.0 - exp(-(G.oceanB.w * w + G.oceanC.w) * DT);
+    v = mix(v, target, a);
+    dx = mix(dx, target * DT, a);
+    return w <= 0.0 || !(x.y > surface + 0.5 && rand(seed) < w * G.oceanC.z * DT);
+}
+
 void main() {
     uint i = GID_U;
     if (i >= counters[pc.a.x]) {
@@ -157,6 +448,8 @@ void main() {
     vec3 x = p.pos.xyz;
     vec3 v = p.vel.xyz;
     float tag = p.pos.w;
+    float rest = 0.0;
+    float temp = p.vel.w;
     float maxSpeed = G.simB.x;
     bool gridded = inInnerBox(x);
     vec3 dx;
@@ -167,6 +460,51 @@ void main() {
         dx = DT * sampleVel(x + 0.5 * DT * uNew);
         if (!waterFilm(x, v, dx, tag)) {
             return;
+        }
+        if (heatOn()) {
+            temp = p.vel.w;
+            uint heatSeed = hash(i * 2246822519u + uint(pc.a.w) * 3266489917u);
+            bool heated;
+            bool kept = stepHeat(x, v, temp, heatSeed, heated);
+            uint groupHeated = subgroupAdd(heated ? 1u : 0u);
+            float groupHot = subgroupMax(temp);
+            if (subgroupElect()) {
+                atomicAdd(counters[5], groupHeated);
+                atomicMax(counters[15], floatBitsToUint(groupHot));
+            }
+            if (!kept) {
+                heatEvent(x, 0.0);
+                spawnBubble(x, v * 0.3, WW_VAPOUR, 0.35 + 0.4 * rand(heatSeed), heatSeed);
+                return;
+            }
+            boilBubbles(x, v, temp, heated, heatSeed);
+        }
+        if (oceanOn()) {
+            uint oceanSeed = hash(i * 3266489917u + uint(pc.a.w) * 668265263u);
+            float deviation;
+            bool keep = oceanRelax(x, v, dx, oceanSeed, deviation);
+            uint groupDeviation = subgroupAdd(uint(deviation * 64.0));
+            if (subgroupElect()) {
+                atomicAdd(counters[7], groupDeviation);
+            }
+            if (!keep) {
+                return;
+            }
+        }
+        bool squeezed = isSlime() && float(countAt(ivec3(floor(x)))) > G.simA.y * 1.5;
+        if (isSlime() && squeezed) {
+            rest = 0.0;
+        } else if (isSlime()) {
+            slimeAdhere(x, v, dx);
+            rest = p.vel.w;
+            bool frozen = rest >= G.matC.y;
+            bool holding = frozen ? length(uNew) <= G.matC.z : length(v) < G.matC.x;
+            rest = holding && slimeSupported(x) ? rest + DT : 0.0;
+            if (rest >= G.matC.y) {
+                rest = G.matC.y;
+                v = vec3(0.0);
+                dx = vec3(0.0);
+            }
         }
     } else {
         v += G.gravityDt.xyz * DT;
@@ -183,12 +521,20 @@ void main() {
     }
     vec3 xn = collideStatic(x, x + dx, v);
     xn = collideEntities(xn, v);
+    uint pumpSeed = hash(i * 2654435761u + uint(pc.a.w) * 40503u);
+    xn = pumpWater(xn, v, pumpSeed);
     if (any(isnan(xn)) || any(isinf(xn)) || any(isnan(v))) {
         return;
     }
 
     float killMargin = G.killInfo.y;
     if (any(lessThan(xn, vec3(-killMargin))) || any(greaterThanEqual(xn, vec3(NX, NY, NZ) + killMargin)) || xn.y < G.killInfo.x) {
+        return;
+    }
+    if (oceanOn() && (xn.x < G.oceanA.y || xn.x >= G.oceanB.y || xn.z < G.oceanA.z || xn.z >= G.oceanB.z)) {
+        return;
+    }
+    if ((lightWordAt(xn) & VANILLA_SINK) != 0u) {
         return;
     }
     uint groupTotal = subgroupAdd(1u);
@@ -203,7 +549,7 @@ void main() {
     if (o >= uint(G.caps.x)) {
         return;
     }
-    dst[o] = Particle(vec4(xn, tag), vec4(v, 0.0));
+    dst[o] = Particle(vec4(xn, tag), vec4(v, isWater() ? temp : rest));
     uvec3 cell = uvec3(ivec3(floor(xn)) + AABB_BIAS);
     uvec3 lo = uvec3(subgroupMin(cell.x), subgroupMin(cell.y), subgroupMin(cell.z));
     uvec3 hi = uvec3(subgroupMax(cell.x), subgroupMax(cell.y), subgroupMax(cell.z));

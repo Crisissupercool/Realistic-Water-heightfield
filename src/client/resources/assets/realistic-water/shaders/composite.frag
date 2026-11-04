@@ -7,11 +7,25 @@ layout(binding = 4) uniform sampler2D sceneDepth;
 layout(binding = 5) uniform sampler2D foamTex;
 layout(binding = 6) uniform sampler2D materialTex;
 layout(std430, binding = 7) readonly buffer ViewState { vec4 viewState; };
-// Material filter, then the player's wake (HfRipples): the drawn water level it lies on, normal gain, number of entries
-// (0 = off), wave life (s) and foam strength.
-// The wake only exists within wakeRadius of wakeCenter (wrapped world xz); pixels farther away skip it.
+layout(std430, binding = 8) readonly buffer SlimeTex { int slimeTex[]; };
+#define LIGHTMAP_BINDING 9
+#include "fluid_light.glsl"
+layout(binding = 10) uniform sampler2D foamSurfaceTex;
+layout(std430, binding = 11) readonly buffer SeaColors { uint seaColors[]; };
+// Points where the player disturbed heightfield water, two vec4 each: ((x, z) in wrapped world blocks, seconds since, displaced
+// volume in blocks^3), (foam it churned up, 0, 0, 0).
+layout(std430, binding = 12) readonly buffer Wake { vec4 wake[]; };
+// Readable area, material filter, sea pass, background pass, layer debug, sea colour map; then the player's wake (HfRipples):
+// the drawn water level it lies on, normal gain, number of entries (0 = off), wave life (s), foam strength, and the wake only
+// exists within wakeRadius of wakeCenter (wrapped world xz); last WaterSettings.hfCompositeOff, for measuring what each part
+// costs: 1 no reflection trace, 2 no ripples, 4 no foam, 8 no wake, 32 refraction only, 64 reflection only.
 layout(push_constant) uniform Push {
+    vec4 area;
     float filterMat;
+    float sea;
+    float background;
+    float debug;
+    float colorMap;
     float wakeY;
     float wakeGain;
     int wakeCount;
@@ -19,28 +33,86 @@ layout(push_constant) uniform Push {
     float wakeFoam;
     vec2 wakeCenter;
     float wakeRadius;
-    // WaterSettings.hfCompositeOff, for measuring what each part costs: 1 no reflection trace, 2 no ripples, 4 no foam, 8 no wake.
     int debugOff;
 } pc;
-// Points where the player disturbed the surface, two vec4 each: ((x, z) in wrapped world blocks, seconds since, displaced volume
-// in blocks^3), (foam it churned up, 0, 0, 0).
-layout(std430, binding = 8) readonly buffer Wake { vec4 wake[]; };
+#define SEA_COLOR_CELLS 512
+const vec3 OCEAN_WATER = vec3(63.0, 118.0, 228.0) / 255.0;
+const float VANILLA_WATER_TEXTURE = 0.694;
+
+bool readable(vec2 uv) {
+    return all(greaterThanEqual(uv, pc.area.xy)) && all(lessThanEqual(uv, pc.area.zw));
+}
+
+float thicknessAt(vec2 uv) {
+    return readable(uv) ? texture(thicknessTex, uv).r : 0.0;
+}
 layout(location = 0) out vec4 outColor;
 
 const float PI = 3.14159265;
+const float SPECULAR_CAP = 30.0;
 
-// View-space distance of the scene at screen point uv. The level projection includes view bobbing (a small rotation and
-// shift), so depth must be unprojected at the pixel itself: reading it at the screen centre was off by a few percent toward
-// the screen edges, swinging with every bob, which made thickness, refraction and reflections jump while walking.
+// Shader-pack layer output (G.compat.x) shades every pixel twice, over black and over white (gBackground 0 and 1), to get its
+// colour and opacity; -1 means the scene behind is read from the screen.
+float gBackground = -1.0;
+float gDepth = 0.0;
+vec3 gScatter = vec3(0.0);
+vec3 gAbsorb = vec3(0.0);
+vec3 gSeaWater = vec3(-1.0);
+float gSeaRough = 0.0;
+
+vec3 unpackRgb(uint v) {
+    return vec3((v >> 16) & 0xFFu, (v >> 8) & 0xFFu, v & 0xFFu) / 255.0;
+}
+
+vec4 seaColorAt(vec3 rel) {
+    vec2 local = vec2(G.dims.xz & 3) + G.camGrid.xz + rel.xz;
+    vec2 f = local * 0.25 - 0.5;
+    vec2 fl = floor(f);
+    vec2 t = f - fl;
+    ivec2 base = (G.dims.xz >> 2) + ivec2(fl);
+    vec4 sum = vec4(0.0);
+    for (int k = 0; k < 4; k++) {
+        ivec2 c = base + ivec2(k & 1, k >> 1);
+        uint v = seaColors[(c.x & (SEA_COLOR_CELLS - 1)) + (c.y & (SEA_COLOR_CELLS - 1)) * SEA_COLOR_CELLS];
+        uint tag = 0x80u | uint((c.x >> 9) & 7) | uint((c.y >> 9) & 7) << 3;
+        if ((v >> 24) == tag) {
+            float w = ((k & 1) != 0 ? t.x : 1.0 - t.x) * ((k >> 1) != 0 ? t.y : 1.0 - t.y);
+            sum += vec4(unpackRgb(v) * w, w);
+        }
+    }
+    return sum.w > 1e-4 ? vec4(sum.rgb / sum.w, sum.w) : vec4(0.0);
+}
+
+void seaLook(vec3 rel) {
+    gScatter = G.scatter.rgb;
+    gAbsorb = G.absorb.rgb;
+    gSeaWater = vec3(-1.0);
+    if (pc.sea < 0.5 || pc.colorMap < 0.5) {
+        return;
+    }
+    vec4 c = seaColorAt(rel);
+    if (c.w <= 0.0) {
+        return;
+    }
+    gSeaWater = c.rgb;
+    vec3 ratio = clamp(c.rgb / OCEAN_WATER, vec3(0.25), vec3(4.0));
+    gScatter *= ratio;
+    gAbsorb /= ratio;
+}
+
+vec3 behindAt(vec2 uv) {
+    return gBackground < 0.0 ? texture(sceneColor, uv).rgb : vec3(gBackground);
+}
+
+// View-space distance of the scene at screen point uv, unprojected at the pixel itself so it stays exact whatever the projection
+// holds (the view bobbing used to be in it, which made the screen-centre form a few percent off toward the edges).
 float linearDepth(vec2 uv, float device) {
     vec4 v = G.invProj * vec4(uv * 2.0 - 1.0, device, 1.0);
     return -v.z / v.w;
 }
 
-// Point at view-space distance dist along the camera ray through screen point uv. The level projection includes view bobbing,
-// which shifts the camera a little, so the ray does not pass through the view-space origin: it is rebuilt from two points
-// unprojected at different depths. (Scaling a single near-plane point, as before, assumed the origin and was off by the bob
-// shift magnified ~10x, so every water pixel's position, view direction and ripple coordinates swung with each step.)
+// Point at view-space distance dist along the camera ray through screen point uv, rebuilt from two points unprojected at
+// different depths, so it is exact even when the ray does not pass through the view-space origin.
 vec3 viewPosAt(vec2 uv, float dist) {
     vec2 ndc = uv * 2.0 - 1.0;
     vec4 a = G.invProj * vec4(ndc, 0.2, 1.0);
@@ -51,8 +123,8 @@ vec3 viewPosAt(vec2 uv, float dist) {
     return p0 + ray * ((-dist - p0.z) / ray.z);
 }
 
-// Unit vector from the water point at uv back toward the (bobbed) eye, exact even when the eye is not at the origin. The depth
-// buffer is reversed (near = 1), so which unprojected point is nearer is decided by distance, not by depth value.
+// Unit vector from the water point at uv back toward the eye. The depth buffer is reversed (near = 1), so which unprojected point
+// is nearer is decided by distance, not by depth value.
 vec3 toEyeAt(vec2 uv) {
     vec2 ndc = uv * 2.0 - 1.0;
     vec4 a = G.invProj * vec4(ndc, 0.2, 1.0);
@@ -60,6 +132,12 @@ vec3 toEyeAt(vec2 uv) {
     vec3 pa = a.xyz / a.w;
     vec3 pb = b.xyz / b.w;
     return -pa.z < -pb.z ? normalize(pa - pb) : normalize(pb - pa);
+}
+
+// World position (camera-relative world axes plus the wrapped camera position) of a view-space point. The view matrix carries
+// the view bobbing's shift, so points need w = 1.
+vec3 worldAt(vec3 viewPos) {
+    return G.misc.yzw + (G.invView * vec4(viewPos, 1.0)).xyz;
 }
 
 float pixelFootprint(float dist) {
@@ -91,10 +169,13 @@ bool projectToScreen(vec3 pos, out vec2 suv) {
 // again. Taken from the camera instead (the scene in the ray's direction, like an environment map) the reflection slid with
 // the camera: jumping moved the mirrored shore across the water. A ray turned down (off a wave's face tilted toward the
 // camera) would meet the water itself; the sky below the horizon is grey, so it takes the sky mirrored up instead (grey
-// patches on wakes and waves).
+// patches on wakes and waves). In shader-pack layer output the screen is not the final scene, so only the sky is used.
 vec3 distantReflection(vec3 P, vec3 Rv, vec3 Rw) {
     vec3 up = normalize(vec3(Rw.x, max(abs(Rw.y), 0.02), Rw.z));
     vec3 sky = skyColor(up);
+    if (gBackground >= 0.0) {
+        return sky;
+    }
     if (Rw.y < 0.0) {
         Rv = mat3(G.view) * up;
     }
@@ -117,10 +198,14 @@ vec3 distantReflection(vec3 P, vec3 Rv, vec3 Rw) {
 // object, such as a bank on the way to the trees beyond) is no hit, and the march goes on until the ray is in front of the
 // scene again (up to 4 searched). The scene depth has no water, so only the scene on the reflecting side of the water's level
 // can be hit (a level plane through planeP; planeN is view-space up, down from below, or zero for a falling sheet: no test),
-// not the ground under the water. Rays heading back toward the camera and long rays fade out.
+// not the ground under the water. Rays heading back toward the camera and long rays fade out. Nothing is traced in shader-pack
+// layer output (the screen there is not the final scene).
 vec3 traceReflection(vec3 origin, vec3 R, vec3 planeP, vec3 planeN, out float hit, out float travelled) {
     hit = 0.0;
     travelled = 0.0;
+    if (gBackground >= 0.0) {
+        return vec3(0.0);
+    }
     vec3 pos = origin;
     vec3 last = origin;
     float stepLen = 0.15;
@@ -195,6 +280,9 @@ float valueNoise(vec2 p) {
     return mix(mix(noiseHash(i), noiseHash(i + vec2(1.0, 0.0)), f.x), mix(noiseHash(i + vec2(0.0, 1.0)), noiseHash(i + 1.0), f.x), f.y);
 }
 
+// Ripple slope the pixel cannot resolve (its RMS), from the last rippleGradient call: the sea turns it into roughness.
+float gRippleLost = 0.0;
+
 // Small wind ripples: 12 directional waves with scattered directions, phases and deep-water speeds, their strength varied over
 // the surface by slow noise and their crests bent by a static warp, so the pattern does not repeat (5 fixed waves read as
 // regular stripes). Short waves spread wider around the wind direction, like real wind ripples.
@@ -204,21 +292,23 @@ vec2 rippleGradient(vec2 p, float t, float footprint) {
     float patchA = 0.3 + 1.4 * valueNoise(p * 0.03 + vec2(t * 0.01, 3.7));
     float patchB = 0.3 + 1.4 * valueNoise(p * 0.07 + vec2(9.1, t * 0.015));
     float freq = 0.9;
+    float lostVar = 0.0;
     for (int i = 0; i < 12; i++) {
         float lambda = 6.2831853 / freq;
         float fade = smoothstep(4.0, 12.0, lambda / max(footprint, 1e-5));
-        if (fade <= 0.0) {
-            break;
-        }
-        // Directions step by the golden angle within a spread that widens for shorter waves, so no two neighbors line up.
-        float h2 = fract(sin(float(i) * 78.233 + 1.7) * 43758.5453);
-        float ang = 0.5 + (fract(float(i) * 0.618034 + 0.31) - 0.5) * 2.0 * (0.9 + 0.8 * float(i) / 11.0);
-        vec2 dir = vec2(cos(ang), sin(ang));
         float w = 0.1015 * pow(freq, -0.15) * ((i & 1) == 0 ? patchA : patchB);
-        float phase = dot(q, dir) * freq + t * sqrt(freq) * 1.1 + h2 * 6.2831853;
-        g += dir * (w * fade * cos(phase));
+        lostVar += (1.0 - fade * fade) * w * w;
+        if (fade > 0.0) {
+            // Directions step by the golden angle within a spread that widens for shorter waves, so no two neighbors line up.
+            float h2 = fract(sin(float(i) * 78.233 + 1.7) * 43758.5453);
+            float ang = 0.5 + (fract(float(i) * 0.618034 + 0.31) - 0.5) * 2.0 * (0.9 + 0.8 * float(i) / 11.0);
+            vec2 dir = vec2(cos(ang), sin(ang));
+            float phase = dot(q, dir) * freq + t * sqrt(freq) * 1.1 + h2 * 6.2831853;
+            g += dir * (w * fade * cos(phase));
+        }
         freq *= 1.31;
     }
+    gRippleLost = sqrt(lostVar);
     return g;
 }
 
@@ -243,11 +333,12 @@ void flowPhases(vec2 p, vec2 flow, out vec2 off0, out vec2 off1, out float w0) {
 
 // flow: water velocity (blocks/s, world x/z) for heightfield water, so the ripples drift with rivers and streams.
 vec3 rippleNormal(vec3 nView, vec3 viewPos, float footprint, vec2 flow) {
+    gRippleLost = 0.0;
     if (G.shadeA.x <= 0.0) {
         return nView;
     }
     vec3 nWorld = normalize(mat3(G.invView) * nView);
-    vec3 world = G.misc.yzw + (G.invView * vec4(viewPos, 0.0)).xyz;
+    vec3 world = worldAt(viewPos);
     float scale = max(G.shadeA.y, 1e-3);
     // At grazing angles a pixel covers far more surface along the view direction than its distance alone implies;
     // without this the finer ripple bands alias into moire rings on large flat water.
@@ -280,7 +371,7 @@ vec3 rippleNormal(vec3 nView, vec3 viewPos, float footprint) {
     return rippleNormal(nView, viewPos, footprint, vec2(0.0));
 }
 
-vec3 sunSpecular(vec3 n, vec3 V, float footprint) {
+vec3 sunSpecular(vec3 n, vec3 V, float footprint, float extraRough) {
     vec3 L = normalize(G.sunDir.xyz);
     float NoL = dot(n, L);
     if (NoL <= 0.0 || G.sunDir.w <= 0.0) {
@@ -289,14 +380,15 @@ vec3 sunSpecular(vec3 n, vec3 V, float footprint) {
     vec3 H = normalize(L + V);
     float NoH = max(dot(n, H), 0.0);
     float NoV = max(dot(n, V), 1e-3);
-    float rough = clamp(G.shadeA.w + footprint * 0.25, 0.02, 0.7);
+    float base = G.shadeA.w + footprint * 0.25;
+    float rough = clamp(extraRough > 0.0 ? sqrt(base * base + extraRough * extraRough) : base, 0.02, 0.7);
     float a2 = rough * rough * rough * rough;
     float den = NoH * NoH * (a2 - 1.0) + 1.0;
     float D = a2 / max(PI * den * den, 1e-9);
     float F = 0.02 + 0.98 * pow(1.0 - max(dot(V, H), 0.0), 5.0);
     float k = rough * rough * 0.5;
     float Vis = 0.5 / max(NoL * (NoV * (1.0 - k) + k) + NoV * (NoL * (1.0 - k) + k), 1e-5);
-    return vec3(1.0, 0.96, 0.88) * min(D * Vis * F * NoL * G.shadeB.x, 30.0) * G.sunDir.w;
+    return vec3(1.0, 0.96, 0.88) * min(D * Vis * F * NoL * G.shadeB.x, SPECULAR_CAP) * G.sunDir.w;
 }
 
 vec3 shadeAboveLava(vec2 uv, vec3 n, float fd, float ambient) {
@@ -306,12 +398,12 @@ vec3 shadeAboveLava(vec2 uv, vec3 n, float fd, float ambient) {
     float footprint = pixelFootprint(fd);
     vec3 wrinkled = rippleNormal(n, P, footprint);
     n = normalize(mix(n, wrinkled, smoothstep(0.0, 0.2, dot(wrinkled, V))));
-    float path = max(texture(thicknessTex, uv).r, 0.0) * G.waterA.y;
+    float path = max(thicknessAt(uv), 0.0) * G.waterA.y;
     vec3 glow = G.scatter.rgb * (1.4 + ambient);
     vec3 core = glow * (1.0 - exp(-G.scatter.w * path * 0.45));
     float fresnel = pow(1.0 - clamp(dot(n, V), 0.0, 1.0), 2.0);
     vec3 rim = glow * fresnel * 0.85;
-    return core + rim + sunSpecular(n, V, footprint) * vec3(1.0, 0.65, 0.25);
+    return core + rim + sunSpecular(n, V, footprint, 0.0) * vec3(1.0, 0.65, 0.25);
 }
 
 float foamLace(vec2 p, float coverage, float footprint) {
@@ -390,7 +482,6 @@ vec4 wakeAt(vec3 world, float footprint) {
     r.w = 1.0 - exp(-trail * 6.0 * pc.wakeFoam);
     return r;
 }
-
 
 // The foam pattern before its threshold, and the coordinates it was sampled at (x: pattern, yz: warped coordinates, for the
 // bubbles). Value noise octaves on coordinates warped by slow noise, so patches are organic rather than round blobs; the finer
@@ -473,14 +564,14 @@ const float SHEET_SCROLL = 5.0;
 const float SSR_MIN_F = 0.035;
 const vec2 SHEET_OUTWARD[4] = vec2[](vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, -1.0));
 
-vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, float aer, bool sheet, vec2 flow, float sheetDrop) {
+// bs: block and sky light at the surface (material target gb), for the vanilla lightmap.
+vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, vec2 bs, float aer, bool sheet, vec2 flow, float sheetDrop) {
     vec3 P = viewPosAt(uv, fd);
     vec3 V = toEyeAt(uv);
     n = dot(n, V) < 0.0 ? -n : n;
     vec3 nGeo = n;
     float footprint = pixelFootprint(fd);
-    vec3 nWorld = normalize(mat3(G.invView) * n);
-    vec3 world = G.misc.yzw + (G.invView * vec4(P, 0.0)).xyz;
+    vec3 world = worldAt(P);
     // Falling sheets: where one leaves its edge (lip = 1) it is shaded like the top surface it continues; its foam uses the
     // top surface's coordinates unrolled over the edge (world xz plus the drop, outward), so the foam that rode the current to
     // the edge pours on over the lip without a seam. Lower down it gets coordinates across and down the fall, streaks and a
@@ -491,7 +582,6 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     float sheetDown = 0.0;
     if (sheet) {
         vec2 outward = length(flow) > 1.0e-3 ? normalize(flow) : vec2(1.0, 0.0);
-        float fallSpeed = max(length(flow), 1.0);
         vec2 along = vec2(-outward.y, outward.x);
         lip = 1.0 - smoothstep(0.0, 0.3, sheetDrop);
         nearP = world.xz + outward * sheetDrop;
@@ -505,7 +595,7 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
         vec3 side = mat3(G.view) * vec3(along.x, 0.0, along.y);
         n = normalize(n + side * ((s1 - 0.5) * 0.45 * detail));
     }
-    float thickness = max(texture(thicknessTex, uv).r, 0.0);
+    float thickness = max(thicknessAt(uv), 0.0);
     vec3 upV = normalize(mat3(G.view) * vec3(0.0, 1.0, 0.0));
     // The water's depth across its own face: the thickness along the view times |V.n| (a slab d deep is seen through d / |V.n|).
     // It was times |V.up|, near zero for any view near level whatever the face, so a side face (a tank's wall, water against a
@@ -527,9 +617,12 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
         tilt = mat3(G.view) * vec3(slope.x, 0.0, slope.y);
         n = normalize(n - tilt);
     }
+    float lostRough = 0.0;
     if ((pc.debugOff & 2) == 0) {
         vec3 wrinkled = rippleNormal(n, P, footprint, flow);
         n = normalize(mix(n, wrinkled, lip * smoothstep(0.0, 0.15, dot(wrinkled, V))));
+        // The sea turns ripples too fine to resolve into roughness.
+        lostRough = pc.sea > 0.5 ? length(vec2(gSeaRough, gRippleLost * G.shadeA.x)) : 0.0;
     }
 
     // Refraction shifts the scene behind by how far the normal leans away from vertical (flat water does not shift it), capped
@@ -541,28 +634,28 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     offset *= shift > 0.03 ? 0.03 / shift : 1.0;
     vec2 ruv = clamp(uv + offset, vec2(0.0), vec2(1.0));
     float refrDist = linearDepth(ruv, texture(sceneDepth, ruv).r);
-    float path = max(texture(thicknessTex, ruv).r, 0.0);
+    float path = max(thicknessAt(ruv), 0.0);
     if (refrDist < fd) {
         ruv = uv;
         path = thickness;
     }
     path *= G.waterA.y;
-    vec3 under = texture(sceneColor, ruv).rgb;
-    // Ground under water looks wet: darker and more saturated. Fully from 3 mm of water in the view (it was 3 cm, and only
-    // pow 1.3 x 0.955 at the default 0.3, so a film running down terraces or a sheet down a block face left the ground behind
-    // looking dry; wet soil reflects about half the light dry soil does).
-    // Judged by this pixel's own water, not by the refracted path: the ripples move the refraction offset every frame, and at the
-    // edge of a thin film (thickness falling to 0 within a few pixels) the darkening flickered between wet and dry.
-    // Any water at all wets the ground: at a brink the stream thins to a few mm before it pours off (and the drawn film is
-    // 8 mm), and fading the wet look in over 1.5 cm left a light, dry-looking band along every edge water ran over, which
-    // flickered as the thin water's thickness changed. Fully wet from 3 mm.
-    // Only ground the water lies on: a sheet falling in front of a cliff, a block or more away, darkened the cliff behind it into
-    // dark streaks.
+    vec3 under = behindAt(ruv);
+    // Ground under water looks wet: darker and more saturated, fully from 3 mm of water. Judged by this pixel's own water, not by
+    // the refracted path (the ripples move the refraction offset every frame, and at a thin film's edge the darkening flickered
+    // between wet and dry); any water at all wets the ground, so the brink a stream thins to before it pours off has no dry band.
+    // Only ground the water lies on: a sheet falling in front of a cliff, a block or more away, darkened the cliff into streaks.
     float wet = G.shadeB.y * smoothstep(0.0, 0.003, max(thickness * G.waterA.y, path)) * (1.0 - smoothstep(0.3, 1.0, refrDist - fd));
     under = pow(max(under, vec3(0.0)), vec3(1.0 + 1.5 * wet)) * (1.0 - 0.5 * wet);
-    vec3 transmitted = under * exp(-G.absorb.rgb * path);
-    vec3 scattered = G.scatter.rgb * ambient * (1.0 - exp(-G.scatter.w * path));
+    vec3 transmitted = under * exp(-gAbsorb * path);
+    vec3 lightColor = vanillaLight(bs);
+    vec3 scattered = gScatter * lightColor * (1.0 - exp(-G.scatter.w * path));
     vec3 water = transmitted + scattered;
+    if (G.compat.w > 0.0) {
+        vec3 tint = gSeaWater.r >= 0.0 ? gSeaWater * VANILLA_WATER_TEXTURE * lightColor
+            : G.scatter.rgb / max(max(G.scatter.r, G.scatter.g), max(G.scatter.b, 1e-3)) * 0.6 * lightColor;
+        water = mix(water, tint, G.compat.w);
+    }
     // Seen from above, little is reflected, so a wake would barely show; light it like relief instead: slopes facing the sun
     // scatter more light up out of the water, slopes facing away less.
     if (!sheet && G.sunDir.w > 0.0) {
@@ -573,7 +666,7 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
 
     vec3 Rv = reflect(-V, n);
     vec3 Rw = (G.invView * vec4(Rv, 0.0)).xyz;
-    float F = 0.02 + 0.98 * pow(1.0 - clamp(dot(n, V), 0.0, 1.0), 5.0);
+    float F = 0.02 + (max(1.0 - lostRough, 0.02) - 0.02) * pow(1.0 - clamp(dot(n, V), 0.0, 1.0), 5.0);
     // The wake may add at most WAKE_FRESNEL to the reflection the water would have without it. Seen from above, a ring's face
     // tilted away from the camera meets the view at a grazing angle and is nearly a mirror: correct, but it drew opaque sky-blue
     // bands across water that otherwise shows its bed, which looked wrong from a few blocks up.
@@ -595,7 +688,9 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
         ssr = traceReflection(P + n * 0.05, Rv, P, abs(level) > 0.5 ? upV * sign(level) : vec3(0.0), hit, travelled);
         hit *= ssrWeight;
     }
-    vec3 reflection = mix(distantReflection(P, Rv, Rw), ssr, hit);
+    // Under cover (little sky light) the sky in the reflection dims toward the light there.
+    float skyVisible = smoothstep(0.0, 0.7, bs.y);
+    vec3 reflection = mix(distantReflection(P, Rv, Rw) * mix(lightColor * 0.3, vec3(1.0), skyVisible), ssr, hit);
     // Diagnostics (hfCompositeOff 32 / 64): only the refracted water, only the reflection.
     if ((pc.debugOff & 32) != 0) {
         return water;
@@ -603,12 +698,13 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     if ((pc.debugOff & 64) != 0) {
         return reflection;
     }
-    vec3 color = mix(water, reflection, F) + sunSpecular(n, V, footprint);
+    vec3 color = mix(water, reflection, F) + sunSpecular(n, V, footprint, lostRough) * smoothstep(0.5, 0.95, bs.y);
     // Wave crests are thinner, so light scattered in the water shows through them a little brighter.
-    color += G.scatter.rgb * ambient * clamp(wk.z * 2.5, 0.0, 0.2);
+    color += gScatter * lightColor * clamp(wk.z * 2.5, 0.0, 0.2);
+    vec3 foamLit = vec3(0.9, 0.94, 0.96) * lightColor;
     if (wk.w > 0.01 && (pc.debugOff & 4) == 0) {
         float churn = foamTexture(world.xz * 1.4, wk.w * 0.85, footprint);
-        color = mix(color, vec3(0.9, 0.94, 0.96) * mix(0.25, 1.0, ambient), churn * 0.75);
+        color = mix(color, foamLit, churn * 0.75);
     }
     if (aer > 0.0 && (pc.debugOff & 4) == 0) {
         float cover;
@@ -632,28 +728,80 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
         } else {
             cover = 0.7 * flowFoam(world.xz, flow, aer * 0.85, footprint);
         }
-        color = mix(color, vec3(0.9, 0.94, 0.96) * mix(0.25, 1.0, ambient), clamp(cover, 0.0, 0.95));
+        color = mix(color, foamLit, clamp(cover, 0.0, 0.95));
     }
     return color;
 }
 
+float vanillaFog(vec3 viewPos) {
+    vec3 rel = (G.invView * vec4(viewPos, 1.0)).xyz;
+    float spherical = length(rel);
+    float cylindrical = max(length(rel.xz), abs(rel.y));
+    float env = clamp((spherical - G.fogB.x) / max(G.fogB.y - G.fogB.x, 1e-3), 0.0, 1.0);
+    float far = clamp((cylindrical - G.fogB.z) / max(G.fogB.w - G.fogB.z, 1e-3), 0.0, 1.0);
+    return max(env, far);
+}
 
+vec3 slimeRgb(int argb) {
+    return vec3((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF) / 255.0;
+}
+
+vec3 slimeTexel(vec2 uv, float texelsPerBlock) {
+    ivec2 size = ivec2(slimeTex[0], slimeTex[1]);
+    ivec2 t = ivec2(floor(uv * texelsPerBlock));
+    t = ((t % size) + size) % size;
+    return slimeRgb(slimeTex[4 + t.x + t.y * size.x]);
+}
+
+vec3 slimeAlbedo(vec3 world, vec3 nWorld, float footprint) {
+    float tpb = float(slimeTex[0]);
+    vec3 w = pow(abs(nWorld), vec3(8.0));
+    w /= w.x + w.y + w.z;
+    vec3 c = w.y * slimeTexel(vec2(world.x, world.z), tpb)
+           + w.x * slimeTexel(vec2(world.z, -world.y), tpb)
+           + w.z * slimeTexel(vec2(world.x, -world.y), tpb);
+    float detail = 1.0 - smoothstep(0.5, 1.5, footprint * tpb);
+    return mix(slimeRgb(slimeTex[2]), c, detail);
+}
+
+vec3 shadeSlime(vec2 uv, vec3 n, float fd, vec2 bs) {
+    vec3 P = viewPosAt(uv, fd);
+    vec3 V = toEyeAt(uv);
+    n = dot(n, V) < 0.0 ? -n : n;
+    vec3 nWorld = normalize(mat3(G.invView) * n);
+    vec3 world = worldAt(P) - nWorld * 0.01;
+    vec3 albedo = slimeAlbedo(world, nWorld, pixelFootprint(fd));
+    vec3 n2 = nWorld * nWorld;
+    float face = n2.x * 0.6 + n2.z * 0.8 + n2.y * (nWorld.y > 0.0 ? 1.0 : 0.5);
+    vec3 lit = min(albedo * face * vanillaLight(bs) * G.matD.y, vec3(1.0));
+    float path = max(thicknessAt(uv), 0.0) * G.waterA.y;
+    float opacity = mix(G.matD.w, 1.0, 1.0 - exp(-path * 3.0));
+    vec3 behind = behindAt(uv) * mix(vec3(1.0), albedo * 1.3, 0.75);
+    return mix(behind, lit, opacity);
+}
+
+// flow: heightfield water's velocity, so the ripples seen from below drift with the current too.
 vec3 shadeSurfaceFromBelow(vec2 uv, vec3 n, float fd, vec3 deep, vec2 flow) {
     vec3 P = viewPosAt(uv, fd);
     vec3 V = toEyeAt(uv);
     n = dot(n, V) < 0.0 ? -n : n;
     vec3 nGeo = n;
-    // Ripples drift with the current, as seen from above (the surface showed no current from below).
     vec3 wrinkled = rippleNormal(n, P, pixelFootprint(fd), flow);
     n = normalize(mix(n, wrinkled, smoothstep(0.0, 0.15, dot(wrinkled, V))));
     float cosI = clamp(dot(n, V), 0.0, 1.0);
     const float ETA = 1.333;
     float sinT2 = ETA * ETA * (1.0 - cosI * cosI);
-    // Seen from below, the surface reflects the water under it: totally outside Snell's window (beyond ~48 degrees), partly
-    // inside it. The reflection was a flat colour, so past the window's edge the surface was an opaque dark slab that cut across
-    // trunks and blocks standing out of the water, with the jagged outline of wherever the surface met the terrain. Now it
-    // mirrors the submerged scene (screen-space trace, fogged over the reflected path), and where the trace finds nothing,
-    // the water's own colour in the distance (the fog colour), so it blends into the fog like the scene does.
+    vec2 ruv = clamp(uv - n.xy * G.waterA.z * 0.6, vec2(0.0), vec2(1.0));
+    vec3 above = behindAt(ruv);
+    if (G.compat.y < 0.5) {
+        // Underwater mirror off (the default): no total internal reflection, the surface stays see-through at every angle.
+        float F = (0.02 + 0.98 * pow(1.0 - cosI, 5.0)) * 0.25;
+        return mix(above, deep * 1.4, F);
+    }
+    // Underwater mirror on: seen from below, the surface reflects the water under it: totally outside Snell's window (beyond ~48
+    // degrees), partly inside it. It mirrors the submerged scene (screen-space trace, fogged over the reflected path), and where
+    // the trace finds nothing, the water's own colour in the distance (the fog colour), so it blends into the fog like the scene
+    // does; a flat colour there was an opaque slab that cut across everything standing out of the water.
     float F = 1.0;
     if (sinT2 < 1.0) {
         float cosT = sqrt(1.0 - sinT2);
@@ -668,60 +816,91 @@ vec3 shadeSurfaceFromBelow(vec2 uv, vec3 n, float fd, vec3 deep, vec2 flow) {
         float level = dot(nGeo, upV);
         vec3 ssr = traceReflection(P + n * 0.05, Rv, P, abs(level) > 0.5 ? upV * sign(level) : vec3(0.0), hit, travelled);
         float fog = G.scatter.w * G.misc.x;
-        ssr = ssr * exp(-G.absorb.rgb * travelled * G.misc.x) + deep * (1.0 - exp(-fog * travelled));
+        ssr = ssr * exp(-gAbsorb * travelled * G.misc.x) + deep * (1.0 - exp(-fog * travelled));
         reflected = mix(deep, ssr, hit);
     }
     if (sinT2 >= 1.0 || (pc.debugOff & 64) != 0) {
         return (pc.debugOff & 32) != 0 ? vec3(0.0) : reflected;
     }
-    vec2 ruv = clamp(uv - n.xy * G.waterA.z * 0.6, vec2(0.0), vec2(1.0));
-    vec3 above = texture(sceneColor, ruv).rgb;
     if ((pc.debugOff & 32) != 0) {
         return above;
     }
     return mix(above, reflected, F);
 }
 
-void main() {
-    vec2 uv = gl_FragCoord.xy * G.screen.zw;
+vec3 shadePixel(vec2 uv) {
     vec4 g = texture(gbuffer, uv);
     float fd = g.w;
-    float matId = texture(materialTex, uv).r;
-    bool lavaPass = pc.filterMat > 1.5;
-    vec4 foam = texture(foamTex, uv);
+    vec4 matSample = texture(materialTex, uv);
+    float matId = matSample.r;
+    vec2 surfaceLight = matSample.gb;
+    bool lavaPass = abs(pc.filterMat - 2.0) < 0.5;
+    bool slimePass = pc.filterMat > 2.5;
+    bool surfaceOnly = lavaPass || slimePass;
+    vec4 foam = slimePass || !readable(uv) ? vec4(0.0) : texture(foamTex, uv);
     float sceneDev = texture(sceneDepth, uv).r;
     float sceneDist = linearDepth(uv, sceneDev);
     bool hasFluid = fd > 0.0 && fd < sceneDist;
-    bool underwater = viewState.x > 0.5;
+    bool underwater = viewState.x > 0.5 && !slimePass;
     bool matTagged = matId >= -0.5;
     if (hasFluid && matTagged) {
-        if (lavaPass) {
-            if (abs(matId - 2.0) > 0.25) {
-                discard;
-            }
-        } else if (abs(matId) > 0.25) {
+        if (abs(matId - pc.filterMat) > 0.25) {
             discard;
         }
-    } else if (hasFluid && !matTagged) {
-        if (lavaPass) {
-            discard;
-        }
-    } else if (lavaPass) {
+    } else if (surfaceOnly && !(slimePass && G.matD.x > 0.5)) {
         discard;
+    }
+    if (!surfaceOnly) {
+        bool seaPixel = matSample.a > 1.5;
+        if (hasFluid && matTagged ? seaPixel != (pc.sea > 0.5) : pc.background < 0.5) {
+            discard;
+        }
+    }
+    if (slimePass) {
+        vec3 slime = behindAt(uv);
+        float slimeDepth = sceneDev;
+        if (hasFluid && matTagged) {
+            slime = shadeSlime(uv, g.xyz, fd, surfaceLight) * (1.0 - matSample.a);
+            vec4 clip = G.proj * vec4(viewPosAt(uv, fd), 1.0);
+            slimeDepth = clip.z / clip.w;
+        }
+        if (G.matD.x > 0.5) {
+            vec3 inside = slimeRgb(slimeTex[2]) * 0.55 * clamp(G.skyColor.w / 0.85, 0.2, 1.0) * G.matD.y;
+            slime = mix(slime, inside, G.matD.z);
+        }
+        gDepth = slimeDepth;
+        return slime;
+    }
+    bool vanillaLavaFog = lavaPass && G.killInfo.w > 0.0;
+    if (vanillaLavaFog) {
+        if (!hasFluid) {
+            discard;
+        }
+        vec3 lavaColor = underwater ? G.scatter.rgb * (1.2 + G.skyColor.w) * 1.35 : shadeAboveLava(uv, g.xyz, fd, G.skyColor.w);
+        float dist = length(viewPosAt(uv, fd));
+        float f = clamp((dist - G.killInfo.z) / max(G.killInfo.w - G.killInfo.z, 1e-3), 0.0, 1.0);
+        vec4 clip = G.proj * vec4(viewPosAt(uv, fd), 1.0);
+        gDepth = clip.z / clip.w;
+        return mix(lavaColor, G.fogColor.rgb, f);
     }
     if (!hasFluid && foam.a < 1e-3 && !underwater) {
         discard;
     }
     float ambient = G.skyColor.w;
-    vec3 color = texture(sceneColor, uv).rgb;
+    vec3 color = behindAt(uv);
     float outDepth = sceneDev;
+    bool seaSurface = hasFluid && matTagged && matSample.a > 1.5;
+    gSeaRough = seaSurface ? clamp(fract(matSample.a), 0.0, 0.9) : 0.0;
+    float whitecap = seaSurface ? floor(matSample.a - 2.0 + 0.01) / 7.0 : 0.0;
+    seaLook(underwater || !hasFluid ? vec3(0.0) : (G.invView * vec4(viewPosAt(uv, fd), 1.0)).xyz);
 
     // Heightfield water packs aeration, the sheet flag and its velocity into the material value (see mesh_front.frag).
+    bool hfWater = matTagged && matId >= 0.125 && matId < 0.25;
     bool sheet = false;
     float aer = 0.0;
     vec2 flow = vec2(0.0);
     float sheetDrop = 0.0;
-    if (hasFluid && matTagged && matId >= 0.125 && matId < 0.25) {
+    if (hasFluid && hfWater) {
         uint code = floatBitsToUint(matId) & 0x7FFFFFu;
         aer = float(code & 63u) / 63.0;
         sheet = (code & 64u) != 0u;
@@ -735,13 +914,12 @@ void main() {
     }
 
     if (underwater) {
-        vec3 deep = lavaPass ? G.scatter.rgb * (1.2 + ambient) : G.scatter.rgb * ambient;
+        vec3 deep = lavaPass ? G.scatter.rgb * (1.2 + ambient) : gScatter * ambient;
         float visible = min(sceneDist, 160.0);
         if (hasFluid) {
             color = lavaPass ? deep * 1.35 : shadeSurfaceFromBelow(uv, g.xyz, fd, deep, sheet ? vec2(0.0) : flow);
             visible = fd;
-            vec3 P = viewPosAt(uv, fd);
-            vec4 clip = G.proj * vec4(P, 1.0);
+            vec4 clip = G.proj * vec4(viewPosAt(uv, fd), 1.0);
             outDepth = clip.z / clip.w;
         } else if (viewState.w > 0.5) {
             // Under heightfield water with no surface drawn in front: a ray going up leaves the water at the surface height
@@ -756,28 +934,93 @@ void main() {
             }
         }
         float fog = G.scatter.w * G.misc.x;
-        color = color * exp(-G.absorb.rgb * visible * G.misc.x) + deep * (1.0 - exp(-fog * visible));
+        color = color * exp(-gAbsorb * visible * G.misc.x) + deep * (1.0 - exp(-fog * visible));
     } else if (hasFluid) {
         color = lavaPass ? shadeAboveLava(uv, g.xyz, fd, ambient)
-                         : shadeAboveWater(uv, g.xyz, fd, sceneDist, ambient, aer, sheet, flow, sheetDrop);
-        vec3 P = viewPosAt(uv, fd);
-        vec4 clip = G.proj * vec4(P, 1.0);
+                         : shadeAboveWater(uv, g.xyz, fd, sceneDist, ambient, surfaceLight, aer, sheet, flow, sheetDrop);
+        vec4 clip = G.proj * vec4(viewPosAt(uv, fd), 1.0);
         outDepth = clip.z / clip.w;
+    }
+
+    if (whitecap > 0.0 && !underwater) {
+        vec3 P = viewPosAt(uv, fd);
+        vec3 world = worldAt(P);
+        float lace = foamLace(world.xz * 0.8, whitecap, pixelFootprint(fd) * 0.8);
+        float cover = whitecap * mix(0.55, 1.0, lace);
+        vec3 L = G.sunDir.w > 0.0 ? normalize(G.sunDir.xyz) : normalize(mat3(G.view) * vec3(0.0, 1.0, 0.0));
+        float lit = mix(0.72, 1.08, clamp(dot(normalize(g.xyz), L) * 0.5 + 0.5, 0.0, 1.0));
+        color = mix(color, vec3(0.93, 0.96, 1.0) * lit * vanillaLight(surfaceLight), clamp(cover, 0.0, 0.95));
     }
 
     if (foam.a > 1e-4) {
         vec3 foamColor = foam.rgb / foam.a;
         float coverage = min(1.0 - exp(-foam.a * G.foamA.y), 0.9);
+        vec4 foamSurface = texture(foamSurfaceTex, uv);
+        float surface = clamp(foamSurface.r / foam.a, 0.0, 1.0);
         // The particle regions' surface foam is laced; over heightfield water the whitewater is only spray and splash drops
         // flying in front of it (its surface foam is shaded in shadeAboveWater), which the lace cut holes into.
-        bool hfWater = matTagged && matId >= 0.125 && matId < 0.25;
-        if (hasFluid && !underwater && !hfWater) {
-            vec3 world = G.misc.yzw + (G.invView * vec4(viewPosAt(uv, fd), 0.0)).xyz;
-            coverage *= foamLace(world.xz, coverage, pixelFootprint(fd));
+        if (hasFluid && !underwater) {
+            if (!hfWater) {
+                vec3 world = worldAt(viewPosAt(uv, fd));
+                coverage *= mix(1.0, foamLace(world.xz, coverage, pixelFootprint(fd)), surface);
+            }
+        } else if (!underwater) {
+            float foamDist = foamSurface.g / foam.a;
+            if (foamDist > 0.0) {
+                vec3 P = viewPosAt(uv, foamDist);
+                vec3 world = worldAt(P);
+                coverage *= mix(1.0, foamLace(world.xz, coverage, pixelFootprint(foamDist)), surface);
+                if (!hasFluid && G.compat.x < 0.5 && coverage > 0.35) {
+                    vec4 clip = G.proj * vec4(P, 1.0);
+                    outDepth = max(outDepth, clip.z / clip.w);
+                }
+            }
         }
-        color = mix(color, foamColor * mix(0.25, 1.0, ambient), coverage);
+        vec3 foamLight = vanillaLight(hasFluid && matTagged ? surfaceLight : vec2(0.0, 1.0));
+        color = mix(color, foamColor * foamLight, coverage);
     }
 
-    outColor = vec4(color, 1.0);
-    gl_FragDepth = outDepth;
+    if (hasFluid && !underwater && matSample.a > 1.5) {
+        color = mix(color, G.fogColor.rgb, vanillaFog(viewPosAt(uv, fd)));
+    }
+
+    gDepth = outDepth;
+    return color;
+}
+
+bool debugView(vec2 uv) {
+    if (pc.debug < 0.5 || abs(pc.filterMat) > 0.25) {
+        return false;
+    }
+    if (pc.sea < 0.5) {
+        discard;
+    }
+    float fd = texture(gbuffer, uv).w;
+    if (fd <= 0.0) {
+        discard;
+    }
+    vec4 mat = texture(materialTex, uv);
+    float sceneDist = linearDepth(uv, texture(sceneDepth, uv).r);
+    vec3 c = fd >= sceneDist ? vec3(1.0, 1.0, 0.0) : mat.r < -0.5 ? vec3(1.0, 0.0, 1.0) : mat.a > 1.5 ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.3, 1.0);
+    outColor = vec4(c, 1.0);
+    gl_FragDepth = texture(sceneDepth, uv).r;
+    return true;
+}
+
+void main() {
+    vec2 uv = gl_FragCoord.xy * G.screen.zw;
+    if (debugView(uv)) {
+        return;
+    }
+    if (G.compat.x < 0.5) {
+        outColor = vec4(shadePixel(uv), 1.0);
+        gl_FragDepth = gDepth;
+        return;
+    }
+    gBackground = 0.0;
+    vec3 over = shadePixel(uv);
+    gBackground = 1.0;
+    vec3 through = clamp(shadePixel(uv) - over, vec3(0.0), vec3(1.0));
+    outColor = vec4(max(over, vec3(0.0)), 1.0 - dot(through, vec3(1.0 / 3.0)));
+    gl_FragDepth = gDepth;
 }

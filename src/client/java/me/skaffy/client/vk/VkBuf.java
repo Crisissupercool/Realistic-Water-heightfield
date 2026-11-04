@@ -47,7 +47,9 @@ public final class VkBuf implements AutoCloseable {
 	}
 
 	public static VkBuf device(long size, int usage) {
-		return new VkBuf(align(size), usage | STORAGE | SRC | DST, Vma.VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0);
+		VkBuf buf = new VkBuf(align(size), usage | STORAGE | SRC | DST, Vma.VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0);
+		Vk.queueZero(buf);
+		return buf;
 	}
 
 	public static VkBuf upload(long size, int usage) {
@@ -98,6 +100,7 @@ public final class VkBuf implements AutoCloseable {
 	public void close() {
 		if (!this.closed) {
 			this.closed = true;
+			Vk.forget(this);
 			Vma.vmaDestroyBuffer(Vk.vma(), this.handle, this.allocation);
 		}
 	}

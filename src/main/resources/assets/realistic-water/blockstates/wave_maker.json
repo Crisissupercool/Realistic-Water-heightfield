@@ -1,0 +1,26 @@
+{
+  "variants": {
+    "facing=north": {
+      "model": "realistic-water:block/wave_maker"
+    },
+    "facing=east": {
+      "model": "realistic-water:block/wave_maker",
+      "y": 90
+    },
+    "facing=south": {
+      "model": "realistic-water:block/wave_maker",
+      "y": 180
+    },
+    "facing=west": {
+      "model": "realistic-water:block/wave_maker",
+      "y": 270
+    },
+    "facing=up": {
+      "model": "realistic-water:block/wave_maker_vertical"
+    },
+    "facing=down": {
+      "model": "realistic-water:block/wave_maker_vertical",
+      "x": 180
+    }
+  }
+}

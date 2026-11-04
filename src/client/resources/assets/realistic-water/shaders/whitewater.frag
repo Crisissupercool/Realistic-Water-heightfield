@@ -8,6 +8,7 @@ layout(location = 1) in vec3 vCenter;
 layout(location = 2) in float vRadius;
 layout(location = 3) in vec4 vData;
 layout(location = 0) out vec4 outFoam;
+layout(location = 1) out vec4 outSurface;
 
 // View-space distance of the scene at screen point uv. The level projection includes view bobbing (a small rotation and
 // shift), so depth must be unprojected at the pixel itself: reading it at the screen centre was off by a few percent toward
@@ -30,17 +31,24 @@ void main() {
     float type = vData.y;
     float a = vData.z;
     vec3 color = vec3(1.0);
-    if (type >= 3.5) {
+    // vData.w: heightfield spray (mist 3, drops 4+); otherwise types above 2.5 are the regions' boiling bubbles.
+    bool hfSpray = vData.w > 0.5;
+    if (hfSpray && type >= 3.5) {
         // Splash water drops (heightfield): a crisp edge (anti-aliased over about a pixel), a bright core and a slightly darker,
         // bluer rim where light bends around the drop's edge. A soft gaussian here read as blur (scratchpad preview/drops.py).
         float r = sqrt(r2);
         float aa = max(fwidth(r), 1.0e-3);
         a *= 1.5 * (1.0 - smoothstep(1.0 - 1.5 * aa, 1.0, r));
         color = mix(vec3(0.97, 0.99, 1.0), vec3(0.76, 0.85, 0.93), smoothstep(0.45, 1.0, r));
-    } else if (type > 2.5) {
+    } else if (hfSpray && type > 2.5) {
         // Mist (heightfield spray): soft and faint, its alpha set in particle.vert.
         a *= exp(-4.0 * r2);
         color = vec3(0.9, 0.95, 1.0);
+    } else if (type > 2.5) {
+        float rim = smoothstep(0.55, 1.0, r2);
+        float spot = 1.0 - smoothstep(0.0, 0.08, dot(vUV - vec2(-0.35, 0.4), vUV - vec2(-0.35, 0.4)));
+        a *= 0.08 + 0.55 * rim + 0.6 * spot;
+        color = vec3(0.92, 0.97, 1.0);
     } else if (type < 0.5) {
         a *= G.foamA.w;
         color = vec3(0.85, 0.92, 1.0);
@@ -50,14 +58,25 @@ void main() {
     } else {
         a *= 0.9 * clamp(vData.x * 0.8, 0.0, 1.0) * exp(-2.5 * r2);
     }
+    if (type < 2.5) {
+        vec3 n = vec3(vUV.x, vUV.y, sqrt(max(1.0 - r2, 0.0)));
+        vec3 L = G.sunDir.w > 0.0 ? normalize(G.sunDir.xyz) : normalize(mat3(G.view) * vec3(0.0, 1.0, 0.0));
+        color *= mix(0.6, 1.12, clamp((dot(n, L) + 0.4) / 1.4, 0.0, 1.0));
+    }
     float fd = texture(gbuffer, uv).w;
+    float submerged = 0.0;
     if (viewState.x > 0.5) {
         if (type > 0.5 && type < 1.5) {
             a *= 0.15;
         }
         a *= exp(-myDist * G.scatter.w * G.misc.x * 2.0);
     } else if (fd > 0.0 && myDist > fd + 0.08) {
-        a *= exp(-(myDist - fd) * 1.8);
+        submerged = myDist - fd;
+        float path = submerged * G.misc.x;
+        color *= exp(-G.absorb.rgb * path);
+        a *= exp(-G.scatter.w * path);
     }
     outFoam = vec4(color * a, a);
+    // Heightfield spray and drops fly in front of the water and never count as surface foam (the composite laces that).
+    outSurface = vec4(submerged > 0.0 || hfSpray ? 0.0 : a, a * myDist, 0.0, 0.0);
 }

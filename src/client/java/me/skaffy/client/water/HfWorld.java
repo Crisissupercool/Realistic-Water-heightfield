@@ -131,14 +131,14 @@ final class HfWorld {
 	 * {@code open} (vanilla water being captured right now) count as open.
 	 */
 	static HfTopology.Voxels voxels(ClientLevel level, HfTileGrid g, @Nullable Long2IntOpenHashMap open) {
-		SolidCache solids = new SolidCache(g.cpb, false);
+		SolidCache solids = new SolidCache(g.cpb, false, false);
 		long full = g.cpb * g.cpb * g.cpb >= 64 ? -1L : (1L << (g.cpb * g.cpb * g.cpb)) - 1L;
 		BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
 		return new HfTopology.Voxels() {
 			@Override
 			public long blockVoxels(int bx, int by, int bz) {
 				BlockState state = level.getBlockState(p.set(bx, by, bz));
-				if (!state.getFluidState().isEmpty() && state.getBlock() != ModContent.REALISTIC_WATER_BLOCK
+				if (!state.getFluidState().isEmpty() && !ours(state)
 					&& (open == null || !open.containsKey(BlockPos.asLong(bx, by, bz)))) {
 					long held = g.openVoxels(bx, by, bz);
 					if (held != 0L) {
@@ -185,7 +185,7 @@ final class HfWorld {
 	/** Realistic water amount at a block (springs count as full), 0 for anything else. */
 	private static int realistic(ClientLevel level, int x, int y, int z) {
 		BlockState state = level.getBlockState(new BlockPos(x, y, z));
-		return state.getBlock() == ModContent.REALISTIC_WATER_BLOCK ? Math.min(8, Math.max(WaterWorld.waterAmount(state), RealisticWaterBlock.isInfinite(state) ? 8 : 0)) : 0;
+		return ours(state) ? Math.min(8, Math.max(WaterWorld.waterAmount(state), RealisticWaterBlock.isInfinite(state) ? 8 : 0)) : 0;
 	}
 
 	/** Adds a tile built from the current terrain, filled from the realistic water blocks in it plus {@code extra}. */
@@ -204,7 +204,7 @@ final class HfWorld {
 		boolean[] sectionHasWater = new boolean[level.getSectionsCount()];
 		for (int i = 0; i < sectionHasWater.length; i++) {
 			LevelChunkSection section = chunk.getSection(i);
-			sectionHasWater[i] = !section.hasOnlyAir() && section.maybeHas(st -> st.getBlock() == ModContent.REALISTIC_WATER_BLOCK);
+			sectionHasWater[i] = !section.hasOnlyAir() && section.maybeHas(HfWorld::ours);
 		}
 		float[] depth = HfBlocks.depthFromBlocks(g, tx, tz, t.geo, t.layersUsed, (x, y, z) -> {
 			if (extra != null) {
@@ -226,8 +226,17 @@ final class HfWorld {
 		return tile;
 	}
 
+	/**
+	 * Water the heightfield owns: realistic water, but not the Realistic Ocean's (a realistic water block with an ocean origin),
+	 * which belongs to the ocean simulation and is treated like vanilla water (solid, a sink at its surface).
+	 */
+	static boolean ours(BlockState state) {
+		return state.getBlock() == ModContent.REALISTIC_WATER_BLOCK && !RealisticWaterBlock.isOcean(state);
+	}
+
+	/** Water a flood drains into instead of taking in: vanilla water and the Realistic Ocean's water. */
 	private static boolean isVanillaWater(BlockState state) {
-		return state.getBlock() == Blocks.WATER;
+		return state.getBlock() == Blocks.WATER || RealisticWaterBlock.isOcean(state);
 	}
 
 	/**
@@ -256,7 +265,7 @@ final class HfWorld {
 			for (int bz = 0; bz < 16; bz++) {
 				for (int bx = 0; bx < 16; bx++) {
 					BlockState state = section.getBlockState(bx, y & 15, bz);
-					if (RealisticWaterBlock.isInfinite(state) && state.getBlock() == ModContent.REALISTIC_WATER_BLOCK) {
+					if (RealisticWaterBlock.isInfinite(state) && ours(state)) {
 						this.setBlockReservoir(g, tile, bx, bz, springLevel(y), HfTileGrid.RESERVOIR_FIXED, true);
 					}
 				}
@@ -304,12 +313,12 @@ final class HfWorld {
 		int firstY = Integer.MIN_VALUE;
 		for (int s = 0; s < sections.length && firstY == Integer.MIN_VALUE; s++) {
 			LevelChunkSection section = sections[s];
-			if (section.hasOnlyAir() || !section.maybeHas(state -> state.getBlock() == ModContent.REALISTIC_WATER_BLOCK)) {
+			if (section.hasOnlyAir() || !section.maybeHas(HfWorld::ours)) {
 				continue;
 			}
 			int baseY = (level.getMinSectionY() + s) << 4;
 			for (int i = 0; i < 4096 && firstY == Integer.MIN_VALUE; i++) {
-				if (section.getBlockState(i & 15, (i >> 4) & 15, i >> 8).getBlock() == ModContent.REALISTIC_WATER_BLOCK) {
+				if (ours(section.getBlockState(i & 15, (i >> 4) & 15, i >> 8))) {
 					firstY = baseY + ((i >> 4) & 15);
 				}
 			}
@@ -678,14 +687,14 @@ final class HfWorld {
 				LevelChunk chunk = level.getChunk(cx, cz);
 				for (int y = g.yMin; y < g.yMax; y++) {
 					LevelChunkSection section = chunk.getSection(level.getSectionIndex(y));
-					if (section.hasOnlyAir() || !section.maybeHas(st -> st.getBlock() == ModContent.REALISTIC_WATER_BLOCK)) {
+					if (section.hasOnlyAir() || !section.maybeHas(HfWorld::ours)) {
 						y = (y | 15);
 						continue;
 					}
 					for (int bz = 0; bz < 16; bz++) {
 						for (int bx = 0; bx < 16; bx++) {
 							BlockState state = section.getBlockState(bx, y & 15, bz);
-							if (state.getBlock() == ModContent.REALISTIC_WATER_BLOCK && !RealisticWaterBlock.isInfinite(state)) {
+							if (ours(state) && !RealisticWaterBlock.isInfinite(state)) {
 								long key = BlockPos.asLong(cx * 16 + bx, y, cz * 16 + bz);
 								positions.add(key);
 								amounts.add((byte) 0);
@@ -1167,7 +1176,7 @@ final class HfWorld {
 		boolean[] sectionHasWater = new boolean[level.getSectionsCount()];
 		for (int i = 0; i < sectionHasWater.length; i++) {
 			LevelChunkSection section = chunk.getSection(i);
-			sectionHasWater[i] = !section.hasOnlyAir() && section.maybeHas(st -> st.getBlock() == ModContent.REALISTIC_WATER_BLOCK);
+			sectionHasWater[i] = !section.hasOnlyAir() && section.maybeHas(HfWorld::ours);
 		}
 		LongArrayList positions = new LongArrayList();
 		ByteArrayList amounts = new ByteArrayList();
@@ -1182,7 +1191,7 @@ final class HfWorld {
 					}
 					p.set(cx * 16 + bx, y, cz * 16 + bz);
 					BlockState state = chunk.getBlockState(p);
-					boolean ours = state.getBlock() == ModContent.REALISTIC_WATER_BLOCK;
+					boolean ours = ours(state);
 					// Replaceable plants count as empty: the server replaces them with the water (HfBlocksPayload, WRITE).
 					boolean plant = !ours && state.canBeReplaced() && state.getFluidState().isEmpty();
 					if (ours && RealisticWaterBlock.isInfinite(state) || !ours && !state.isAir() && !plant) {

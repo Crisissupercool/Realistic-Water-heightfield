@@ -1,0 +1,19 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": [
+    "IPI",
+    "RCR",
+    "III"
+  ],
+  "key": {
+    "I": "minecraft:iron_ingot",
+    "P": "minecraft:piston",
+    "R": "minecraft:redstone",
+    "C": "minecraft:crafting_table"
+  },
+  "result": {
+    "id": "realistic-water:realistic_converter",
+    "count": 1
+  }
+}

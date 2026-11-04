@@ -1,8 +1,9 @@
 package me.skaffy.client.water;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import me.skaffy.client.water.Material;
+import me.skaffy.client.vk.ComputeProgram;
 import me.skaffy.client.vk.Desc;
 import me.skaffy.client.vk.GpuTimer;
 import me.skaffy.client.vk.GraphicsProgram;
@@ -11,6 +12,7 @@ import me.skaffy.client.vk.Sampler;
 import me.skaffy.client.vk.Vk;
 import me.skaffy.client.vk.VkBuf;
 import me.skaffy.client.vk.VkTex;
+import net.minecraft.resources.Identifier;
 import org.jspecify.annotations.Nullable;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.VK10;
@@ -19,22 +21,29 @@ import org.lwjgl.vulkan.VkFormatProperties;
 
 public final class WaterRenderer implements AutoCloseable {
 	private static final int RGBA32F = VK10.VK_FORMAT_R32G32B32A32_SFLOAT;
+	/** Format of the material target, shared with OceanRenderer's front pass (same render pass). */
+	static final int MATERIAL_FORMAT = RGBA32F;
+	private static final Identifier SLIME_TEXTURE = Identifier.withDefaultNamespace("textures/block/slime_block.png");
 
-	private final int thicknessFormat;
+	final int thicknessFormat;
 	private final GraphicsProgram meshFront;
 	private final GraphicsProgram dropletFront;
 	private final GraphicsProgram meshThickness;
 	private final GraphicsProgram dropletThickness;
 	private final GraphicsProgram whitewaterProgram;
-	private final GraphicsProgram compositeProgram;
-	private final VkBuf noRipples;
-	private @Nullable HfRipples ripples;
-	private @Nullable GpuTimer timer;
+	private final Map<Integer, GraphicsProgram> composites = new HashMap<>();
+	private final ComputeProgram dropletCull;
 	private final Sampler nearest = new Sampler(false);
 	private final Sampler linear = new Sampler(true);
+	private final VkBuf slimeTexture = SandRenderer.loadTexture(SLIME_TEXTURE, 0xFF7EBF6E);
+	/** Stand-in for buffers a pass binds but does not read (no wake, no heightfield flow, no region light for heightfield quads). */
+	private final VkBuf noRipples = VkBuf.device(16, 0);
+	private @Nullable HfRipples ripples;
+	private @Nullable GpuTimer timer;
 
 	private int width;
 	private int height;
+	private int colorFormat;
 	private VkTex sceneDepth;
 	private VkTex fluidZ;
 	private VkTex sceneColor;
@@ -42,27 +51,36 @@ public final class WaterRenderer implements AutoCloseable {
 	private VkTex materialId;
 	private VkTex thickness;
 	private VkTex foam;
+	private VkTex foamSurface;
 
 	public WaterRenderer() {
 		this.thicknessFormat = blendable(VkTex.R32F) ? VkTex.R32F : VkTex.R16F;
 		int U = Desc.UBO;
 		int S = Desc.SSBO;
 		int T = Desc.TEX;
+		// The material target is 32-bit float: heightfield quads pack aeration, the sheet flag and their flow into the mantissa of its
+		// first channel (mesh_front.frag), which a half float cannot hold.
 		GraphicsProgram.State front = new GraphicsProgram.State(RGBA32F, VkTex.D32, true, true, VK10.VK_COMPARE_OP_GREATER, GraphicsProgram.Blend.NONE,
-			VkTex.R32F);
+			MATERIAL_FORMAT);
 		GraphicsProgram.State add = new GraphicsProgram.State(this.thicknessFormat, VK10.VK_FORMAT_UNDEFINED, false, false, VK10.VK_COMPARE_OP_ALWAYS,
 			GraphicsProgram.Blend.ADD);
 		Map<String, String> droplets = Map.of("DROPLETS", "1", "VIEW_BINDING", "3");
-		this.meshFront = new GraphicsProgram("mesh.vert", "mesh_front.frag", Map.of("MESH_FLOW", "1"), front, U, S, S, S, S);
-		this.dropletFront = new GraphicsProgram("particle.vert", "droplet_front.frag", droplets, front, U, S, S, S);
+		this.meshFront = new GraphicsProgram("mesh.vert", "mesh_front.frag", Map.of("MESH_FLOW", "1"), front, U, S, S, S, S, T, S);
+		this.dropletFront = new GraphicsProgram("particle.vert", "droplet_front.frag", droplets, front, U, S, S, S, S);
 		this.meshThickness = new GraphicsProgram("mesh.vert", "mesh_thickness.frag", Map.of(), add, U, S, S, S, T);
 		this.dropletThickness = new GraphicsProgram("particle.vert", "droplet_thickness.frag", droplets, add, U, S, S, S, T);
 		this.whitewaterProgram = new GraphicsProgram("particle.vert", "whitewater.frag", Map.of("VIEW_BINDING", "4"),
-			new GraphicsProgram.State(VkTex.RGBA16F, VK10.VK_FORMAT_UNDEFINED, false, false, VK10.VK_COMPARE_OP_ALWAYS, GraphicsProgram.Blend.ADD),
+			new GraphicsProgram.State(VkTex.RGBA16F, VK10.VK_FORMAT_UNDEFINED, false, false, VK10.VK_COMPARE_OP_ALWAYS, GraphicsProgram.Blend.ADD,
+				VkTex.RGBA16F),
 			U, S, T, T, S);
-		this.compositeProgram = new GraphicsProgram("fullscreen.vert", "composite.frag", Map.of(),
-			new GraphicsProgram.State(VkTex.RGBA8, VkTex.D32, true, true, VK10.VK_COMPARE_OP_ALWAYS, GraphicsProgram.Blend.NONE), U, T, T, T, T, T, T, S, S);
-		this.noRipples = VkBuf.device(16, 0);
+		this.dropletCull = new ComputeProgram("droplet_cull.comp", U, S, S, S, S, S, S);
+	}
+
+	private GraphicsProgram composite(int colorFormat, boolean layer) {
+		return this.composites.computeIfAbsent(colorFormat * 2 + (layer ? 1 : 0), key -> new GraphicsProgram("fullscreen.vert", "composite.frag", Map.of(),
+			new GraphicsProgram.State(colorFormat, VkTex.D32, true, true, VK10.VK_COMPARE_OP_ALWAYS,
+				layer ? GraphicsProgram.Blend.PREMULTIPLIED : GraphicsProgram.Blend.NONE),
+			Desc.UBO, Desc.TEX, Desc.TEX, Desc.TEX, Desc.TEX, Desc.TEX, Desc.TEX, Desc.SSBO, Desc.SSBO, Desc.TEX, Desc.TEX, Desc.SSBO, Desc.SSBO));
 	}
 
 	/** GPU timer to mark this renderer's passes on, or null. */
@@ -81,15 +99,6 @@ public final class WaterRenderer implements AutoCloseable {
 		this.ripples = ripples;
 	}
 
-	/** Composite push constants: material filter, then the player's wake (level, gain, count, life, foam, centre, radius). */
-	private int[] compositePush(float filterMat) {
-		HfRipples r = this.ripples;
-		boolean on = r != null && !Float.isNaN(r.planeY) && r.count > 0;
-		return new int[]{Program.f(filterMat), Program.f(on ? r.planeY - WaterSettings.hfSurfaceDrop : 0.0F),
-			Program.f(WaterSettings.hfRippleNormal), on ? r.count : 0, Program.f(WaterSettings.hfWakeLife), Program.f(WaterSettings.hfWakeFoam),
-			Program.f(on ? r.centerX : 0.0F), Program.f(on ? r.centerZ : 0.0F), Program.f(48.0F), WaterSettings.hfCompositeOff};
-	}
-
 	private static boolean blendable(int format) {
 		try (MemoryStack stack = MemoryStack.stackPush()) {
 			VkFormatProperties props = VkFormatProperties.calloc(stack);
@@ -98,24 +107,28 @@ public final class WaterRenderer implements AutoCloseable {
 		}
 	}
 
-	private void ensureTargets(int w, int h) {
-		if (w == this.width && h == this.height && this.sceneDepth != null) {
+	private void ensureTargets(int w, int h, int colorFormat) {
+		if (w == this.width && h == this.height && colorFormat == this.colorFormat && this.sceneDepth != null) {
 			return;
 		}
 		this.releaseTargets();
 		this.width = w;
 		this.height = h;
+		this.colorFormat = colorFormat;
 		this.sceneDepth = new VkTex(VkTex.D32, w, h, VkTex.COPY_DST | VkTex.SAMPLED);
 		this.fluidZ = new VkTex(VkTex.D32, w, h, VkTex.COPY_DST | VkTex.DEPTH);
-		this.sceneColor = new VkTex(VkTex.RGBA8, w, h, VkTex.COPY_DST | VkTex.SAMPLED);
+		this.sceneColor = new VkTex(colorFormat, w, h, VkTex.COPY_DST | VkTex.SAMPLED);
 		this.gbuffer = new VkTex(RGBA32F, w, h, VkTex.COLOR | VkTex.SAMPLED);
-		this.materialId = new VkTex(VkTex.R32F, w, h, VkTex.COLOR | VkTex.SAMPLED);
+		this.materialId = new VkTex(MATERIAL_FORMAT, w, h, VkTex.COLOR | VkTex.SAMPLED);
 		this.thickness = new VkTex(this.thicknessFormat, w, h, VkTex.COLOR | VkTex.SAMPLED);
 		this.foam = new VkTex(VkTex.RGBA16F, w, h, VkTex.COLOR | VkTex.SAMPLED);
+		this.foamSurface = new VkTex(VkTex.RGBA16F, w, h, VkTex.COLOR | VkTex.SAMPLED);
 	}
 
 	private void releaseTargets() {
-		for (VkTex t : new VkTex[]{this.sceneDepth, this.fluidZ, this.sceneColor, this.gbuffer, this.materialId, this.thickness, this.foam}) {
+		for (VkTex t : new VkTex[]{
+			this.sceneDepth, this.fluidZ, this.sceneColor, this.gbuffer, this.materialId, this.thickness, this.foam, this.foamSurface
+		}) {
 			if (t != null) {
 				Vk.destroyLater(t);
 			}
@@ -123,8 +136,8 @@ public final class WaterRenderer implements AutoCloseable {
 		this.sceneDepth = null;
 	}
 
-	public void prepare(int w, int h) {
-		this.ensureTargets(w, h);
+	public void prepare(int w, int h, int colorFormat) {
+		this.ensureTargets(w, h, colorFormat);
 	}
 
 	/** A particle region (FLIP/MPM) or a heightfield domain, drawn with the same mesh, thickness and composite passes. */
@@ -135,6 +148,11 @@ public final class WaterRenderer implements AutoCloseable {
 
 		Material material() {
 			return this.region != null ? this.region.material : Material.WATER;
+		}
+
+		/** Drawn by this renderer's mesh passes (the ocean draws its own surface). */
+		boolean meshed() {
+			return this.region == null || this.region.ocean == null;
 		}
 
 		VkBuf meshVerts() {
@@ -148,148 +166,193 @@ public final class WaterRenderer implements AutoCloseable {
 		VkBuf meshCounters() {
 			return this.region != null ? this.region.mesher.meshCounters : this.heightfield.meshCounters;
 		}
-
-		/** Per-vertex water velocity (heightfield only), or null. */
-		@Nullable VkBuf meshFlow() {
-			return this.region != null ? null : this.heightfield.vertFlow;
-		}
 	}
 
-	public void record(VkCommandBuffer cb, List<Body> bodies, Desc view, long mainColorImage, long mainColorView, long mainDepthImage,
-		long mainDepthView) {
+	public void record(VkCommandBuffer cb, List<Body> bodies, OceanRenderer.@Nullable Draw ocean, Desc view, long mainColorImage, long mainColorView,
+		long mainDepthImage, long mainDepthView, long lightmap, boolean layer, int @Nullable [] area) {
 		int w = this.width;
 		int h = this.height;
+		int[] a = area != null ? area : new int[]{0, 0, w, h};
+		float[] readable = area != null
+			? new float[]{(a[0] + 1.0F) / w, (a[1] + 1.0F) / h, (a[0] + a[2] - 1.0F) / w, (a[1] + a[3] - 1.0F) / h}
+			: new float[]{-1.0F, -1.0F, 2.0F, 2.0F};
+		List<Runnable> meshes = new java.util.ArrayList<>(bodies.size());
 		for (Body body : bodies) {
 			WaterRegion r = body.region();
 			if (r == null) {
+				// Recorded here rather than as an interleaved task: HfDomain may grow its buffers while building.
 				body.heightfield().buildMesh(cb, body.ubo());
 				continue;
 			}
-			r.mesher.build(cb, body.ubo(), r.currentParticles(), r.counters, WaterRegion.C_FLUID + r.cur, r.args, r.staticSolid, r.mesher.fineBox(r.box),
-				WaterSettings.sheetFill);
+			if (r.takeFieldStale()) {
+				boolean sort = WaterSettings.surfaceGather && WaterSettings.sortParticles;
+				meshes.add(() -> {
+					r.mesher.build(cb, body.ubo(), r.currentParticles(), r.counters, WaterRegion.C_FLUID + r.cur, r.args, r.staticSolid, r.cellFlags,
+						r.mesher.fineBox(r.box), WaterSettings.sheetFill, sort ? r.spareParticles() : null, WaterRegion.C_FLUID + 1 - r.cur);
+					if (sort) {
+						r.useSpareParticles();
+					}
+				});
+			}
 		}
+		Vk.interleave(cb, meshes);
+		Vk.barrier(cb);
 		this.mark(cb, "mesh build");
+		for (Body body : bodies) {
+			WaterRegion r = body.region();
+			if (r == null) {
+				continue;
+			}
+			this.dropletCull.bind(cb, body.ubo(), Desc.ssbo(r.currentParticles()), Desc.ssbo(r.mesher.densA), view, Desc.ssbo(r.args), Desc.ssbo(r.counters),
+				Desc.ssbo(r.dropletIds));
+			this.dropletCull.push(cb, WaterRegion.C_FLUID + r.cur);
+			this.dropletCull.dispatchIndirect(cb, r.args, WaterRegion.ARGS_FLUID_DISPATCH);
+		}
 
 		VkTex.copy(cb, mainDepthImage, this.sceneDepth.image, VK10.VK_IMAGE_ASPECT_DEPTH_BIT, w, h);
-		VkTex.copy(cb, mainDepthImage, this.fluidZ.image, VK10.VK_IMAGE_ASPECT_DEPTH_BIT, w, h);
+		VkTex.copy(cb, mainDepthImage, this.fluidZ.image, VK10.VK_IMAGE_ASPECT_DEPTH_BIT, a[0], a[1], a[2], a[3]);
 		VkTex.copy(cb, mainColorImage, this.sceneColor.image, VK10.VK_IMAGE_ASPECT_COLOR_BIT, w, h);
 		Vk.barrier(cb);
 		Desc depthTex = Desc.tex(this.sceneDepth, this.nearest.handle);
 		this.mark(cb, "scene copies");
 
+		GraphicsProgram.setArea(a[0], a[1], a[2], a[3]);
 		GraphicsProgram.begin(cb, w, h, this.gbuffer.view, new float[]{0, 0, 0, 0}, this.materialId.view, new float[]{-1, 0, 0, 0}, this.fluidZ.view);
+		Desc packShadowTex = Desc.tex(WaterWorld.packShadowView != 0L ? WaterWorld.packShadowView : lightmap, this.nearest.handle);
 		for (Body body : bodies) {
-			VkBuf flow = body.meshFlow();
-			this.meshFront.bind(cb, body.ubo(), Desc.ssbo(body.meshVerts()), Desc.ssbo(body.meshQuads()), view,
-				Desc.ssbo(flow != null ? flow : this.noRipples));
-			this.meshFront.drawIndirect(cb, body.meshCounters(), SurfaceMesher.DRAW_ARGS_OFFSET);
 			WaterRegion r = body.region();
+			if (body.meshed()) {
+				HfDomain hf = body.heightfield();
+				this.meshFront.bind(cb, body.ubo(), Desc.ssbo(body.meshVerts()), Desc.ssbo(body.meshQuads()), view,
+					Desc.ssbo(r != null ? r.light() : this.noRipples), packShadowTex, Desc.ssbo(hf != null ? hf.vertFlow : this.noRipples));
+				this.meshFront.drawIndirect(cb, body.meshCounters(), SurfaceMesher.DRAW_ARGS_OFFSET);
+			}
 			if (r == null) {
 				continue;
 			}
 			float radius = WaterSettings.particleRadius / r.res;
-			this.dropletFront.bind(cb, body.ubo(), Desc.ssbo(r.currentParticles()), Desc.ssbo(r.mesher.densA), view);
+			this.dropletFront.bind(cb, body.ubo(), Desc.ssbo(r.currentParticles()), Desc.ssbo(r.dropletIds), view, Desc.ssbo(r.light()));
 			this.dropletFront.push(cb, Program.f(radius), Program.f(0.0F), Program.f(0.15F));
-			this.dropletFront.drawIndirect(cb, r.args, WaterRegion.ARGS_FLUID_DRAW);
+			this.dropletFront.drawIndirect(cb, r.args, WaterRegion.ARGS_DROPLET_DRAW);
+		}
+		if (ocean != null) {
+			ocean.front(cb);
 		}
 		GraphicsProgram.end(cb);
 		this.mark(cb, "front pass");
 
 		GraphicsProgram.begin(cb, w, h, this.thickness.view, new float[]{0, 0, 0, 0}, 0L);
 		for (Body body : bodies) {
-			this.meshThickness.bind(cb, body.ubo(), Desc.ssbo(body.meshVerts()), Desc.ssbo(body.meshQuads()), view, depthTex);
-			this.meshThickness.drawIndirect(cb, body.meshCounters(), SurfaceMesher.DRAW_ARGS_OFFSET);
 			WaterRegion r = body.region();
+			if (body.meshed()) {
+				this.meshThickness.bind(cb, body.ubo(), Desc.ssbo(body.meshVerts()), Desc.ssbo(body.meshQuads()), view, depthTex);
+				this.meshThickness.drawIndirect(cb, body.meshCounters(), SurfaceMesher.DRAW_ARGS_OFFSET);
+			}
 			if (r == null) {
 				continue;
 			}
 			float radius = WaterSettings.particleRadius / r.res;
-			this.dropletThickness.bind(cb, body.ubo(), Desc.ssbo(r.currentParticles()), Desc.ssbo(r.mesher.densA), view, depthTex);
+			this.dropletThickness.bind(cb, body.ubo(), Desc.ssbo(r.currentParticles()), Desc.ssbo(r.dropletIds), view, depthTex);
 			this.dropletThickness.push(cb, Program.f(radius), Program.f(0.0F), Program.f(0.15F));
-			this.dropletThickness.drawIndirect(cb, r.args, WaterRegion.ARGS_FLUID_DRAW);
+			this.dropletThickness.drawIndirect(cb, r.args, WaterRegion.ARGS_DROPLET_DRAW);
+		}
+		if (ocean != null) {
+			ocean.thickness(cb, depthTex);
 		}
 		GraphicsProgram.end(cb);
 		Vk.barrier(cb);
 		this.mark(cb, "thickness pass");
 
-		GraphicsProgram.begin(cb, w, h, this.foam.view, new float[]{0, 0, 0, 0}, 0L);
-		if (WaterSettings.whitewater) {
-			for (Body body : bodies) {
-				WaterRegion r = body.region();
-				if (r == null) {
-					// Heightfield spray and splash drops (positions relative to its origin), both motion-blurred (pc.b.w > 0).
-					HfDomain hf = body.heightfield();
-					if (WaterSettings.hfSpray > 0.0F) {
-						this.whitewaterProgram.bind(cb, body.ubo(), Desc.ssbo(hf.spray), depthTex, Desc.tex(this.gbuffer, this.nearest.handle), view);
-						this.whitewaterProgram.push(cb, Program.f(WaterSettings.hfSprayRadius), Program.f(0.5F), Program.f(0.3F),
-							Program.f(WaterSettings.wwMaxPixels), Program.f(WaterSettings.foamSize), Program.f(WaterSettings.hfMistSize),
-							Program.f(WaterSettings.hfMistAlpha), Program.f(Math.max(WaterSettings.hfDropRadius, 1.0e-4F)));
-						this.whitewaterProgram.drawIndirect(cb, hf.sprayCounters, HfDomain.SPRAY_ARGS);
-						this.whitewaterProgram.drawIndirect(cb, hf.sprayCounters, HfDomain.DROP_ARGS);
-					}
-					continue;
+		GraphicsProgram.begin(cb, w, h, this.foam.view, new float[]{0, 0, 0, 0}, this.foamSurface.view, new float[]{0, 0, 0, 0}, 0L);
+		for (Body body : bodies) {
+			WaterRegion r = body.region();
+			if (r == null) {
+				// Heightfield spray and splash drops (positions relative to its origin), both motion-blurred; pc.b.w > 0 also tells
+				// particle.vert and whitewater.frag these are heightfield types (mist 3, drops 4+), not the regions' boiling bubbles.
+				HfDomain hf = body.heightfield();
+				if (WaterSettings.whitewater && WaterSettings.hfSpray > 0.0F) {
+					this.whitewaterProgram.bind(cb, body.ubo(), Desc.ssbo(hf.spray), depthTex, Desc.tex(this.gbuffer, this.nearest.handle), view);
+					this.whitewaterProgram.push(cb, Program.f(WaterSettings.hfSprayRadius), Program.f(0.5F), Program.f(0.3F),
+						Program.f(WaterSettings.wwMaxPixels), Program.f(WaterSettings.foamSize), Program.f(WaterSettings.hfMistSize),
+						Program.f(WaterSettings.hfMistAlpha), Program.f(Math.max(WaterSettings.hfDropRadius, 1.0e-4F)));
+					this.whitewaterProgram.drawIndirect(cb, hf.sprayCounters, HfDomain.SPRAY_ARGS);
+					this.whitewaterProgram.drawIndirect(cb, hf.sprayCounters, HfDomain.DROP_ARGS);
 				}
-				if (!r.material.usesWhitewater()) {
-					continue;
-				}
-				this.whitewaterProgram.bind(cb, body.ubo(), Desc.ssbo(r.currentWhitewater()), depthTex, Desc.tex(this.gbuffer, this.nearest.handle), view);
-				// All 8 values: push constants persist, and the heightfield's mist size and motion blur (b.yzw) must not carry over.
-				this.whitewaterProgram.push(cb, Program.f(WaterSettings.wwRadius), Program.f(0.5F), Program.f(0.3F), Program.f(WaterSettings.wwMaxPixels),
-					Program.f(WaterSettings.foamSize), Program.f(0.0F), Program.f(0.0F), Program.f(0.0F));
-				this.whitewaterProgram.drawIndirect(cb, r.args, WaterRegion.ARGS_WW_DRAW);
+				continue;
 			}
+			if (!r.whitewaterOn() || r.ocean != null && PackFoam.active()) {
+				continue;
+			}
+			this.whitewaterProgram.bind(cb, body.ubo(), Desc.ssbo(r.currentWhitewater()), depthTex, Desc.tex(this.gbuffer, this.nearest.handle), view);
+			// All 8 values: push constants persist, and the heightfield's mist size and motion blur (b.yzw) must not carry over.
+			this.whitewaterProgram.push(cb, Program.f(WaterSettings.wwRadius), Program.f(0.5F), Program.f(0.3F), Program.f(WaterSettings.wwMaxPixels),
+				Program.f(WaterSettings.foamSize), Program.f(0.0F), Program.f(0.0F), Program.f(0.0F));
+			this.whitewaterProgram.drawIndirect(cb, r.args, WaterRegion.ARGS_WW_DRAW);
 		}
 		GraphicsProgram.end(cb);
 		Vk.barrier(cb);
 		this.mark(cb, "whitewater");
 
-		Desc waterUbo = null;
-		Desc lavaUbo = null;
-		for (Body body : bodies) {
-			if (body.material() == Material.WATER && waterUbo == null) {
-				waterUbo = body.ubo();
-			} else if (body.material() == Material.LAVA && lavaUbo == null) {
-				lavaUbo = body.ubo();
-			}
-		}
+		GraphicsProgram composite = this.composite(this.colorFormat, layer);
 		GraphicsProgram.begin(cb, w, h, mainColorView, null, mainDepthView);
 		Desc matTex = Desc.tex(this.materialId, this.nearest.handle);
-		if (waterUbo != null) {
-			this.compositeProgram.bind(cb, waterUbo,
-				Desc.tex(this.gbuffer, this.nearest.handle),
-				Desc.tex(this.thickness, this.linear.handle),
-				Desc.tex(this.sceneColor, this.linear.handle),
-				depthTex,
-				Desc.tex(this.foam, this.linear.handle),
-				matTex,
-				view,
-				Desc.ssbo(this.ripples != null ? this.ripples.current() : this.noRipples));
-			this.compositeProgram.push(cb, this.compositePush(0.0F));
-			this.compositeProgram.draw(cb, 3, 1);
-		}
-		if (lavaUbo != null) {
-			this.compositeProgram.bind(cb, lavaUbo,
-				Desc.tex(this.gbuffer, this.nearest.handle),
-				Desc.tex(this.thickness, this.linear.handle),
-				Desc.tex(this.sceneColor, this.linear.handle),
-				depthTex,
-				Desc.tex(this.foam, this.linear.handle),
-				matTex,
-				view,
-				Desc.ssbo(this.noRipples));
-			this.compositeProgram.push(cb, Program.f(2.0F), 0, 0, 0, 0, 0, 0, 0, 0, WaterSettings.hfCompositeOff);
-			this.compositeProgram.draw(cb, 3, 1);
+		for (Material material : new Material[]{Material.WATER, Material.LAVA, Material.SLIME}) {
+			Desc ubo = null;
+			for (Body body : bodies) {
+				if (body.material() == material && body.meshed()) {
+					ubo = body.ubo();
+					break;
+				}
+			}
+			boolean seaBackground = material == Material.WATER && ocean != null && (ocean.background() || ubo == null);
+			if (ubo != null) {
+				this.composite(composite, cb, ubo, matTex, view, lightmap, readable, material, 0.0F, seaBackground ? 0.0F : 1.0F, null);
+			}
+			if (material == Material.WATER && ocean != null) {
+				this.composite(composite, cb, ocean.ubo(), matTex, view, lightmap, readable, material, 1.0F, seaBackground ? 1.0F : 0.0F, ocean.colors());
+			} else if (material == Material.WATER && ubo != null && WaterSettings.debugWaterLayers) {
+				this.composite(composite, cb, ubo, matTex, view, lightmap, readable, material, 1.0F, 0.0F, null);
+			}
 		}
 		GraphicsProgram.end(cb);
+		GraphicsProgram.clearArea();
 		this.mark(cb, "composite");
+	}
+
+	private void composite(GraphicsProgram composite, VkCommandBuffer cb, Desc ubo, Desc matTex, Desc view, long lightmap, float[] readable,
+		Material material, float sea, float background, @Nullable VkBuf seaColors) {
+		composite.bind(cb, ubo,
+			Desc.tex(this.gbuffer, this.nearest.handle),
+			Desc.tex(this.thickness, this.linear.handle),
+			Desc.tex(this.sceneColor, this.linear.handle),
+			Desc.tex(this.sceneDepth, this.nearest.handle),
+			Desc.tex(this.foam, this.linear.handle),
+			matTex,
+			view,
+			Desc.ssbo(this.slimeTexture),
+			Desc.tex(lightmap, this.linear.handle),
+			Desc.tex(this.foamSurface, this.linear.handle),
+			Desc.ssbo(seaColors != null ? seaColors : this.slimeTexture),
+			Desc.ssbo(this.ripples != null && material == Material.WATER ? this.ripples.current() : this.noRipples));
+		// The player's wake (HfRipples) lies on heightfield water: level, gain, count, life, foam, centre, radius; none for the sea pass.
+		HfRipples r = material == Material.WATER && sea < 0.5F ? this.ripples : null;
+		boolean wake = r != null && !Float.isNaN(r.planeY) && r.count > 0;
+		composite.push(cb, Program.f(readable[0]), Program.f(readable[1]), Program.f(readable[2]), Program.f(readable[3]),
+			Program.f(material.shaderId()), Program.f(sea), Program.f(background), Program.f(WaterSettings.debugWaterLayers ? 1.0F : 0.0F),
+			Program.f(seaColors != null ? 1.0F : 0.0F),
+			Program.f(wake ? r.planeY - WaterSettings.hfSurfaceDrop : 0.0F), Program.f(WaterSettings.hfRippleNormal), wake ? r.count : 0,
+			Program.f(WaterSettings.hfWakeLife), Program.f(WaterSettings.hfWakeFoam), Program.f(wake ? r.centerX : 0.0F),
+			Program.f(wake ? r.centerZ : 0.0F), Program.f(48.0F), WaterSettings.hfCompositeOff);
+		composite.draw(cb, 3, 1);
 	}
 
 	@Override
 	public void close() {
 		this.releaseTargets();
+		this.composites.values().forEach(GraphicsProgram::close);
 		for (AutoCloseable c : new AutoCloseable[]{
-			this.meshFront, this.dropletFront, this.meshThickness, this.dropletThickness, this.whitewaterProgram, this.compositeProgram,
-			this.nearest, this.linear, this.noRipples
+			this.meshFront, this.dropletFront, this.meshThickness, this.dropletThickness, this.whitewaterProgram, this.dropletCull,
+			this.nearest, this.linear, this.slimeTexture, this.noRipples
 		}) {
 			try {
 				c.close();

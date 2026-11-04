@@ -1,0 +1,16 @@
+#version 450
+#include "common.glsl"
+layout(local_size_x = 256) in;
+layout(std430, binding = 1) writeonly buffer Count { uint cellCount[]; };
+layout(std430, binding = 2) writeonly buffer Speed { uint cellSpeed[]; };
+
+void main() {
+    int t = int(GID_U);
+    ivec3 d = boxDims();
+    if (t >= d.x * d.y * d.z) {
+        return;
+    }
+    int i = cellIndex(boxCell(t));
+    cellCount[i] = 0u;
+    cellSpeed[i] = 0u;
+}

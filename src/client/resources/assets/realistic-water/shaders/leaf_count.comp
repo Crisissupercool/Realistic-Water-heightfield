@@ -1,0 +1,28 @@
+#version 450
+#include "common.glsl"
+#include "leaf.glsl"
+layout(local_size_x = 256) in;
+layout(std430, binding = 1) readonly buffer Parts { Particle parts[]; };
+layout(std430, binding = 2) buffer Count { uint cellCount[]; };
+layout(std430, binding = 3) buffer Speed { uint cellSpeed[]; };
+layout(std430, binding = 4) writeonly buffer Rank { uint rank[]; };
+layout(std430, binding = 5) readonly buffer Counters { uint counters[]; };
+layout(push_constant) uniform PC { ivec4 a; ivec4 b; } pc;
+
+void main() {
+    uint i = GID_U;
+    if (i >= counters[pc.a.x]) {
+        return;
+    }
+    Particle p = parts[i];
+    ivec3 c = ivec3(floor(p.pos.xyz));
+    if (p.pos.w < 0.0 || !inBox(c)) {
+        rank[i] = 0u;
+        return;
+    }
+    int ci = cellIndex(c);
+    bool asleep = p.pos.w >= G.matB.w;
+    uint prev = atomicAdd(cellCount[ci], asleep ? 0x10000u : 1u);
+    rank[i] = asleep ? prev >> 16 : RANK_AWAKE | (prev & 0xFFFFu);
+    atomicMax(cellSpeed[ci], floatBitsToUint(length(p.vel.xyz)));
+}

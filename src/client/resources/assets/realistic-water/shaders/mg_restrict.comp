@@ -32,6 +32,25 @@ void main() {
             sum += fineB[fi] - applyA(f, fi, pc.dims, pc.misc.z);
         }
     }
-    coarseB[ci] = 0.5 * sum;
-    coarseX[ci] = 0.0;
+    float cb = 0.5 * sum;
+    coarseB[ci] = cb;
+    float cx = 0.0;
+    if (pc.misc2.x != 0 && mgFlags[ci] == CELL_FLUID && ((C.x + C.y + C.z) & 1) == 0) {
+        float n = 0.0;
+        for (int k = 0; k < 6; k++) {
+            ivec3 nb = C + MG_NB[k];
+            if (!lvlActive(nb, pc.cdims, pc.misc.w)) {
+                n += 1.0;
+                continue;
+            }
+            if (mgFlags[lvlIndex(nb, pc.cdims)] == CELL_SOLID) {
+                continue;
+            }
+            n += 1.0;
+        }
+        if (n > 0.0) {
+            cx = (cb + 0.0) / n;
+        }
+    }
+    coarseX[ci] = cx;
 }

@@ -6,6 +6,7 @@ import me.skaffy.block.RealisticSandBlock;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
+import net.minecraft.util.Mth;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
@@ -21,8 +22,12 @@ final class SolidCache {
 
 	final int res;
 	final boolean ignoreSand;
+	/** Widen sub-cell-thin boxes vertically too. Off for the heightfield, where a carpet or closed trapdoor would become a half-block floor. */
+	private final boolean widenThinY;
 	private final int bitsPerBlock;
 	private final Long2ObjectOpenHashMap<Section> sections = new Long2ObjectOpenHashMap<>();
+	private int minSectionY = Integer.MAX_VALUE;
+	private int maxSectionY = Integer.MIN_VALUE;
 
 	private static final class Section {
 		final byte[] kind = new byte[4096];
@@ -30,8 +35,13 @@ final class SolidCache {
 	}
 
 	SolidCache(int res, boolean ignoreSand) {
+		this(res, ignoreSand, true);
+	}
+
+	SolidCache(int res, boolean ignoreSand, boolean widenThinY) {
 		this.res = res;
 		this.ignoreSand = ignoreSand;
+		this.widenThinY = widenThinY;
 		this.bitsPerBlock = res * res * res;
 	}
 
@@ -41,10 +51,14 @@ final class SolidCache {
 
 	void clear() {
 		this.sections.clear();
+		this.minSectionY = Integer.MAX_VALUE;
+		this.maxSectionY = Integer.MIN_VALUE;
 	}
 
 	void invalidateChunk(int chunkX, int chunkZ) {
-		this.sections.keySet().removeIf(key -> SectionPos.x(key) == chunkX && SectionPos.z(key) == chunkZ);
+		for (int sy = this.minSectionY; sy <= this.maxSectionY; sy++) {
+			this.sections.remove(SectionPos.asLong(chunkX, sy, chunkZ));
+		}
 	}
 
 	boolean update(ClientLevel level, BlockPos pos) {
@@ -68,7 +82,7 @@ final class SolidCache {
 		int sectionIndex = level.getSectionIndexFromSectionY(sy);
 		if (sectionIndex >= level.getSectionsCount()) {
 			s = new Section();
-			this.sections.put(key, s);
+			this.put(key, sy, s);
 			return s;
 		}
 		if (sectionIndex < 0 || !level.hasChunk(sx, sz)) {
@@ -95,13 +109,19 @@ final class SolidCache {
 				this.voxelizeBlock(level, pos, state, s, i);
 			}
 		}
-		this.sections.put(key, s);
+		this.put(key, sy, s);
 		return s;
 	}
 
 	private boolean notFullCube(BlockState state) {
 		return state.isAir() || this.ignoreSand && state.getBlock() instanceof RealisticSandBlock
 			|| !state.isCollisionShapeFullBlock(net.minecraft.world.level.EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
+	}
+
+	private void put(long key, int sy, Section section) {
+		this.sections.put(key, section);
+		this.minSectionY = Math.min(this.minSectionY, sy);
+		this.maxSectionY = Math.max(this.maxSectionY, sy);
 	}
 
 	private void voxelizeBlock(ClientLevel level, BlockPos pos, BlockState state, Section s, int i) {
@@ -116,10 +136,11 @@ final class SolidCache {
 			s.kind[i] = FULL;
 			return;
 		}
-		List<AABB> boxes = shape.toAabbs();
+		int r = this.res;
+		boolean widenY = this.widenThinY;
+		List<AABB> boxes = shape.toAabbs().stream().map(box -> atLeastOneCell(box, r, widenY)).toList();
 		long[] bits = new long[(this.bitsPerBlock + 63) / 64];
 		boolean any = false;
-		int r = this.res;
 		for (int k = 0; k < r; k++) {
 			for (int j = 0; j < r; j++) {
 				for (int c = 0; c < r; c++) {
@@ -159,6 +180,28 @@ final class SolidCache {
 			case FULL -> full;
 			default -> s.partial[i][0];
 		};
+	}
+
+	private static AABB atLeastOneCell(AABB box, int r, boolean widenY) {
+		double[] lo = {box.minX, box.minY, box.minZ};
+		double[] hi = {box.maxX, box.maxY, box.maxZ};
+		for (int a = 0; a < 3; a++) {
+			if (hi[a] - lo[a] < 1.0 / r && (widenY || a != 1)) {
+				int cell = Mth.clamp((int) Math.floor((lo[a] + hi[a]) * 0.5 * r), 0, r - 1);
+				lo[a] = (double) cell / r;
+				hi[a] = (double) (cell + 1) / r;
+			}
+		}
+		return new AABB(lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+	}
+
+	static void writeFull(int[] out, int cx, int cy, int cz, int nx, int ny, int r) {
+		for (int k = 0; k < r; k++) {
+			for (int j = 0; j < r; j++) {
+				int row = cx + nx * ((cy + j) + ny * (cz + k));
+				java.util.Arrays.fill(out, row, row + r, 1);
+			}
+		}
 	}
 
 	void writeBlock(ClientLevel level, int bx, int by, int bz, int[] out, int cx, int cy, int cz, int nx, int ny) {

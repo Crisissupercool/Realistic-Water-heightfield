@@ -18,7 +18,7 @@ layout(location = 10) out vec2 vQuadUV;
 layout(location = 11) flat out float vBilinear;
 layout(location = 12) out vec2 vFlow;  // heightfield water velocity (blocks/s, world x/z); zero for the fluid meshes
 #ifdef MESH_FLOW
-layout(std430, binding = 4) readonly buffer VertFlow { uint vertFlow[]; };
+layout(std430, binding = 6) readonly buffer VertFlow { uint vertFlow[]; };
 #endif
 
 const int CORNER[6] = int[](0, 1, 2, 0, 2, 3);

@@ -3,14 +3,29 @@
 	"package": "me.skaffy.client.mixin",
 	"compatibilityLevel": "JAVA_25",
 	"client": [
+		"RealisticBlockMinecraftMixin",
+		"BlockEntityRenderDistanceMixin",
+		"BlockLightEngineMixin",
+		"ClientChunkCacheGridMixin",
 		"CameraMixin",
 		"ClientLevelMixin",
+		"ClientPacketListenerMixin",
 		"DeltaTrackerTimerMixin",
+		"FogRendererAccessor",
 		"FrontendGpuDeviceAccessor",
 		"GameRendererMixin",
 		"LevelRendererMixin",
+		"LightEngineAccessor",
+		"LocalPlayerMixin",
 		"MinecraftMixin",
-		"MouseHandlerMixin"
+		"MouseHandlerMixin",
+		"WeatherEffectRendererMixin",
+		"compat.VitrailPackChainMixin",
+		"compat.VitrailProgramTranslatorMixin",
+		"compat.VitrailShadowGeometryMixin",
+		"compat.VitrailSodiumVertexMixin",
+		"compat.VitrailTranslationCacheMixin",
+		"compat.VitrailWorldValuesMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

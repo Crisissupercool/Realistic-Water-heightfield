@@ -2,7 +2,7 @@
 #include "common.glsl"
 layout(std430, binding = 1) readonly buffer Parts { Particle parts[]; };
 #ifdef DROPLETS
-layout(std430, binding = 2) readonly buffer Dens { float dens[]; };
+layout(std430, binding = 2) readonly buffer Ids { uint ids[]; };
 #endif
 layout(std430, binding = VIEW_BINDING) readonly buffer ViewState { vec4 viewState; };
 layout(push_constant) uniform PC { vec4 a; vec4 b; } pc;
@@ -15,25 +15,10 @@ layout(location = 3) out vec4 vData;
 const vec2 CORNERS[6] = vec2[](vec2(-1, -1), vec2(1, -1), vec2(1, 1), vec2(-1, -1), vec2(1, 1), vec2(-1, 1));
 
 void main() {
-    uint id = uint(gl_InstanceIndex);
-    Particle p = parts[id];
 #ifdef DROPLETS
-    if (p.pos.w < 0.0) {
-        gl_Position = vec4(0.0, 0.0, -2.0, 1.0);
-        return;
-    }
-    ivec3 fp = ivec3(floor(p.pos.xyz * float(G.fine.w)));
-    float nearDens = 0.0;
-    for (int k = 0; k < 27; k++) {
-        ivec3 q = fp + ivec3(k % 3, (k / 3) % 3, k / 9) - 1;
-        if (inFine(q)) {
-            nearDens = max(nearDens, dens[fineIndex(q)]);
-        }
-    }
-    if (nearDens > G.surf.w || viewState.x > 0.5) {
-        gl_Position = vec4(0.0, 0.0, -2.0, 1.0);
-        return;
-    }
+    Particle p = parts[ids[gl_InstanceIndex]];
+#else
+    Particle p = parts[uint(gl_InstanceIndex)];
 #endif
     vec3 rel = G.domainOrigin.xyz + p.pos.xyz * G.domainOrigin.w;
 #ifndef DROPLETS
@@ -52,18 +37,26 @@ void main() {
     if (foam) {
         r *= pc.b.x;
     }
-    // Mist puffs (heightfield spray, type 3): a radius of their own (pc.b.y blocks) and a faint alpha (pc.b.z) that fades out.
-    bool mist = p.vel.w > 2.5 && p.vel.w < 3.5;
+    // Heightfield spray and drops are drawn with pc.b.w > 0 (their drop radius); their types are mist (3) and drops (4 + size,
+    // + 16 per water unit). Particle regions push b.yzw = 0, and their types above 2.5 are boiling bubbles (3 + radius fraction).
+    bool hfSpray = pc.b.w > 0.0;
+    // Mist puffs (heightfield spray): a radius of their own (pc.b.y blocks) and a faint alpha (pc.b.z) that fades out.
+    bool mist = hfSpray && p.vel.w > 2.5 && p.vel.w < 3.5;
     if (mist) {
         r = pc.b.y;
     }
     // Splash water drops (heightfield, 4 + their size as a multiple of pc.b.w blocks).
-    bool drop = p.vel.w >= 3.5;
+    bool drop = hfSpray && p.vel.w >= 3.5;
     if (drop) {
         r = pc.b.w * mod(p.vel.w - 4.0, 16.0);
     }
+    if (!hfSpray && p.vel.w > 2.5) {
+        r = fract(p.vel.w) * G.heatD.x * 0.5;
+        foam = true;
+    }
 #else
     bool foam = false;
+    bool hfSpray = false;
     bool mist = false;
     bool drop = false;
 #endif
@@ -116,5 +109,6 @@ void main() {
     vUV = c;
     vCenter = center;
     vRadius = r;
-    vData = vec4(p.pos.w, p.vel.w, alpha, 0.0);
+    // w: heightfield spray or drops (their types differ from the regions', see whitewater.frag).
+    vData = vec4(p.pos.w, p.vel.w, alpha, hfSpray ? 1.0 : 0.0);
 }

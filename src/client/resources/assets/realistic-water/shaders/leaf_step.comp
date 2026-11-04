@@ -1,0 +1,284 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+#extension GL_KHR_shader_subgroup_ballot : enable
+#include "common.glsl"
+#include "leaf.glsl"
+layout(local_size_x = 256) in;
+layout(std430, binding = 1) readonly buffer Src { Particle src[]; };
+layout(std430, binding = 2) writeonly buffer Dst { Particle dst[]; };
+layout(std430, binding = 3) buffer Counters { uint counters[]; };
+layout(std430, binding = 4) readonly buffer Count { uint cellCount[]; };
+layout(std430, binding = 5) readonly buffer Static { uint staticSolid[]; };
+layout(std430, binding = 6) readonly buffer Rank { uint rank[]; };
+layout(std430, binding = 7) readonly buffer RegionLight { uint regionLight[]; };
+layout(push_constant) uniform PC { ivec4 a; ivec4 b; } pc;
+
+#define C_AWAKE 14
+#define C_IGNITED 5
+#define C_IGNITE_POS 7
+#define CAP uint(G.matA.y)
+#define FALL_SPEED G.matA.z
+#define SINK_SPEED G.matA.w
+#define FLUTTER G.matB.x
+#define TUMBLE G.matB.y
+#define GROUND_FRICTION G.matB.z
+#define REST_TIME G.matB.w
+#define REST_SPEED G.matC.x
+#define WAKE_SPEED G.matC.y
+#define KICK G.matC.z
+#define BURN_RATE G.matC.w
+#define REPOSE int(G.matD.x)
+#define SHUFFLE G.matD.w
+#define WIND vec2(G.matE.x, G.matE.y)
+#define GUST G.matE.z
+#define WIND_LIFT G.matE.w
+#define AIR_DRAG G.simA.w
+
+const ivec3 SIDES[4] = ivec3[](ivec3(1, 0, 0), ivec3(-1, 0, 0), ivec3(0, 0, 1), ivec3(0, 0, -1));
+
+bool solidAt(ivec3 c) {
+    return inGrid(c) && staticSolid[cellIndex(c)] != 0u;
+}
+
+uint countAt(ivec3 c) {
+    return inBox(c) ? cellTotal(cellCount[cellIndex(c)]) : 0u;
+}
+
+bool fullAt(ivec3 c) {
+    return solidAt(c) || countAt(c) >= CAP;
+}
+
+bool freeAt(ivec3 c) {
+    return inGrid(c) && !solidAt(c) && countAt(c) < CAP;
+}
+
+uint mediumAt(vec3 x) {
+    int res = max(int(G.camGrid.w + 0.5), 1);
+    ivec3 n = max(G.dims.xyz / res, ivec3(1));
+    ivec3 b = ivec3(floor(x / float(res)));
+    if (any(lessThan(b, ivec3(0))) || any(greaterThanEqual(b, n))) {
+        return 0u;
+    }
+    return regionLight[b.x + n.x * (b.y + n.y * b.z)];
+}
+
+void main() {
+    uint i = GID_U;
+    if (i >= counters[pc.a.x]) {
+        return;
+    }
+    Particle p = src[i];
+    if (p.pos.w < 0.0) {
+        return;
+    }
+    vec3 x = p.pos.xyz;
+    vec3 v = p.vel.xyz;
+    float rest = p.pos.w;
+    uint bits = leafBits(p.vel);
+    float phase = leafPhase(bits);
+    float burn = leafBurn(bits);
+    float res = G.camGrid.w;
+    uint seed = hash(i * 747796405u + uint(pc.a.w) * 2891336453u);
+
+    uint medium = mediumAt(x);
+    float waterLevel = float((medium >> MEDIUM_WATER_SHIFT) & 15u) / 8.0;
+    bool inWater = waterLevel > 0.0 && fract(x.y / res) <= waterLevel + 0.02;
+    float reach = 0.3 * res;
+    bool hot = (medium & MEDIUM_HOT) != 0u
+        || (mediumAt(x + vec3(reach, 0.0, 0.0)) & MEDIUM_HOT) != 0u || (mediumAt(x - vec3(reach, 0.0, 0.0)) & MEDIUM_HOT) != 0u
+        || (mediumAt(x + vec3(0.0, 0.0, reach)) & MEDIUM_HOT) != 0u || (mediumAt(x - vec3(0.0, 0.0, reach)) & MEDIUM_HOT) != 0u
+        || (mediumAt(x - vec3(0.0, reach, 0.0)) & MEDIUM_HOT) != 0u;
+    if (hot && burn <= 0.0) {
+        burn = 1e-3;
+        uvec3 b = uvec3(clamp(ivec3(floor(x / res)), ivec3(0), ivec3(1023)));
+        atomicAdd(counters[C_IGNITED], 1u);
+        atomicMax(counters[C_IGNITE_POS], (b.x | (b.y << 10) | (b.z << 20)) + 1u);
+    }
+    if (burn > 0.0) {
+        burn += DT * BURN_RATE;
+        if (burn >= 1.0) {
+            return;
+        }
+    }
+    float sky = float((medium >> 4) & 15u);
+    float exposure = inWater ? 0.0 : clamp((sky - 10.0) / 4.0, 0.0, 1.0);
+
+    ivec3 c = ivec3(floor(x));
+    bool supported = fullAt(c - ivec3(0, 1, 0));
+    bool grounded = supported && x.y - float(c.y) < 0.35;
+    uint myRank = rank[i];
+    if ((myRank & RANK_AWAKE) != 0u) {
+        myRank = (inBox(c) ? cellCount[cellIndex(c)] >> 16 : 0u) + (myRank & 0xFFFFu);
+    }
+    bool excess = myRank >= CAP;
+    ivec3 settleInto = ivec3(0);
+
+    float t = G.simB.z;
+    float gustNoise = 0.55 + 0.45 * sin(t * 1.7 + dot(x.xz / res, vec2(0.21, 0.17)))
+                    * sin(t * 0.63 + dot(x.xz / res, vec2(-0.09, 0.13)) + 1.3);
+    vec3 wind = vec3(WIND.x, 0.0, WIND.y) * exposure * gustNoise;
+
+    bool pushed = false;
+    for (int e = 0; e < numEntities(); e++) {
+        vec3 surface;
+        vec3 normal;
+        if (!entInside(e, x, 0.1 * res, surface, normal)) {
+            continue;
+        }
+        vec3 ve = entVel(e);
+        vec2 out2 = length(normal.xz) > 1e-3 ? normalize(normal.xz) : vec2(rand(seed) - 0.5, rand(seed) - 0.5);
+        float walk = length(ve.xz);
+        v.xz = ve.xz * KICK * (0.8 + 0.5 * rand(seed)) + out2 * (0.5 * res + walk * (0.3 + 0.4 * rand(seed)));
+        v.y = max(v.y, max(ve.y, 0.0) + walk * KICK * (0.1 + 0.25 * rand(seed)));
+        pushed = true;
+    }
+
+    bool asleep = rest >= REST_TIME;
+    bool lifted = false;
+    if (grounded && GUST > 0.0 && exposure > 0.0 && freeAt(c + ivec3(0, 1, 0))
+        && rand(seed) < WIND_LIFT * GUST * exposure * gustNoise * DT) {
+        lifted = true;
+    }
+    if (asleep && (pushed || lifted || excess || !supported || burn > 0.0 || length(v) > WAKE_SPEED)) {
+        asleep = false;
+        rest = 0.0;
+    }
+
+    if (asleep) {
+        v = vec3(0.0);
+    } else {
+        float terminal = max(inWater ? SINK_SPEED : FALL_SPEED, 1e-3);
+        float k = abs(G.gravityDt.y) / terminal;
+        float kh = inWater ? k : AIR_DRAG;
+        vec3 target = grounded && !lifted ? vec3(0.0) : wind;
+        v.xz = target.xz + (v.xz - target.xz) * exp(-kh * DT);
+        float vy = G.gravityDt.y / k;
+        v.y = vy + (v.y - vy) * exp(-k * DT);
+
+        float yaw = leafYaw(bits);
+        float rel = length(v - wind) / terminal;
+        float omega = TUMBLE * (inWater ? 0.35 : 1.0) * (0.4 + min(rel, 3.0));
+        phase += omega * DT;
+        if (!grounded) {
+            vec2 dir = vec2(cos(yaw), sin(yaw));
+            float falling = clamp(-v.y / terminal, 0.0, 1.0);
+            v.xz += dir * cos(phase) * FLUTTER * terminal * sqrt(kh * kh + omega * omega) * falling * DT;
+        }
+        if (lifted) {
+            v += vec3(wind.x, 0.0, wind.z) * 0.5 + vec3(0.0, (0.5 + rand(seed)) * FALL_SPEED * 1.5, 0.0);
+        }
+
+        if (excess) {
+            int start = int(rand(seed) * 4.0);
+            for (int k = 0; k < 4 && settleInto == ivec3(0); k++) {
+                ivec3 s = SIDES[(start + k) & 3];
+                if (freeAt(c + s) && fullAt(c + s - ivec3(0, 1, 0))) {
+                    settleInto = s;
+                }
+            }
+            if (settleInto == ivec3(0) && freeAt(c + ivec3(0, 1, 0))) {
+                settleInto = ivec3(0, 1, 0);
+            }
+            for (int k = 0; k < 4 && settleInto == ivec3(0); k++) {
+                ivec3 s = SIDES[(start + k) & 3];
+                if (freeAt(c + s)) {
+                    settleInto = s;
+                }
+            }
+            if (settleInto == ivec3(0)) {
+                settleInto = ivec3(0, 1, 0);
+            }
+            v = vec3(0.0);
+        } else if (grounded && !pushed && !lifted) {
+            bool sliding = false;
+            int start = int(rand(seed) * 4.0);
+            for (int k = 0; k < 4 && !sliding; k++) {
+                ivec3 s = SIDES[(start + k) & 3];
+                bool drop = freeAt(c + s);
+                for (int d = 1; d <= REPOSE && drop; d++) {
+                    drop = freeAt(c + s - ivec3(0, d, 0));
+                }
+                if (drop) {
+                    v.xz = mix(v.xz, vec2(s.xz) * SHUFFLE, 0.5);
+                    sliding = true;
+                }
+            }
+            if (!sliding) {
+                v.xz *= exp(-GROUND_FRICTION * DT);
+            }
+        }
+    }
+
+    float maxSpeed = G.simB.x;
+    float sp = length(v);
+    if (sp > maxSpeed) {
+        v *= maxSpeed / sp;
+    }
+
+    vec3 xn = x;
+    if (!asleep) {
+        if (solidAt(c)) {
+            xn = vec3(x.x, float(c.y + 1) + 0.02, x.z);
+            v = vec3(0.0);
+        } else {
+            const int ORDER[3] = int[](1, 0, 2);
+            for (int k = 0; k < 3; k++) {
+                int a = ORDER[k];
+                vec3 tpos = xn;
+                tpos[a] = x[a] + v[a] * DT;
+                if (solidAt(ivec3(floor(tpos)))) {
+                    v[a] = 0.0;
+                } else {
+                    xn = tpos;
+                }
+            }
+            if (settleInto != ivec3(0) && !solidAt(c + settleInto)) {
+                xn = vec3(x.x + float(settleInto.x), float(c.y + settleInto.y) + 0.01, x.z + float(settleInto.z));
+            }
+            if (supported && floor(xn.y) < float(c.y) && floor(xn.x) == float(c.x) && floor(xn.z) == float(c.z)) {
+                xn.y = float(c.y) + 0.01;
+                v.y = max(v.y, 0.0);
+            }
+        }
+        bool still = grounded && !excess && length(v) < REST_SPEED;
+        rest = still ? rest + DT : 0.0;
+        if (rest >= REST_TIME) {
+            v = vec3(0.0);
+        }
+    }
+
+    if (any(isnan(xn)) || any(isinf(xn)) || any(isnan(v))) {
+        return;
+    }
+    float killMargin = G.killInfo.y;
+    if (any(lessThan(xn, vec3(-killMargin))) || any(greaterThanEqual(xn, vec3(NX, NY, NZ) + killMargin)) || xn.y < G.killInfo.x) {
+        return;
+    }
+    bool sleeping = rest >= REST_TIME;
+    uint groupTotal = subgroupAdd(1u);
+    uint prefix = subgroupExclusiveAdd(1u);
+    float groupMax = subgroupMax(length(v));
+    uint groupAwake = subgroupAdd(sleeping ? 0u : 1u);
+    uint base = 0u;
+    if (subgroupElect()) {
+        base = atomicAdd(counters[pc.a.y], groupTotal);
+        atomicMax(counters[6], floatBitsToUint(groupMax));
+        atomicAdd(counters[C_AWAKE], groupAwake);
+    }
+    uint o = subgroupBroadcastFirst(base) + prefix;
+    if (o >= uint(G.caps.x)) {
+        return;
+    }
+    dst[o] = Particle(vec4(xn, rest), vec4(v, packLeaf(bits, phase, burn)));
+    uvec3 cell = uvec3(ivec3(floor(xn)) + AABB_BIAS);
+    uvec3 lo = uvec3(subgroupMin(cell.x), subgroupMin(cell.y), subgroupMin(cell.z));
+    uvec3 hi = uvec3(subgroupMax(cell.x), subgroupMax(cell.y), subgroupMax(cell.z));
+    if (subgroupElect()) {
+        atomicMin(counters[8], lo.x);
+        atomicMin(counters[9], lo.y);
+        atomicMin(counters[10], lo.z);
+        atomicMax(counters[11], hi.x);
+        atomicMax(counters[12], hi.y);
+        atomicMax(counters[13], hi.z);
+    }
+}

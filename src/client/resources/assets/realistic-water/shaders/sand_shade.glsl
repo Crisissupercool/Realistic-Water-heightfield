@@ -30,9 +30,8 @@ vec3 sandAlbedo(vec3 world, vec3 nWorld, float footprint) {
     return mix(sandAverage(), c, detail);
 }
 
-vec3 sandLight(vec3 nWorld, vec3 albedo, float ao) {
+vec3 sandLight(vec3 nWorld, vec3 albedo, float ao, vec2 bs) {
     vec3 n2 = nWorld * nWorld;
     float face = n2.x * 0.6 + n2.z * 0.8 + n2.y * (nWorld.y > 0.0 ? 1.0 : 0.5);
-    float day = clamp(G.skyColor.w / 0.85, 0.2, 1.0);
-    return min(albedo * face * day * ao * G.matD.y, vec3(1.0));
+    return min(albedo * face * vanillaLight(bs) * ao * G.matD.y, vec3(1.0));
 }

@@ -1,0 +1,18 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "redstone",
+  "pattern": [
+    "SSS",
+    "PRP",
+    "SSS"
+  ],
+  "key": {
+    "S": "minecraft:prismarine_shard",
+    "P": "minecraft:piston",
+    "R": "minecraft:redstone"
+  },
+  "result": {
+    "id": "realistic-water:wave_maker",
+    "count": 1
+  }
+}
