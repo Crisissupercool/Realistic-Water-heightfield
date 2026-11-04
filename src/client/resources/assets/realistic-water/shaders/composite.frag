@@ -500,11 +500,13 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     }
     float thickness = max(texture(thicknessTex, uv).r, 0.0);
     vec3 upV = normalize(mat3(G.view) * vec3(0.0, 1.0, 0.0));
-    float vertical = thickness * abs(dot(V, upV));
-    // Thin films lie flat; a falling sheet is thin too but must keep its own normal. So must a side face: the vertical depth is
-    // the thickness along the view times |V.up|, near zero for any view near level, so a side face seen at eye level (a tank's
-    // wall, water against a bank, the face of a step) counted as a film and was bent to lie flat: level water seen edge-on, all
-    // reflection, a bright band across it exactly at eye height. Only faces within about 55 degrees of level count.
+    // The water's depth across its own face: the thickness along the view times |V.n| (a slab d deep is seen through d / |V.n|).
+    // It was times |V.up|, near zero for any view near level whatever the face, so a side face (a tank's wall, water against a
+    // bank) or a steep top (the ramp over a step) seen at eye level counted as a film and was bent to lie flat: level water seen
+    // edge-on, all reflection, a bright band across the water exactly at eye height.
+    float vertical = thickness * abs(dot(V, n));
+    // Thin films lie flat; a falling sheet is thin too but must keep its own normal, and so must a side face: only faces within
+    // about 55 degrees of level count.
     float film = sheet ? 0.0 : (1.0 - smoothstep(0.02, max(G.shadeB.z, 0.03), vertical)) * smoothstep(0.35, 0.6, abs(dot(n, upV)));
     n = normalize(mix(n, upV, film * 0.9));
     vec3 tilt = vec3(0.0);

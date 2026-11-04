@@ -1168,4 +1168,7 @@ zero for every view near level, so any face seen at eye level counted as a film 
 up: a side face (the tank's wall, water against a bank, the face of a step) was shaded as level water seen edge-on, all
 reflection: sky white with the trace off, whatever the trace found with it on. That is why it followed the eye, stayed with
 the reflection trace and ripples off and with tops only (shore and step quads are steep tops), and was best seen from the
-side. Film now also needs the face within about 55 degrees of level (|n . up| from 0.35 to 0.6).
+side. Film now also needs the face within about 55 degrees of level (|n . up| from 0.35 to 0.6). That fixed the tank but
+not flowing water: the ramp over a step is a steep top, within 55 degrees, still a "film" at eye level. The depth is now the
+thickness times |V . n| (a slab d deep is seen through d / |V . n|, whatever its tilt), so only water that is thin across its
+own face counts.
