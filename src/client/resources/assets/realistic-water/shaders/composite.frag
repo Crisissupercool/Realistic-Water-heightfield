@@ -174,7 +174,16 @@ vec3 traceReflection(vec3 origin, vec3 R, vec3 planeP, vec3 planeN, out float hi
             float away = 1.0 - smoothstep(0.1, 0.5, R.z);
             hit = edge.x * edge.y * travel * away;
             travelled = length(b - origin);
-            return texture(sceneColor, suv).rgb;
+            vec3 seen = texture(sceneColor, suv).rgb;
+            // The scene has no water in it: a block face under water (the riser of a step a stream spills over, the ground under
+            // a pool's edge) was mirrored dry, a bright strip of grass and dirt along the water. Where water lies in front of the
+            // hit on the screen, it is seen through that water (its depth along the view, at least 25 cm), as the camera sees it.
+            float waterFd = texture(gbuffer, suv).w;
+            if (waterFd > 0.0 && waterFd < -b.z - 0.05) {
+                float path = max(texture(thicknessTex, suv).r * G.waterA.y, 0.25);
+                seen = seen * exp(-G.absorb.rgb * path) + G.scatter.rgb * G.skyColor.w * (1.0 - exp(-G.scatter.w * path));
+            }
+            return seen;
         }
         stepLen *= 1.1;
     }

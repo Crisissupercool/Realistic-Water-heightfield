@@ -1128,6 +1128,10 @@ plain floor: 39 blocks^3, 17 cm and rising).
   side test used the surface's own normal: a surface tilted toward the camera put everything far behind it (the trees beyond)
   "under" its plane. It now tests against the water's level (world up through the surface point; down from below; no test
   on falling sheets, normal under 60 degrees from vertical).
+  Then the trees and banks reflected across the water; the strip left was the step's riser mirrored in the pool below it,
+  dry, because the scene has no water: the riser stands above the lower pool's level (so the level test keeps it) under the
+  water spilling over it. A hit with water in front of it on the screen (gbuffer distance short of the hit) is now seen
+  through that water: absorbed and scattered over its thickness along the view, at least 25 cm.
 * **Currents seen from below.** The surface's ripples drift with the current (flow-mapped) from above; from below they stood
   still. The composite now decodes the flow for both and passes it to the from-below shading too.
 
