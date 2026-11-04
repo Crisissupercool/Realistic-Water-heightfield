@@ -1114,9 +1114,11 @@ plain floor: 39 blocks^3, 17 cm and rising).
   Still a band, and in the reflection alone (hfCompositeOff 64) it was a ruler-straight strip with seams at cell edges:
   geometry. hf_mesh lowered the surface by the drop times the depth in blocks (capped at 1), so under a level surface the
   drop changed wherever the bed did: over the step the drawn surface had a crease up to 10 cm high, a strip facing the
-  camera that reflected at another angle. The drop is now min(hfSurfaceDrop, 3/4 of the depth): the full 11 cm from 15 cm
-  of water, the same over a step, a shelf or a sloping bed; only shallower water is lowered less (and never below 1/4 of its
-  depth, so a block top just under a lake still stays under water). The probe and eyeY use the same rule.
+  camera that reflected at another angle. The drop is now full from 0.4 blocks of water (HF_DROP_DEPTH, was 1 block) and
+  scaled down only in shallower water, so a surface over a step stays level wherever the upper water is 40 cm deep or more
+  (over 20 cm water, a 5.5 cm crease instead of 9). Not shallower: tuned on the flood front test (HfMeshMirror, DropTune):
+  0.5 and 0.4 pass, 0.3 makes the spreading waterline jump (5 frames over 0.2 blocks, limit 4.75); 3/4 of the depth (0.15,
+  tried first) jumped in 18 frames. The probe and eyeY use the same rule.
 * **Currents seen from below.** The surface's ripples drift with the current (flow-mapped) from above; from below they stood
   still. The composite now decodes the flow for both and passes it to the from-below shading too.
 

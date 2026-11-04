@@ -4,6 +4,8 @@ package me.skaffy.client.water;
 final class HfMeshMirror {
 	static HfTiledSim sim;
 	static HfTileGrid g;
+	/** Water this deep or deeper gets the full surface drop (hf_mesh HF_DROP_DEPTH). */
+	static float DROP_DEPTH = 0.4F;
 	static final float DRY = 0.035F, FLOW_DRY = 0.008F, RAMP_MAX = 1.6F, RAMP_FLOW = 0.02F, RAMP_DEPTH = 0.35F, FLOW_DRAW = 0.0005F, DROP = 0.111F, SHORE_BELOW = 0.25F;
 	/** The shader's marching-squares shoreline (corner remap and shore quads); false: the old cell-edged one, for comparison. */
 	static boolean shore = true;
@@ -126,7 +128,7 @@ final class HfMeshMirror {
 		} else {
 			h = Math.clamp(hh, lo, hiC);
 		}
-		h -= DROP * Math.clamp(Math.min(smooth ? Math.min(depthSum / shares, shallow) : depthSum / shares, h - lo) * 0.75F / DROP, 0, 1);
+		h -= DROP * Math.clamp(Math.min(smooth ? Math.min(depthSum / shares, shallow) : depthSum / shares, h - lo) / DROP_DEPTH, 0, 1);
 		float pHi = fl >= hiF - 0.05F ? pa : 0.0F;
 		for (Object[] o : new Object[][]{{lx, nx}, {lz, nz}, {ld, nd}}) {
 			if ((Boolean) o[0] && floorOf((S) o[1]) >= hiF - 0.05F) pHi = Math.max(pHi, presence((S) o[1]));

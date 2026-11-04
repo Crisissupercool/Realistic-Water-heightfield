@@ -188,7 +188,7 @@ public final class WaterWorld {
 			return eye;
 		}
 		final double gap = 0.12;
-		double d = eye - (sm[2] - Math.min(WaterSettings.hfSurfaceDrop, 0.75F * sm[3]));
+		double d = eye - (sm[2] - WaterSettings.hfSurfaceDrop * Math.clamp(sm[3] / 0.4F, 0.0F, 1.0F));
 		this.eyeOffSurface = (float) d;
 		this.eyeShift = 0.0F;
 		if (!WaterSettings.hfEyeClear) {
