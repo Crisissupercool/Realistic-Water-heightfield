@@ -1119,6 +1119,11 @@ plain floor: 39 blocks^3, 17 cm and rising).
   (over 20 cm water, a 5.5 cm crease instead of 9). Not shallower: tuned on the flood front test (HfMeshMirror, DropTune):
   0.5 and 0.4 pass, 0.3 makes the spreading waterline jump (5 frames over 0.2 blocks, limit 4.75); 3/4 of the depth (0.15,
   tried first) jumped in 18 frames. The probe and eyeY use the same rule.
+  The line stayed (elsewhere on the stream too), still a straight row in the reflection alone, with the rest of the water
+  showing the sky. The trace stopped at the first crossing far behind the scene: a reflected ray heading for the trees
+  passes, on the screen, behind the bank or the near ground first, so nearly every ray ended as a miss there, and only the
+  rays meeting the bank's top edge within the tolerance hit: one straight row of bank and trees. Now such a crossing is
+  skipped and the march goes on until the ray is in front of the scene again (at most 4 crossings searched).
 * **Currents seen from below.** The surface's ripples drift with the current (flow-mapped) from above; from below they stood
   still. The composite now decodes the flow for both and passes it to the from-below shading too.
 

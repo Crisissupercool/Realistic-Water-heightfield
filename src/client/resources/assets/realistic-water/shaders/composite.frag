@@ -104,7 +104,10 @@ vec3 distantReflection(vec3 Rv, vec3 Rw) {
 // Screen-space reflection. The coarse march finds the first step behind the scene, then a binary search pins the crossing
 // down: without it a ray that overshoots by up to a step "hits" whatever lies there, which drew jagged teeth of the cliff
 // into the water next to it and made reflections jump with every small camera move. A crossing far behind the surface
-// (the ray passed behind an object) is no hit; rays heading back toward the camera and long rays fade out.
+// (the ray passed behind an object) is no hit, but the march goes on (up to 4 such crossings): it used to stop there, so every
+// ray passing behind a bank or the near ground on its way to the trees beyond ended as a miss, and only the rays that met the
+// bank's top edge within the tolerance hit: one straight bright row of bank and trees across sky-coloured water, the line.
+// Rays heading back toward the camera and long rays fade out.
 // Only the scene on the reflecting side of the surface (plane through planeP, normal planeN, both view space) can be hit. The
 // scene depth has no water in it, so a ray skimming just over the surface passes in front of pixels showing the ground under
 // that surface, and near the horizon "hit" it: a riverbed step or the ground the water lies on was mirrored as a sharp strip
@@ -117,6 +120,8 @@ vec3 traceReflection(vec3 origin, vec3 R, vec3 planeP, vec3 planeN, out float hi
     vec3 last = origin;
     float stepLen = 0.15;
     vec2 suv;
+    int crossings = 0;
+    bool inFront = true;
     for (int i = 0; i < 48; i++) {
         last = pos;
         pos += R * stepLen;
@@ -124,12 +129,22 @@ vec3 traceReflection(vec3 origin, vec3 R, vec3 planeP, vec3 planeN, out float hi
             break;
         }
         float sceneDist = linearDepth(suv, texture(sceneDepth, suv).r);
+        // Still behind the object a crossing was rejected for: march on until the ray is in front of the scene again.
+        bool wasInFront = inFront;
+        inFront = -pos.z <= sceneDist;
+        if (!inFront && !wasInFront) {
+            stepLen *= 1.1;
+            continue;
+        }
         if (-pos.z > sceneDist && dot(viewPosAt(suv, sceneDist) - planeP, planeN) < -0.05) {
             // Behind ground on the other side of the surface (under water seen from above, above it from below): not a hit.
             stepLen *= 1.1;
             continue;
         }
         if (-pos.z > sceneDist) {
+            if (crossings++ >= 4) {
+                break;
+            }
             vec3 a = last;
             vec3 b = pos;
             for (int j = 0; j < 6; j++) {
@@ -149,7 +164,8 @@ vec3 traceReflection(vec3 origin, vec3 R, vec3 planeP, vec3 planeN, out float hi
             }
             float behind = -b.z - linearDepth(suv, texture(sceneDepth, suv).r);
             if (behind > 0.35 + 0.05 * -b.z) {
-                break;
+                stepLen *= 1.1;
+                continue;
             }
             vec2 edge = smoothstep(vec2(0.0), vec2(0.08), suv) * (1.0 - smoothstep(vec2(0.92), vec2(1.0), suv));
             float travel = 1.0 - smoothstep(0.6, 1.0, float(i) / 48.0);
