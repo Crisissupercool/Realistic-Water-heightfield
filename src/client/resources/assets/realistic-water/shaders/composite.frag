@@ -86,10 +86,9 @@ bool projectToScreen(vec3 pos, out vec2 suv) {
 }
 
 // What a reflected ray that the trace did not resolve sees: the scene far away in its direction, read off the screen where that
-// direction lies (as seen from the camera, which for distant things is the same), else the sky. The sky colour alone made
-// every miss the brightest colour there is: near the horizon, where a reflected ray clears the near trees and banks, rows of
-// misses between traced trees above and see-through water below drew a bright band across the water (worst over a step).
-// Only things far away (from 8 to 32 blocks in): a bank next to the camera is not on the reflected ray's path.
+// direction lies (as seen from the camera, which for distant things is the same), else the sky. The bare sky colour is the
+// brightest there is and stood out between traced reflections. Only things far away (from 8 to 32 blocks in): a bank next to
+// the camera is not on the reflected ray's path.
 vec3 distantReflection(vec3 Rv, vec3 Rw) {
     vec3 sky = skyColor(Rw);
     vec2 duv;
@@ -102,19 +101,12 @@ vec3 distantReflection(vec3 Rv, vec3 Rw) {
 }
 
 // Screen-space reflection. The coarse march finds the first step behind the scene, then a binary search pins the crossing
-// down: without it a ray that overshoots by up to a step "hits" whatever lies there, which drew jagged teeth of the cliff
-// into the water next to it and made reflections jump with every small camera move. A crossing far behind the surface
-// (the ray passed behind an object) is no hit, but the march goes on (up to 4 such crossings): it used to stop there, so every
-// ray passing behind a bank or the near ground on its way to the trees beyond ended as a miss, and only the rays that met the
-// bank's top edge within the tolerance hit: one straight bright row of bank and trees across sky-coloured water, the line.
-// Rays heading back toward the camera and long rays fade out.
-// Only the scene on the reflecting side of the water's level can be hit (a level plane through planeP; planeN is view-space up,
-// or down from below, or zero for a falling sheet: no test). By the surface's own normal, a surface tilted toward the camera
-// put everything far behind it (the trees beyond a stream) "under" its plane, so far water reflected only the sky. The
-// scene depth has no water in it, so a ray skimming just over the surface passes in front of pixels showing the ground under
-// that surface, and near the horizon "hit" it: a riverbed step or the ground the water lies on was mirrored as a sharp strip
-// of grass and dirt (the line along the water with the eye near the surface or a step under thin water). Such crossings are
-// skipped and the march goes on.
+// down: without it a ray that overshoots by up to a step "hits" whatever lies there (jagged teeth of a cliff in the water next
+// to it, reflections jumping with every small camera move). A crossing far behind the surface (the ray passed behind an
+// object, such as a bank on the way to the trees beyond) is no hit, and the march goes on until the ray is in front of the
+// scene again (up to 4 searched). The scene depth has no water, so only the scene on the reflecting side of the water's level
+// can be hit (a level plane through planeP; planeN is view-space up, down from below, or zero for a falling sheet: no test),
+// not the ground under the water. Rays heading back toward the camera and long rays fade out.
 vec3 traceReflection(vec3 origin, vec3 R, vec3 planeP, vec3 planeN, out float hit, out float travelled) {
     hit = 0.0;
     travelled = 0.0;
@@ -174,16 +166,7 @@ vec3 traceReflection(vec3 origin, vec3 R, vec3 planeP, vec3 planeN, out float hi
             float away = 1.0 - smoothstep(0.1, 0.5, R.z);
             hit = edge.x * edge.y * travel * away;
             travelled = length(b - origin);
-            vec3 seen = texture(sceneColor, suv).rgb;
-            // The scene has no water in it: a block face under water (the riser of a step a stream spills over, the ground under
-            // a pool's edge) was mirrored dry, a bright strip of grass and dirt along the water. Where water lies in front of the
-            // hit on the screen, it is seen through that water (its depth along the view, at least 25 cm), as the camera sees it.
-            float waterFd = texture(gbuffer, suv).w;
-            if (waterFd > 0.0 && waterFd < -b.z - 0.05) {
-                float path = max(texture(thicknessTex, suv).r * G.waterA.y, 0.25);
-                seen = seen * exp(-G.absorb.rgb * path) + G.scatter.rgb * G.skyColor.w * (1.0 - exp(-G.scatter.w * path));
-            }
-            return seen;
+            return texture(sceneColor, suv).rgb;
         }
         stepLen *= 1.1;
     }
@@ -763,40 +746,6 @@ void main() {
         color = mix(color, foamColor * mix(0.25, 1.0, ambient), coverage);
     }
 
-    if ((pc.debugOff & 16) != 0) {
-        // Diagnostic (hfCompositeOff 16): how the pixel was shaded. Red: water from above, blue: water from below, green: the
-        // underwater view with no surface in front (brighter = less water fogged in), grey: scene. White where a trace hit.
-        float lum = dot(texture(sceneColor, uv).rgb, vec3(0.3, 0.5, 0.2));
-        vec3 dbg = vec3(lum * 0.5);
-        float hitDbg = 0.0;
-        if (hasFluid) {
-            vec3 P = viewPosAt(uv, fd);
-            vec3 V = toEyeAt(uv);
-            vec3 n = g.xyz;
-            bool fromBelow = underwater;
-            n = fromBelow && dot(n, V) < 0.0 ? -n : n;
-            float hit;
-            float travelled;
-            vec3 upV = normalize(mat3(G.view) * vec3(0.0, 1.0, 0.0));
-            float level = dot(n, upV);
-            traceReflection(P + n * 0.05, reflect(-V, n), P, abs(level) > 0.5 ? upV * sign(level) : vec3(0.0), hit, travelled);
-            hitDbg = hit;
-            dbg = fromBelow ? vec3(0.1, 0.2, 1.0) : vec3(1.0, 0.15, 0.1);
-            dbg *= 0.5 + 0.5 * clamp(dot(normalize(n), V), 0.0, 1.0);
-        } else if (underwater) {
-            float visible = min(sceneDist, 160.0);
-            if (viewState.w > 0.5) {
-                vec3 p0 = viewPosAt(uv, 1.0);
-                vec3 dirV = normalize(viewPosAt(uv, 2.0) - p0);
-                float up = (mat3(G.invView) * dirV).y;
-                if (up > 1.0e-4) {
-                    visible = min(visible, max(viewState.z / up * -dirV.z, 0.0));
-                }
-            }
-            dbg = vec3(0.1, 1.0 - clamp(visible / 16.0, 0.0, 0.85), 0.1);
-        }
-        color = mix(dbg, vec3(1.0), hitDbg * 0.7);
-    }
     outColor = vec4(color, 1.0);
     gl_FragDepth = outDepth;
 }

@@ -28,7 +28,7 @@ void main() {
         }
         // The drawn surface, not the simulated one: hf_mesh draws it HF_SURFACE_DROP lower (full from 0.4 blocks of water). Against the
         // simulated level an eye up to 11 cm above the drawn surface counted as underwater, so the surface below it was shaded
-        // from below and the view above it fogged: the line across the screen with water at eye height.
+        // from below and the view above it fogged.
         float surface = min(g.x + h, g.y) - HF_SURFACE_DROP * clamp(h / 0.4, 0.0, 1.0);
         if (camY > g.x && camY < surface) {
             atomicMax(viewBits[0], floatBitsToUint(1.0));

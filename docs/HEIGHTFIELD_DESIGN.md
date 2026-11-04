@@ -1082,61 +1082,10 @@ plain floor: 39 blocks^3, 17 cm and rising).
   mesh took the cave's ceiling as its surface and hung falling sheets from every edge of the lake floor over it, underwater
   (wavy, partly black shapes on the walls). A sheet now needs air to fall through: none into a span full to its ceiling.
 * **Eye at the waterline.** With the eye a few cm under the surface the surface is nearer than the near plane and not drawn:
-  every ray going up then missed it and was fogged as if the water went on to the scene, so the view above the waterline was
-  underwater. Now, under heightfield water, a ray going up with no surface in front is fogged only up to the surface height
-  (view state z). Where the surface is drawn edge-on, within ~15 cm of eye height, it mirrored the ground under it through
-  hardly any water. Recolouring it did not help (water colour: a dark line; see-through: a band of unfogged ground), nor
-  did keeping the surface near the eye off eye height (underwater it stuck to the head). Fading the reflection trace out
-  for near-level reflected rays (tried next) broke reflections from above: seen from near the surface, nearly all reflected
-  rays are near level, so trees fell back to sky and only tilted wave faces still reflected (stripes of trunks). Reverted.
-  With the reflection trace off (`/water set hfCompositeOff 1`) the line turns white (the sky fallback), so it is not the
-  trace: it is the surface itself, edge-on. Treading water holds the eye within millimetres of the surface, so the whole
-  surface out to the far shore projects onto the horizon as a line a few pixels thick. Now the camera, not the surface, is
-  kept off it: WaterWorld.eyeY (from CameraMixin, end of alignWithEntity, first person only) keeps the eye at least 12 cm
-  from the drawn surface (player sample minus hfSurfaceDrop) on the side it is on, easing out to no offset 24 cm away. It
-  changes side only when the real eye is 6 cm past the surface (a short dip), so bobbing does not flicker. hfEyeClear turns
-  it off. That alone did not remove the line. The probe (hf_probe.comp) decided "underwater" against the simulated level,
-  but hf_mesh draws the surface hfSurfaceDrop (0.111) lower: with the eye in that 11 cm band the drawn surface was below
-  the eye yet shaded from below, and the view above it fogged, as if under water. The probe now tests against the drawn
-  surface (level - drop * clamp(depth, 0, 1)) and reports that height in view state z; eyeY uses the same drop.
-  Still a line after that (a sharp strip of bank texture at the horizon in a stream). Diagnostics: hfCompositeOff 16
-  colours pixels by shading path (red from above, blue from below, green underwater with no surface, white trace hit), and
-  /water hf stats prints the eye relative to the drawn surface and the camera offset. They found it: in a stream with the
-  eye 1.4 blocks above the water the line was only in the reflection (hfCompositeOff 64), on smooth water seen from above,
-  over a riverbed step. The scene depth has no water in it, so a reflected ray skimming just over the surface passed in
-  front of pixels showing the ground under the water and "hit" it near the horizon: the step (or, with the eye at the
-  surface, the ground the water lies on; from below, the bank above the water) was mirrored as a sharp strip. Hits now must
-  lie on the reflecting side of the surface (more than 5 cm across its plane, by the unrippled normal, is skipped and the
-  march goes on), above water and below. The strip went, but its rows then missed and took the sky colour, the brightest
-  there is: a white-grey band between traced trees above and see-through water below. A miss now takes the distant scene
-  in the reflected direction, read off the screen where that direction lies (things 8 to 32+ blocks away, fading to the sky
-  colour at the screen edge), so misses continue the traced trees and sky instead of standing out.
-  Still a band, and in the reflection alone (hfCompositeOff 64) it was a ruler-straight strip with seams at cell edges:
-  geometry. hf_mesh lowered the surface by the drop times the depth in blocks (capped at 1), so under a level surface the
-  drop changed wherever the bed did: over the step the drawn surface had a crease up to 10 cm high, a strip facing the
-  camera that reflected at another angle. The drop is now full from 0.4 blocks of water (HF_DROP_DEPTH, was 1 block) and
-  scaled down only in shallower water, so a surface over a step stays level wherever the upper water is 40 cm deep or more
-  (over 20 cm water, a 5.5 cm crease instead of 9). Not shallower: tuned on the flood front test (HfMeshMirror, DropTune):
-  0.5 and 0.4 pass, 0.3 makes the spreading waterline jump (5 frames over 0.2 blocks, limit 4.75); 3/4 of the depth (0.15,
-  tried first) jumped in 18 frames. The probe and eyeY use the same rule.
-  The line stayed (elsewhere on the stream too), still a straight row in the reflection alone, with the rest of the water
-  showing the sky. The trace stopped at the first crossing far behind the scene: a reflected ray heading for the trees
-  passes, on the screen, behind the bank or the near ground first, so nearly every ray ended as a miss there, and only the
-  rays meeting the bank's top edge within the tolerance hit: one straight row of bank and trees. Now such a crossing is
-  skipped and the march goes on until the ray is in front of the scene again (at most 4 crossings searched).
-  That brought the trees and banks into the near water, but far water still showed only sky with one straight band. The
-  side test used the surface's own normal: a surface tilted toward the camera put everything far behind it (the trees beyond)
-  "under" its plane. It now tests against the water's level (world up through the surface point; down from below; no test
-  on falling sheets, normal under 60 degrees from vertical).
-  Then the trees and banks reflected across the water; the strip left was the step's riser mirrored in the pool below it,
-  dry, because the scene has no water: the riser stands above the lower pool's level (so the level test keeps it) under the
-  water spilling over it. A hit with water in front of it on the screen (gbuffer distance short of the hit) is now seen
-  through that water: absorbed and scattered over its thickness along the view, at least 25 cm.
-  The strip then stayed with the trace off, the ripples off and tops only (hfDebugMesh 1): geometry. Corner normals come
-  from the smooth surface before cornerOf pulls a corner up over a brink (the step ramp) or a shore corner dips under the
-  ground, so those steep quads were shaded as level water at a grazing angle: all reflection, a bright straight line along
-  every step and along shores seen from the side. emitTop now turns a corner's normal to its quad's own where they differ
-  by more than about 18 degrees (fully past 41), and a steep top foams (aeration up to 0.5 from 31 to 60 degrees).
+  every ray going up then missed it and was fogged as if the water went on to the scene. Under heightfield water, a ray
+  going up with no surface in front is now fogged only up to the surface height (view state z). hf_probe.comp decides
+  "underwater" against the drawn surface (level minus the surface drop), not the simulated level: with the eye in the
+  11 cm between them the surface below the eye was shaded from below. The line at eye height itself is section 37.
 * **Currents seen from below.** The surface's ripples drift with the current (flow-mapped) from above; from below they stood
   still. The composite now decodes the flow for both and passes it to the from-below shading too.
 
@@ -1151,24 +1100,34 @@ the player that are settled (backlog: pool eviction).
   water, and the front pass keeps only the nearest water surface, so a waterfall above the surface is not seen through it.
   It needs a second water layer (or a refraction source that includes the heightfield's other surfaces).
 
-## Full spans seen from outside
+## 36. Full spans seen from outside (as built)
 
-Water filling its span to the ceiling (full(): a flooded cave, a tank filled to its lid) was not drawn at all (see the
-underwater fixes: drawn against the ceiling, it was seen from inside), so a box of barriers or glass filled to the top
-showed no water from outside. Such a span now gets a flat lid just under its ceiling and side faces toward every neighbour
-that is not full water (solid, open, or shallower water, from that water's surface up), all flagged as walls: mesh_front.frag
-drops walls when the camera is under water, so from inside nothing stands against the cave's rock. From outside, opaque
-rock hides them by depth. Cost: one quad per full cell, more at its edges.
+Water filling its span to the ceiling (full(): a flooded cave, a tank filled to its lid) was not drawn at all (section 34),
+so a box of barriers or glass filled to the top showed no water from outside. Such a span now gets a flat lid just under its
+ceiling and side faces toward every neighbour that is not full water (solid, open, or shallower water, from that water's
+surface up), all flagged as walls: mesh_front.frag drops walls when the camera is under water, so from inside nothing stands
+against the cave's rock. From outside, opaque rock hides them by depth. Cost: one quad per full cell, more at its edges.
 
-## The line at eye height, found
+## 37. The line at eye height (as built)
 
-A tank of barrier blocks seen from outside showed it plainly: a bright band across the water exactly at eye height. The
-thin-film test in shadeAboveWater takes the vertical depth as the thickness along the view times |V . up|, which is near
-zero for every view near level, so any face seen at eye level counted as a film and had its normal bent 90 % of the way to
-up: a side face (the tank's wall, water against a bank, the face of a step) was shaded as level water seen edge-on, all
-reflection: sky white with the trace off, whatever the trace found with it on. That is why it followed the eye, stayed with
-the reflection trace and ripples off and with tops only (shore and step quads are steep tops), and was best seen from the
-side. Film now also needs the face within about 55 degrees of level (|n . up| from 0.35 to 0.6). That fixed the tank but
-not flowing water: the ramp over a step is a steep top, within 55 degrees, still a "film" at eye level. The depth is now the
-thickness times |V . n| (a slab d deep is seen through d / |V . n|, whatever its tilt), so only water that is thin across its
-own face counts.
+A bright line across the water exactly at eye height, best seen from the side, sky white with the reflection trace off.
+Cause: the thin-film test in shadeAboveWater took the water's depth as the thickness along the view times |V . up|, near
+zero for every view near level, so any face seen at eye level (a tank's wall, water against a bank, the ramp over a step)
+counted as a film and had its normal bent 90 % of the way to up: level water seen edge-on, all reflection. The depth is now
+the thickness times |V . n| (a slab d deep is seen through d / |V . n|, whatever its tilt), and only faces within about 55
+degrees of level can be films (|n . up| from 0.35 to 0.6).
+
+Found along the way and kept (each a real fault, none of them the line):
+* **Reflection hits.** The scene depth has no water, so a ray skimming over the surface could "hit" ground under the
+  water: hits must lie on the reflecting side of the water's level (world up through the surface point, down from below,
+  no test on falling sheets; more than 5 cm across is skipped). A crossing far behind the scene (the ray passed behind a
+  bank on the screen) no longer ends the trace: it marches on until in front again (up to 4 searched), so trees beyond a
+  bank reflect. A miss takes the distant scene in the reflected direction off the screen (8 to 32+ blocks away, fading to
+  the sky colour at the screen edge) instead of the bare sky colour, the brightest there is.
+* **Surface drop.** The drawn surface was lowered by hfSurfaceDrop times the depth in blocks (capped at 1), so under a level
+  surface it creased wherever the bed changed. It is now full from 0.4 blocks of water (HF_DROP_DEPTH; HfMeshMirror's flood
+  front test fails from about 0.3, DropTune tunes it); hf_probe uses the same rule.
+* **Steep tops.** Corner normals come from the smooth surface before a corner is pulled over a brink or dipped at a shore:
+  emitTop turns a corner's normal to its quad's own where they differ by more than about 18 degrees (fully past 41), and a
+  steep top foams (aeration up to 0.5 from 31 to 60 degrees).
+* **Diagnostics.** hfCompositeOff 32 shows only the refracted water, 64 only the reflection.

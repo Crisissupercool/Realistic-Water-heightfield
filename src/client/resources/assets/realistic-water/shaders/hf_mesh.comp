@@ -365,11 +365,9 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce, out vec2 fl
     // out meets the vanilla surface instead of standing on it as a slab (by the share of the corner's water over the sea).
     float overSea = (pa * float(hfSink(a.span)) + (lx ? px * float(hfSink(nx.span)) : 0.0) + (lz ? pz * float(hfSink(nz.span)) : 0.0)
         + (ld ? pd * float(hfSink(nd.span)) : 0.0)) / weight;
-    // The full drop from HF_DROP_DEPTH of water, less in shallower water (was: from 1 block). The drop varies with the depth
-    // under a level surface, so wherever the bed changed under it (a step under a stream, a shelf) the drawn surface had a crease
-    // up to 10 cm high, a strip that reflected at another angle (a line across the water near the horizon); from 40 cm of water
-    // there is none. Not shallower: a spreading front's waterline then jumped cell by cell (HfMeshMirror flood front test fails
-    // from about 0.3).
+    // The full drop from HF_DROP_DEPTH of water, less in shallower water. It varies with the depth under a level surface, so it
+    // creases the drawn surface wherever the bed changes under it (was from 1 block: up to 10 cm over a step). Not shallower: a
+    // spreading front's waterline then jumps cell by cell (HfMeshMirror's flood front test fails from about 0.3).
     const float HF_DROP_DEPTH = 0.4;
     float dropShare = clamp(min(min(depthSum / weight, shallow), h - lo) / HF_DROP_DEPTH, 0.0, 1.0);
     h -= HF_SURFACE_DROP * mix(dropShare, 1.0, clamp(overSea, 0.0, 1.0));

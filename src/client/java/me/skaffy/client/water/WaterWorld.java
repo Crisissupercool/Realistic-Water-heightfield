@@ -168,47 +168,6 @@ public final class WaterWorld {
 		return INSTANCE;
 	}
 
-	/** Which side of the heightfield surface the first-person eye is kept on (see eyeY). */
-	private boolean eyeAbove = true;
-	/** For /water hf stats: the real eye relative to the drawn surface, and how far eyeY moved the camera (NaN: no sample). */
-	private float eyeOffSurface = Float.NaN;
-	private float eyeShift;
-
-	/**
-	 * The first-person eye height to render from. Treading water holds the eye within millimetres of the surface, and a surface
-	 * at eye height is seen edge-on: a line across the screen at the horizon, as far as the water reaches (the sky or the shore
-	 * mirrored in it), which no shading can hide. So the eye is kept at least EYE_GAP off the drawn surface, on the side it is on;
-	 * it changes side only once the real eye is EYE_GAP/2 past the surface (a short dip), so bobbing does not flicker. Moving the
-	 * surface instead (tried) made it follow the head. Within 2.5 EYE_GAP of the surface the offset eases out to none.
-	 */
-	public double eyeY(double eye) {
-		float[] sm = this.hfWorld.freshPlayerSample();
-		if (sm == null || sm[4] < 0.5F || sm[3] < 0.05F) {
-			this.eyeOffSurface = Float.NaN;
-			return eye;
-		}
-		final double gap = 0.12;
-		double d = eye - (sm[2] - WaterSettings.hfSurfaceDrop * Math.clamp(sm[3] / 0.4F, 0.0F, 1.0F));
-		this.eyeOffSurface = (float) d;
-		this.eyeShift = 0.0F;
-		if (!WaterSettings.hfEyeClear) {
-			return eye;
-		}
-		if (this.eyeAbove && d < -0.5 * gap) {
-			this.eyeAbove = false;
-		} else if (!this.eyeAbove && d > 0.5 * gap) {
-			this.eyeAbove = true;
-		}
-		double s = this.eyeAbove ? d : -d;
-		if (s >= 2.0 * gap) {
-			return eye;
-		}
-		// [-gap/2, 2 gap] -> [gap, 2 gap], continuous with the real eye at 2 gap.
-		double kept = gap + (s + 0.5 * gap) * 0.4;
-		this.eyeShift = (float) ((this.eyeAbove ? kept : -kept) - d);
-		return eye + this.eyeShift;
-	}
-
 	public static boolean isRealistic(FluidState state) {
 		return RealisticWaterFluid.isRealistic(state);
 	}
@@ -1093,9 +1052,7 @@ public final class WaterWorld {
 			particles = String.format("\nparticle sim (\"particles\" above): %d water bodies %,d particles | %d lava %,d | %d sand %,d (details: /water stats)",
 				bodies[0], n[0], bodies[1], n[1], bodies[2], n[2]);
 		}
-		String eye = Float.isNaN(this.eyeOffSurface) ? "" : String.format("\neye: %+.3f from the drawn surface (real eye %+.3f, camera moved %+.3f, side %s)",
-			this.eyeOffSurface + this.eyeShift, this.eyeOffSurface, this.eyeShift, this.eyeAbove ? "above" : "below");
-		return (this.heightfield != null ? this.heightfield.statsLine() : "No heightfield water (use /water flood)") + gpu + particles + eye;
+		return (this.heightfield != null ? this.heightfield.statsLine() : "No heightfield water (use /water flood)") + gpu + particles;
 	}
 
 	/** /water hf column: the heightfield spans where the crosshair points (just in front of the block face it hits). */
