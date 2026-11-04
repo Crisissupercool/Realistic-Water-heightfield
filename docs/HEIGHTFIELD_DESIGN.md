@@ -1172,3 +1172,9 @@ Found along the way and kept (each a real fault, none of them the line):
   point 32 blocks along the ray from the surface point, takes the scene's distance there and projects the point that far
   along the ray. A ray turned down, off a wave face tilted toward the camera (wakes, player waves), took the sky below the
   horizon, which is grey: grey patches in the waves. It now takes the sky mirrored up (it would meet the water itself).
+* **Join stall: the shaders.** The log showed the client stuck 35 s on "loading terrain" after the player logged in, while the
+  mod's own per-frame work never passed 140 ms. WaterWorld.warm (at join, on the render thread) waits for every shader's
+  SPIR-V, and ShaderWarmup compiles about 70 of them, optimized, on 2 low-priority threads from game start, every start.
+  Compiled SPIR-V is now cached on disk (game directory, realistic-water/spirv, named by a SHA-256 of the preprocessed source,
+  defines and kind, so an edited shader or include compiles again), and the warmup uses up to 6 threads (cores - 2). Only
+  the first start after a shader change still compiles. warm() logs its time when over 50 ms.

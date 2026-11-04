@@ -30,7 +30,7 @@ public final class Shaders {
 	 * thread the first time water appeared froze the game for 2-3 s (about 30 shaders, composite and hf_mesh the largest).
 	 */
 	private static final Map<String, Future<byte[]>> SPIRV = new ConcurrentHashMap<>();
-	private static final ExecutorService WARMUP = Executors.newFixedThreadPool(2, r -> {
+	private static final ExecutorService WARMUP = Executors.newFixedThreadPool(Math.clamp(Runtime.getRuntime().availableProcessors() - 2, 2, 6), r -> {
 		Thread t = new Thread(r, "realistic-water shader warmup");
 		t.setDaemon(true);
 		t.setPriority(Thread.MIN_PRIORITY);
@@ -104,12 +104,53 @@ public final class Shaders {
 		}
 	}
 
+	/**
+	 * SPIR-V cache on disk (game directory, realistic-water/spirv), keyed by a hash of the preprocessed source with its defines and
+	 * the shader kind, so any change to a shader or an include compiles it again. Compiling all of them (about 70, optimized) took
+	 * longer than joining a world, and the join waited for them ({@code WaterWorld.warm}): the game stood still for 10 s or more
+	 * on every start.
+	 */
+	private static final java.nio.file.Path CACHE = net.fabricmc.loader.api.FabricLoader.getInstance().getGameDir()
+		.resolve("realistic-water").resolve("spirv");
+
+	private static java.nio.file.Path cached(String full, int kind) {
+		try {
+			java.security.MessageDigest sha = java.security.MessageDigest.getInstance("SHA-256");
+			sha.update(full.getBytes(StandardCharsets.UTF_8));
+			sha.update((byte) kind);
+			return CACHE.resolve(java.util.HexFormat.of().formatHex(sha.digest()) + ".spv");
+		} catch (java.security.NoSuchAlgorithmException e) {
+			throw new IllegalStateException(e);
+		}
+	}
+
 	private static byte[] compile(String name, int kind, Map<String, String> defines) {
 		String source = load(name);
 		int nl = source.indexOf('\n');
 		StringBuilder head = new StringBuilder(source.substring(0, nl + 1));
 		defines.forEach((k, v) -> head.append("#define ").append(k).append(' ').append(v).append('\n'));
 		String full = preprocess(head + source.substring(nl + 1), new HashSet<>());
+		java.nio.file.Path file = cached(full, kind);
+		try {
+			if (java.nio.file.Files.isRegularFile(file)) {
+				return java.nio.file.Files.readAllBytes(file);
+			}
+		} catch (IOException e) {
+			// Unreadable: compile it again.
+		}
+		byte[] spv = compileSource(name, kind, full);
+		try {
+			java.nio.file.Files.createDirectories(CACHE);
+			java.nio.file.Path tmp = java.nio.file.Files.createTempFile(CACHE, "spv", ".tmp");
+			java.nio.file.Files.write(tmp, spv);
+			java.nio.file.Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+		} catch (IOException e) {
+			// The cache is only a speed-up.
+		}
+		return spv;
+	}
+
+	private static byte[] compileSource(String name, int kind, String full) {
 
 		long compiler = Shaderc.shaderc_compiler_initialize();
 		long options = Shaderc.shaderc_compile_options_initialize();

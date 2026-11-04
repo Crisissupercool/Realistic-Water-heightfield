@@ -1400,6 +1400,7 @@ public final class WaterWorld {
 	 * stall a frame (their SPIR-V is compiled in the background from game start, see ShaderWarmup).
 	 */
 	public void warm() {
+		long start = System.nanoTime();
 		try {
 			if (this.renderer == null) {
 				this.renderer = new WaterRenderer();
@@ -1412,6 +1413,7 @@ public final class WaterWorld {
 			}
 			HfDomain.warmPrograms();
 			WaterRegion.warmPrograms();
+			slowFrame("preparing the water shaders at world join", 1, start);
 		} catch (RuntimeException e) {
 			// Not fatal: whatever is missing is built on first use, as before.
 			RealisticWater.LOGGER.warn("Realistic Water could not prepare its shaders at world join", e);
