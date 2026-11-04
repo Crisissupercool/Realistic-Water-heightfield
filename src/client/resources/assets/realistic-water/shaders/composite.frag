@@ -85,6 +85,22 @@ bool projectToScreen(vec3 pos, out vec2 suv) {
     return all(greaterThanEqual(suv, vec2(0.0))) && all(lessThanEqual(suv, vec2(1.0)));
 }
 
+// What a reflected ray that the trace did not resolve sees: the scene far away in its direction, read off the screen where that
+// direction lies (as seen from the camera, which for distant things is the same), else the sky. The sky colour alone made
+// every miss the brightest colour there is: near the horizon, where a reflected ray clears the near trees and banks, rows of
+// misses between traced trees above and see-through water below drew a bright band across the water (worst over a step).
+// Only things far away (from 8 to 32 blocks in): a bank next to the camera is not on the reflected ray's path.
+vec3 distantReflection(vec3 Rv, vec3 Rw) {
+    vec3 sky = skyColor(Rw);
+    vec2 duv;
+    if (!projectToScreen(Rv * 4096.0, duv)) {
+        return sky;
+    }
+    float far = smoothstep(8.0, 32.0, linearDepth(duv, texture(sceneDepth, duv).r));
+    vec2 edge = smoothstep(vec2(0.0), vec2(0.08), duv) * (1.0 - smoothstep(vec2(0.92), vec2(1.0), duv));
+    return mix(sky, texture(sceneColor, duv).rgb, far * edge.x * edge.y);
+}
+
 // Screen-space reflection. The coarse march finds the first step behind the scene, then a binary search pins the crossing
 // down: without it a ray that overshoots by up to a step "hits" whatever lies there, which drew jagged teeth of the cliff
 // into the water next to it and made reflections jump with every small camera move. A crossing far behind the surface
@@ -531,7 +547,7 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
         ssr = traceReflection(P + n * 0.05, Rv, P, nGeo, hit, travelled);
         hit *= ssrWeight;
     }
-    vec3 reflection = mix(skyColor(Rw), ssr, hit);
+    vec3 reflection = mix(distantReflection(Rv, Rw), ssr, hit);
     // Diagnostics (hfCompositeOff 32 / 64): only the refracted water, only the reflection.
     if ((pc.debugOff & 32) != 0) {
         return water;

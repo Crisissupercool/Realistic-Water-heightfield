@@ -1107,7 +1107,10 @@ plain floor: 39 blocks^3, 17 cm and rising).
   front of pixels showing the ground under the water and "hit" it near the horizon: the step (or, with the eye at the
   surface, the ground the water lies on; from below, the bank above the water) was mirrored as a sharp strip. Hits now must
   lie on the reflecting side of the surface (more than 5 cm across its plane, by the unrippled normal, is skipped and the
-  march goes on), above water and below.
+  march goes on), above water and below. The strip went, but its rows then missed and took the sky colour, the brightest
+  there is: a white-grey band between traced trees above and see-through water below. A miss now takes the distant scene
+  in the reflected direction, read off the screen where that direction lies (things 8 to 32+ blocks away, fading to the sky
+  colour at the screen edge), so misses continue the traced trees and sky instead of standing out.
 * **Currents seen from below.** The surface's ripples drift with the current (flow-mapped) from above; from below they stood
   still. The composite now decodes the flow for both and passes it to the from-below shading too.
 
