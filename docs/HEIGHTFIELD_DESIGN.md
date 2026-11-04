@@ -1124,6 +1124,10 @@ plain floor: 39 blocks^3, 17 cm and rising).
   passes, on the screen, behind the bank or the near ground first, so nearly every ray ended as a miss there, and only the
   rays meeting the bank's top edge within the tolerance hit: one straight row of bank and trees. Now such a crossing is
   skipped and the march goes on until the ray is in front of the scene again (at most 4 crossings searched).
+  That brought the trees and banks into the near water, but far water still showed only sky with one straight band. The
+  side test used the surface's own normal: a surface tilted toward the camera put everything far behind it (the trees beyond)
+  "under" its plane. It now tests against the water's level (world up through the surface point; down from below; no test
+  on falling sheets, normal under 60 degrees from vertical).
 * **Currents seen from below.** The surface's ripples drift with the current (flow-mapped) from above; from below they stood
   still. The composite now decodes the flow for both and passes it to the from-below shading too.
 

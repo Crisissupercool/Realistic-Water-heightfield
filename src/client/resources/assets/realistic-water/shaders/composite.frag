@@ -108,7 +108,9 @@ vec3 distantReflection(vec3 Rv, vec3 Rw) {
 // ray passing behind a bank or the near ground on its way to the trees beyond ended as a miss, and only the rays that met the
 // bank's top edge within the tolerance hit: one straight bright row of bank and trees across sky-coloured water, the line.
 // Rays heading back toward the camera and long rays fade out.
-// Only the scene on the reflecting side of the surface (plane through planeP, normal planeN, both view space) can be hit. The
+// Only the scene on the reflecting side of the water's level can be hit (a level plane through planeP; planeN is view-space up,
+// or down from below, or zero for a falling sheet: no test). By the surface's own normal, a surface tilted toward the camera
+// put everything far behind it (the trees beyond a stream) "under" its plane, so far water reflected only the sky. The
 // scene depth has no water in it, so a ray skimming just over the surface passes in front of pixels showing the ground under
 // that surface, and near the horizon "hit" it: a riverbed step or the ground the water lies on was mirrored as a sharp strip
 // of grass and dirt (the line along the water with the eye near the surface or a step under thin water). Such crossings are
@@ -560,7 +562,8 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     float ssrWeight = smoothstep(SSR_MIN_F, 2.0 * SSR_MIN_F, F);
     if (ssrWeight > 0.0 && (pc.debugOff & 1) == 0) {
         float travelled;
-        ssr = traceReflection(P + n * 0.05, Rv, P, nGeo, hit, travelled);
+        float level = dot(nGeo, upV);
+        ssr = traceReflection(P + n * 0.05, Rv, P, abs(level) > 0.5 ? upV * sign(level) : vec3(0.0), hit, travelled);
         hit *= ssrWeight;
     }
     vec3 reflection = mix(distantReflection(Rv, Rw), ssr, hit);
@@ -632,7 +635,9 @@ vec3 shadeSurfaceFromBelow(vec2 uv, vec3 n, float fd, vec3 deep, vec2 flow) {
         vec3 Rv = reflect(-V, n);
         float hit;
         float travelled;
-        vec3 ssr = traceReflection(P + n * 0.05, Rv, P, nGeo, hit, travelled);
+        vec3 upV = normalize(mat3(G.view) * vec3(0.0, 1.0, 0.0));
+        float level = dot(nGeo, upV);
+        vec3 ssr = traceReflection(P + n * 0.05, Rv, P, abs(level) > 0.5 ? upV * sign(level) : vec3(0.0), hit, travelled);
         float fog = G.scatter.w * G.misc.x;
         ssr = ssr * exp(-G.absorb.rgb * travelled * G.misc.x) + deep * (1.0 - exp(-fog * travelled));
         reflected = mix(deep, ssr, hit);
@@ -758,7 +763,9 @@ void main() {
             n = fromBelow && dot(n, V) < 0.0 ? -n : n;
             float hit;
             float travelled;
-            traceReflection(P + n * 0.05, reflect(-V, n), P, n, hit, travelled);
+            vec3 upV = normalize(mat3(G.view) * vec3(0.0, 1.0, 0.0));
+            float level = dot(n, upV);
+            traceReflection(P + n * 0.05, reflect(-V, n), P, abs(level) > 0.5 ? upV * sign(level) : vec3(0.0), hit, travelled);
             hitDbg = hit;
             dbg = fromBelow ? vec3(0.1, 0.2, 1.0) : vec3(1.0, 0.15, 0.1);
             dbg *= 0.5 + 0.5 * clamp(dot(normalize(n), V), 0.0, 1.0);
