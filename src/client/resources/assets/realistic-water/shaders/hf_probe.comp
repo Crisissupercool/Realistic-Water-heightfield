@@ -26,10 +26,10 @@ void main() {
         if (!hfValid(g) || h <= HF_RENDER_DRY) {
             continue;
         }
-        // The drawn surface, not the simulated one: hf_mesh draws it HF_SURFACE_DROP lower (by depth up to 1 block). Against the
+        // The drawn surface, not the simulated one: hf_mesh draws it HF_SURFACE_DROP lower (at most 3/4 of the depth). Against the
         // simulated level an eye up to 11 cm above the drawn surface counted as underwater, so the surface below it was shaded
         // from below and the view above it fogged: the line across the screen with water at eye height.
-        float surface = min(g.x + h, g.y) - HF_SURFACE_DROP * clamp(h, 0.0, 1.0);
+        float surface = min(g.x + h, g.y) - min(HF_SURFACE_DROP, 0.75 * h);
         if (camY > g.x && camY < surface) {
             atomicMax(viewBits[0], floatBitsToUint(1.0));
             atomicMax(viewBits[1], floatBitsToUint(1.0));

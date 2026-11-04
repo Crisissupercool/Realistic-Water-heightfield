@@ -365,7 +365,12 @@ vec4 corner(HfSpan a, int sx, int sz, float fl, float top, float ce, out vec2 fl
     // out meets the vanilla surface instead of standing on it as a slab (by the share of the corner's water over the sea).
     float overSea = (pa * float(hfSink(a.span)) + (lx ? px * float(hfSink(nx.span)) : 0.0) + (lz ? pz * float(hfSink(nz.span)) : 0.0)
         + (ld ? pd * float(hfSink(nd.span)) : 0.0)) / weight;
-    h -= HF_SURFACE_DROP * mix(clamp(min(min(depthSum / weight, shallow), h - lo), 0.0, 1.0), 1.0, clamp(overSea, 0.0, 1.0));
+    // At most 3/4 of the water's depth (was: the depth in blocks, capped at 1, as a share of the drop): the drop then varied with
+    // the depth under a level surface, so wherever the bed changed under it (a step under a stream, a shelf, the shore) the drawn
+    // surface had a crease up to 10 cm high, a strip that reflected at another angle (a line across the water near the horizon).
+    // Now the drop is the full 11 cm wherever the water is 15 cm deep or more; only shallower water is drawn less lowered.
+    float dropShare = clamp(min(min(depthSum / weight, shallow), h - lo) * 0.75 / max(HF_SURFACE_DROP, 1.0e-4), 0.0, 1.0);
+    h -= HF_SURFACE_DROP * mix(dropShare, 1.0, clamp(overSea, 0.0, 1.0));
     // A ramp over a step (sharers on different floors) never dips under the upper floor: at a brink the averaged corner put the
     // surface through the edge of the block, so the outer half of the block top stuck out of the water as dry grass (and
     // switched as the pool below rose and the brink turned from a sheet into a ramp). The water now drapes over the edge.

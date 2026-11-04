@@ -126,7 +126,7 @@ final class HfMeshMirror {
 		} else {
 			h = Math.clamp(hh, lo, hiC);
 		}
-		h -= DROP * Math.clamp(Math.min(smooth ? Math.min(depthSum / shares, shallow) : depthSum / shares, h - lo), 0, 1);
+		h -= DROP * Math.clamp(Math.min(smooth ? Math.min(depthSum / shares, shallow) : depthSum / shares, h - lo) * 0.75F / DROP, 0, 1);
 		float pHi = fl >= hiF - 0.05F ? pa : 0.0F;
 		for (Object[] o : new Object[][]{{lx, nx}, {lz, nz}, {ld, nd}}) {
 			if ((Boolean) o[0] && floorOf((S) o[1]) >= hiF - 0.05F) pHi = Math.max(pHi, presence((S) o[1]));
