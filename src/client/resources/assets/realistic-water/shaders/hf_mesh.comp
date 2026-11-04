@@ -394,15 +394,28 @@ vec3 cornerNormal(vec4 c) {
     return normalize(vec3(c.x, sqrt(max(1.0 - c.x * c.x - c.z * c.z, 1e-4)), c.z));
 }
 
+vec3 topNormal(vec4 corner, vec3 face) {
+    vec3 n = cornerNormal(corner);
+    return normalize(mix(n, face, smoothstep(0.05, 0.25, 1.0 - dot(n, face))));
+}
+
 void emitTop(uint q, vec3 a, vec3 b, vec3 c, vec3 d, vec4 ca, vec4 cb, vec4 cc, vec4 cd, vec2 fa, vec2 fb, vec2 fc, vec2 fd) {
     if (q >= HF_QUAD_CAP) {
         return;
     }
     uint v = q * 4u;
-    verts[v] = vec4(a, uintBitsToFloat(hfPack(cornerNormal(ca), false, ca.w)));
-    verts[v + 1u] = vec4(b, uintBitsToFloat(hfPack(cornerNormal(cb), false, cb.w)));
-    verts[v + 2u] = vec4(c, uintBitsToFloat(hfPack(cornerNormal(cc), false, cc.w)));
-    verts[v + 3u] = vec4(d, uintBitsToFloat(hfPack(cornerNormal(cd), false, cd.w)));
+    // Corner normals come from the smooth surface around each corner, before a corner is pulled up over a brink (cornerOf, the
+    // step ramp) or dipped under the ground at a shore: such a quad is steep, but was shaded as level water seen at a grazing
+    // angle, all reflection (sky white with the trace off, whatever the trace found with it on): a bright straight line along
+    // every step a stream drops over and along shores seen from the side. Where a corner's normal is far from its quad's own
+    // (more than about 18 degrees, fully past 41), it turns to the quad's. A steep top is falling water: it foams (up to 0.5).
+    vec3 fn = cross(c - a, d - b);
+    fn = normalize(fn.y < 0.0 ? -fn : fn);
+    float boost = HF_FOAM_GAIN > 1.0e-3 ? smoothstep(0.15, 0.5, 1.0 - fn.y) * 0.5 / HF_FOAM_GAIN : 0.0;
+    verts[v] = vec4(a, uintBitsToFloat(hfPack(topNormal(ca, fn), false, max(ca.w, boost))));
+    verts[v + 1u] = vec4(b, uintBitsToFloat(hfPack(topNormal(cb, fn), false, max(cb.w, boost))));
+    verts[v + 2u] = vec4(c, uintBitsToFloat(hfPack(topNormal(cc, fn), false, max(cc.w, boost))));
+    verts[v + 3u] = vec4(d, uintBitsToFloat(hfPack(topNormal(cd, fn), false, max(cd.w, boost))));
     vertFlow[v] = packHalf2x16(fa);
     vertFlow[v + 1u] = packHalf2x16(fb);
     vertFlow[v + 2u] = packHalf2x16(fc);

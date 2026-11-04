@@ -1132,6 +1132,11 @@ plain floor: 39 blocks^3, 17 cm and rising).
   dry, because the scene has no water: the riser stands above the lower pool's level (so the level test keeps it) under the
   water spilling over it. A hit with water in front of it on the screen (gbuffer distance short of the hit) is now seen
   through that water: absorbed and scattered over its thickness along the view, at least 25 cm.
+  The strip then stayed with the trace off, the ripples off and tops only (hfDebugMesh 1): geometry. Corner normals come
+  from the smooth surface before cornerOf pulls a corner up over a brink (the step ramp) or a shore corner dips under the
+  ground, so those steep quads were shaded as level water at a grazing angle: all reflection, a bright straight line along
+  every step and along shores seen from the side. emitTop now turns a corner's normal to its quad's own where they differ
+  by more than about 18 degrees (fully past 41), and a steep top foams (aeration up to 0.5 from 31 to 60 degrees).
 * **Currents seen from below.** The surface's ripples drift with the current (flow-mapped) from above; from below they stood
   still. The composite now decodes the flow for both and passes it to the from-below shading too.
 
