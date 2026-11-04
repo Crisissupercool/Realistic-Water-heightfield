@@ -163,7 +163,9 @@ public final class WaterSettings {
 	public static int hfWindowAbove = -1;
 	/** Debug: 0 normal, 1 draw only water tops (no side walls), 2 draw only side walls. */
 	public static int hfDebugMesh = 0;
-	/** Turns parts of the water shading off to measure their cost (/water hf stats, composite): 1 reflection trace, 2 ripples, 4 foam, 8 wake. Add to combine. */
+	/** Turns parts of the water shading off to measure their cost (/water hf stats, composite): 1 reflection trace, 2 ripples, 4 foam, 8 wake. Add to combine.
+	 * 16 is a diagnostic: colours each pixel by how it was shaded (red water from above, blue water from below, green underwater
+	 * view with no surface in front, white where the reflection trace hit). */
 	public static int hfCompositeOff = 0;
 	/** Keep the first-person eye 12 cm off the water surface (an eye at the surface sees it edge-on, a line across the screen). */
 	public static boolean hfEyeClear = true;

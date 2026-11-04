@@ -170,6 +170,9 @@ public final class WaterWorld {
 
 	/** Which side of the heightfield surface the first-person eye is kept on (see eyeY). */
 	private boolean eyeAbove = true;
+	/** For /water hf stats: the real eye relative to the drawn surface, and how far eyeY moved the camera (NaN: no sample). */
+	private float eyeOffSurface = Float.NaN;
+	private float eyeShift;
 
 	/**
 	 * The first-person eye height to render from. Treading water holds the eye within millimetres of the surface, and a surface
@@ -180,11 +183,17 @@ public final class WaterWorld {
 	 */
 	public double eyeY(double eye) {
 		float[] sm = this.hfWorld.freshPlayerSample();
-		if (!WaterSettings.hfEyeClear || sm == null || sm[4] < 0.5F || sm[3] < 0.05F) {
+		if (sm == null || sm[4] < 0.5F || sm[3] < 0.05F) {
+			this.eyeOffSurface = Float.NaN;
 			return eye;
 		}
 		final double gap = 0.12;
 		double d = eye - (sm[2] - WaterSettings.hfSurfaceDrop * Math.min(sm[3], 1.0F));
+		this.eyeOffSurface = (float) d;
+		this.eyeShift = 0.0F;
+		if (!WaterSettings.hfEyeClear) {
+			return eye;
+		}
 		if (this.eyeAbove && d < -0.5 * gap) {
 			this.eyeAbove = false;
 		} else if (!this.eyeAbove && d > 0.5 * gap) {
@@ -196,7 +205,8 @@ public final class WaterWorld {
 		}
 		// [-gap/2, 2 gap] -> [gap, 2 gap], continuous with the real eye at 2 gap.
 		double kept = gap + (s + 0.5 * gap) * 0.4;
-		return eye + ((this.eyeAbove ? kept : -kept) - d);
+		this.eyeShift = (float) ((this.eyeAbove ? kept : -kept) - d);
+		return eye + this.eyeShift;
 	}
 
 	public static boolean isRealistic(FluidState state) {
@@ -1083,7 +1093,9 @@ public final class WaterWorld {
 			particles = String.format("\nparticle sim (\"particles\" above): %d water bodies %,d particles | %d lava %,d | %d sand %,d (details: /water stats)",
 				bodies[0], n[0], bodies[1], n[1], bodies[2], n[2]);
 		}
-		return (this.heightfield != null ? this.heightfield.statsLine() : "No heightfield water (use /water flood)") + gpu + particles;
+		String eye = Float.isNaN(this.eyeOffSurface) ? "" : String.format("\neye: %+.3f from the drawn surface (real eye %+.3f, camera moved %+.3f, side %s)",
+			this.eyeOffSurface + this.eyeShift, this.eyeOffSurface, this.eyeShift, this.eyeAbove ? "above" : "below");
+		return (this.heightfield != null ? this.heightfield.statsLine() : "No heightfield water (use /water flood)") + gpu + particles + eye;
 	}
 
 	/** /water hf column: the heightfield spans where the crosshair points (just in front of the block face it hits). */

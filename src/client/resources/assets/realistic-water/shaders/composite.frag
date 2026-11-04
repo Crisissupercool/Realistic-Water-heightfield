@@ -690,6 +690,38 @@ void main() {
         color = mix(color, foamColor * mix(0.25, 1.0, ambient), coverage);
     }
 
+    if ((pc.debugOff & 16) != 0) {
+        // Diagnostic (hfCompositeOff 16): how the pixel was shaded. Red: water from above, blue: water from below, green: the
+        // underwater view with no surface in front (brighter = less water fogged in), grey: scene. White where a trace hit.
+        float lum = dot(texture(sceneColor, uv).rgb, vec3(0.3, 0.5, 0.2));
+        vec3 dbg = vec3(lum * 0.5);
+        float hitDbg = 0.0;
+        if (hasFluid) {
+            vec3 P = viewPosAt(uv, fd);
+            vec3 V = toEyeAt(uv);
+            vec3 n = g.xyz;
+            bool fromBelow = underwater;
+            n = fromBelow && dot(n, V) < 0.0 ? -n : n;
+            float hit;
+            float travelled;
+            traceReflection(P + n * 0.05, reflect(-V, n), hit, travelled);
+            hitDbg = hit;
+            dbg = fromBelow ? vec3(0.1, 0.2, 1.0) : vec3(1.0, 0.15, 0.1);
+            dbg *= 0.5 + 0.5 * clamp(dot(normalize(n), V), 0.0, 1.0);
+        } else if (underwater) {
+            float visible = min(sceneDist, 160.0);
+            if (viewState.w > 0.5) {
+                vec3 p0 = viewPosAt(uv, 1.0);
+                vec3 dirV = normalize(viewPosAt(uv, 2.0) - p0);
+                float up = (mat3(G.invView) * dirV).y;
+                if (up > 1.0e-4) {
+                    visible = min(visible, max(viewState.z / up * -dirV.z, 0.0));
+                }
+            }
+            dbg = vec3(0.1, 1.0 - clamp(visible / 16.0, 0.0, 0.85), 0.1);
+        }
+        color = mix(dbg, vec3(1.0), hitDbg * 0.7);
+    }
     outColor = vec4(color, 1.0);
     gl_FragDepth = outDepth;
 }

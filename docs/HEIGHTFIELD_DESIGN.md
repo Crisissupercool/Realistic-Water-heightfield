@@ -1099,6 +1099,9 @@ plain floor: 39 blocks^3, 17 cm and rising).
   but hf_mesh draws the surface hfSurfaceDrop (0.111) lower: with the eye in that 11 cm band the drawn surface was below
   the eye yet shaded from below, and the view above it fogged, as if under water. The probe now tests against the drawn
   surface (level - drop * clamp(depth, 0, 1)) and reports that height in view state z; eyeY uses the same drop.
+  Still a line after that (a sharp strip of bank texture at the horizon in a stream). Diagnostics: hfCompositeOff 16
+  colours pixels by shading path (red from above, blue from below, green underwater with no surface, white trace hit), and
+  /water hf stats prints the eye relative to the drawn surface and the camera offset.
 * **Currents seen from below.** The surface's ripples drift with the current (flow-mapped) from above; from below they stood
   still. The composite now decodes the flow for both and passes it to the from-below shading too.
 
