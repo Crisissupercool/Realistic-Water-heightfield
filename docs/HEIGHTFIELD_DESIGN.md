@@ -1095,7 +1095,10 @@ plain floor: 39 blocks^3, 17 cm and rising).
   kept off it: WaterWorld.eyeY (from CameraMixin, end of alignWithEntity, first person only) keeps the eye at least 12 cm
   from the drawn surface (player sample minus hfSurfaceDrop) on the side it is on, easing out to no offset 24 cm away. It
   changes side only when the real eye is 6 cm past the surface (a short dip), so bobbing does not flicker. hfEyeClear turns
-  it off.
+  it off. That alone did not remove the line. The probe (hf_probe.comp) decided "underwater" against the simulated level,
+  but hf_mesh draws the surface hfSurfaceDrop (0.111) lower: with the eye in that 11 cm band the drawn surface was below
+  the eye yet shaded from below, and the view above it fogged, as if under water. The probe now tests against the drawn
+  surface (level - drop * clamp(depth, 0, 1)) and reports that height in view state z; eyeY uses the same drop.
 * **Currents seen from below.** The surface's ripples drift with the current (flow-mapped) from above; from below they stood
   still. The composite now decodes the flow for both and passes it to the from-below shading too.
 

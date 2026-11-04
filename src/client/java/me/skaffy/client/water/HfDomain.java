@@ -1331,7 +1331,7 @@ final class HfDomain implements AutoCloseable {
 		int[] sp = this.grid.spanPage;
 		ComputeProgram[] p = programs();
 		this.bind(p[3], cb, ubo, Vk.ringSlot(), frameView);
-		p[3].push(cb, this.push(lz * tn + lx, (float) camY, 0.0F, 0.0F, 0.0F, 0.0F, WaterSettings.hfRenderDepth, 0.0F, 0.0F,
+		p[3].push(cb, this.push(lz * tn + lx, (float) camY, WaterSettings.hfSurfaceDrop, 0.0F, 0.0F, 0.0F, WaterSettings.hfRenderDepth, 0.0F, 0.0F,
 			sp[tile * 4], sp[tile * 4 + 1], sp[tile * 4 + 2], sp[tile * 4 + 3]));
 		p[3].dispatch(cb, 1, 1, 1);
 	}
