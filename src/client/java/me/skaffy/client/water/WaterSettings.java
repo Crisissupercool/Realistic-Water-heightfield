@@ -157,8 +157,12 @@ public final class WaterSettings {
 	/** Seconds between block syncs of a tile while its water moves; settled tiles sync once when they fall asleep. */
 	public static float hfSyncInterval = 1.0F;
 	public static int hfSyncTilesPerFrame = 2;
-	/** How far a new heightfield reaches below the player or sea level, whichever is lower (below it everything is solid). */
-	public static int hfWindowBelow = 64;
+	/**
+	 * How far a new heightfield reaches below the player or sea level, whichever is lower (below it everything is solid).
+	 * Default: down to the world's floor. It was 64 (Y -1 with sea level 63), so a flood running from a mountain into caves froze,
+	 * invisible and not swimmable, once it went below that ("outside the heightfield's height window").
+	 */
+	public static int hfWindowBelow = 1024;
 	/** Blocks above the player the heightfield reaches; -1: up to the build limit (the sky over the terrain is skipped cheaply). */
 	public static int hfWindowAbove = -1;
 	/** Debug: 0 normal, 1 draw only water tops (no side walls), 2 draw only side walls. */
