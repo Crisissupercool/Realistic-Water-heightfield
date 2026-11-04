@@ -1178,3 +1178,7 @@ Found along the way and kept (each a real fault, none of them the line):
   Compiled SPIR-V is now cached on disk (game directory, realistic-water/spirv, named by a SHA-256 of the preprocessed source,
   defines and kind, so an edited shader or include compiles again), and the warmup uses up to 6 threads (cores - 2). Only
   the first start after a shader change still compiles. warm() logs its time when over 50 ms.
+* **Wake rings seen from above.** A ring's face tilted away from the camera meets the view at a grazing angle and is nearly a
+  mirror, so looking down from a few blocks the rings were opaque sky-blue bands over water that otherwise shows its bed.
+  Physically right, but it read as wrong. The wake may now add at most WAKE_FRESNEL (0.12) to the Fresnel the water would
+  have without it; seen at a low angle, where the water already reflects, the rings keep their full look.

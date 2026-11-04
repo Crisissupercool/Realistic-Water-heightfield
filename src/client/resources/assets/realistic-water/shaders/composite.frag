@@ -229,6 +229,8 @@ vec2 rippleGradient(vec2 p, float t, float footprint) {
 const float FLOW_CYCLE = 1.6;
 // Speeds (blocks/s) over which the still pattern gives way to the flow-mapped one.
 const vec2 FLOW_BLEND = vec2(0.03, 0.15);
+// Most reflection the player's wake may add to water seen from above (see shadeAboveWater).
+const float WAKE_FRESNEL = 0.12;
 
 void flowPhases(vec2 p, vec2 flow, out vec2 off0, out vec2 off1, out float w0) {
     float t = G.simB.z / FLOW_CYCLE + valueNoise(p * 0.11);
@@ -572,6 +574,14 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     vec3 Rv = reflect(-V, n);
     vec3 Rw = (G.invView * vec4(Rv, 0.0)).xyz;
     float F = 0.02 + 0.98 * pow(1.0 - clamp(dot(n, V), 0.0, 1.0), 5.0);
+    // The wake may add at most WAKE_FRESNEL to the reflection the water would have without it. Seen from above, a ring's face
+    // tilted away from the camera meets the view at a grazing angle and is nearly a mirror: correct, but it drew opaque sky-blue
+    // bands across water that otherwise shows its bed, which looked wrong from a few blocks up.
+    if (wk.x != 0.0 || wk.y != 0.0) {
+        vec3 nCalm = normalize(n + tilt);
+        float calm = 0.02 + 0.98 * pow(1.0 - clamp(dot(nCalm, V), 0.0, 1.0), 5.0);
+        F = min(F, calm + WAKE_FRESNEL);
+    }
     // The reflection trace (up to 54 depth reads) is most of this pass. Seen from above, water reflects only 2-5% of the light,
     // so the traced scene could change the pixel by at most that fraction of (scene - sky): there it is skipped and the sky
     // stands in, fading in between SSR_MIN_F and twice that so no edge shows: traced when the view meets the surface less than
