@@ -1150,3 +1150,12 @@ the player that are settled (backlog: pool eviction).
 * **Not yet: waterfalls seen from below.** Through the surface from below, the composite refracts the scene without any
   water, and the front pass keeps only the nearest water surface, so a waterfall above the surface is not seen through it.
   It needs a second water layer (or a refraction source that includes the heightfield's other surfaces).
+
+## Full spans seen from outside
+
+Water filling its span to the ceiling (full(): a flooded cave, a tank filled to its lid) was not drawn at all (see the
+underwater fixes: drawn against the ceiling, it was seen from inside), so a box of barriers or glass filled to the top
+showed no water from outside. Such a span now gets a flat lid just under its ceiling and side faces toward every neighbour
+that is not full water (solid, open, or shallower water, from that water's surface up), all flagged as walls: mesh_front.frag
+drops walls when the camera is under water, so from inside nothing stands against the cave's rock. From outside, opaque
+rock hides them by depth. Cost: one quad per full cell, more at its edges.
