@@ -213,12 +213,14 @@ vec2 rippleGradient(vec2 p, float t, float footprint) {
 
 // Flow mapping: two copies of a pattern carried along by the water, each restarted every cycle, half a cycle apart, and blended
 // by a triangle weight that is zero when a copy restarts, so the pattern moves with the current without ever visibly jumping.
+// The cycle's phase varies slowly over the surface: in step everywhere, the whole stream's foam and ripples cross-faded to
+// a new copy at the same moment twice a cycle, which on fast water read as the pattern resetting.
 const float FLOW_CYCLE = 1.6;
 // Speeds (blocks/s) over which the still pattern gives way to the flow-mapped one.
 const vec2 FLOW_BLEND = vec2(0.03, 0.15);
 
-void flowPhases(vec2 flow, out vec2 off0, out vec2 off1, out float w0) {
-    float t = G.simB.z / FLOW_CYCLE;
+void flowPhases(vec2 p, vec2 flow, out vec2 off0, out vec2 off1, out float w0) {
+    float t = G.simB.z / FLOW_CYCLE + valueNoise(p * 0.11);
     float p0 = fract(t);
     float p1 = fract(t + 0.5);
     off0 = flow * (p0 - 0.5) * FLOW_CYCLE;
@@ -251,7 +253,7 @@ vec3 rippleNormal(vec3 nView, vec3 viewPos, float footprint, vec2 flow) {
         vec2 off0;
         vec2 off1;
         float w0;
-        flowPhases(flow, off0, off1, w0);
+        flowPhases(world.xz, flow, off0, off1, w0);
         vec2 moving = rippleGradient((world.xz - off0) * scale, t, fp) * w0
             + rippleGradient((world.xz - off1) * scale + vec2(37.1, 11.3), t, fp) * (1.0 - w0);
         // Faster water is rougher.
@@ -439,7 +441,7 @@ float flowFoam(vec2 p, vec2 flow, float coverage, float footprint) {
     vec2 off0;
     vec2 off1;
     float w0;
-    flowPhases(flow, off0, off1, w0);
+    flowPhases(p, flow, off0, off1, w0);
     vec2 smear = flow * (0.12 * min(speed, 6.0) / speed);
     vec2 a = p - off0;
     vec2 b = p - off1 + vec2(13.7, 5.1);

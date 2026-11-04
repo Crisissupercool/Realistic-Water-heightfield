@@ -1132,13 +1132,11 @@ Found along the way and kept (each a real fault, none of them the line):
   steep top foams (aeration up to 0.5 from 31 to 60 degrees).
 * **Diagnostics.** hfCompositeOff 32 shows only the refracted water, 64 only the reflection.
 
-## 38. Streams that keep running (as built)
+## 38. Flow patterns, height window, springs, world load (as built)
 
-* **Steady streams fell asleep.** A tile sleeps when its surface rises or falls slower than hfSleepRate for hfSleepSeconds,
-  and a steady stream's surface stands still while its water runs. It froze in place, its flux pages went back, its drawn
-  current became zero, so the foam and ripples drifting with it stopped (and swapped to the still pattern), then jumped on
-  when something woke the tile. Water faster than hfSleepSpeed (0.1 blocks/s) now keeps its tile awake (not thin films,
-  which keep the film rule). HfTileGrid.sleepSpeed carries it; the CPU mirror leaves it at 0 (old behaviour).
+* **Flow-mapped patterns no longer pulse in step.** Both copies of the foam and ripple pattern restart every FLOW_CYCLE (1.6 s)
+  and cross-fade; with the same phase everywhere, the whole stream faded to a new copy at once twice a cycle, which on fast
+  water read as the pattern resetting. The phase now varies slowly over the surface (value noise at 0.11 per block).
 * **Still and moving patterns blend.** Ripples and foam switched from the still pattern to the flow-mapped one at a single
   speed (0.05 blocks/s); now they blend from 0.03 to 0.15.
 * **Height window.** hfWindowBelow defaults to 1024 (down to the world's floor); it was 64, Y -1 with sea level 63, so a

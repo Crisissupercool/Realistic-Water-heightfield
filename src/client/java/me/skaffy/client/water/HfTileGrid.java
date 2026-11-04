@@ -625,18 +625,11 @@ final class HfTileGrid {
 	 * @param filmDepth tiles whose deepest water is below this only hold a thin film; they count as quiet below {@code filmRate}
 	 *                  instead of {@code sleepRate}, so a film creeping across flat ground does not keep the solver awake forever
 	 */
-	/** Water faster than this (blocks/s) keeps its tile awake however still its surface is (WaterSettings.hfSleepSpeed; 0 off). */
-	float sleepSpeed;
-
 	Activation updateActive(float frameDt, float sleepRate, float sleepSeconds, float filmDepth, float filmRate) {
 		boolean[] awake = new boolean[this.count];
 		for (int s = 0; s < this.count; s++) {
-			boolean film = this.maxDepth[s] < filmDepth;
-			float limit = film ? Math.max(sleepRate, filmRate) : sleepRate;
-			// A steady stream's surface stands still while its water runs: by the surface rate alone it fell asleep, froze in
-			// place, and its current (and the foam and ripples drifting with it) stopped, then jumped on when something woke it.
-			boolean running = !film && this.sleepSpeed > 0.0F && this.maxSpeed[s] >= this.sleepSpeed;
-			if (this.maxRate[s] < limit && !running) {
+			float limit = this.maxDepth[s] < filmDepth ? Math.max(sleepRate, filmRate) : sleepRate;
+			if (this.maxRate[s] < limit) {
 				this.quiet[s] += frameDt;
 			} else {
 				this.quiet[s] = 0.0F;
