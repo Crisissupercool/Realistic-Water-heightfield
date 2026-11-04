@@ -35,7 +35,9 @@ void main() {
         }
         return;
     }
-    float headA = ga.x + hA;
+    float headA = hfHead(ga, hA);
+    // Depth as the head sees it (more than the stored water in a span under pressure).
+    float eA = headA - ga.x;
     float filmCarry = clamp(hA / HF_MIN_FLOW, 0.0, 1.0);
     vec3 stir = hfStir(a, ga.x, min(headA, ga.y));
     float drag = 1.0 - exp(-HF_STIR_RATE * HF_DT);
@@ -60,7 +62,7 @@ void main() {
         }
         vec2 gb = hfGeo(b.span);
         float hB = depth[b.span];
-        float headB = gb.x + hB;
+        float headB = hfHead(gb, hB);
         // Only water inside the shared opening can move.
         float lo = max(ga.x, gb.x);
         float hi = min(ga.y, gb.y);
@@ -77,7 +79,7 @@ void main() {
         float carry = 1.0;
         if (headB >= ga.x) {
             // Sideways: the film on either side does not count.
-            drive = ga.x + max(hA - HF_MIN_FLOW, 0.0) - max(gb.x + max(hB - HF_MIN_FLOW, 0.0), ga.x);
+            drive = ga.x + max(eA - HF_MIN_FLOW, 0.0) - max(gb.x + max(headB - gb.x - HF_MIN_FLOW, 0.0), ga.x);
             carry = filmCarry;
         }
         float q = flux[base + k] * HF_KEEP * carry + HF_DT * HF_G * area * drive / HF_CELL;

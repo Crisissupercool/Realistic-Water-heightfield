@@ -80,6 +80,61 @@ public final class HfCpuTest {
 
 	/** Sum of all outflows of a tile's simulated spans (blocks^3/s). */
 	/** Highest water surface anywhere (spans holding more than 0.01 blocks). */
+	/**
+	 * A U-tube: a reservoir (x 0..4, water to y 60 on a floor at 50) joined by a 1 block tunnel (x 5..10, z 7..8, y 50) to a
+	 * 2x2 shaft (x 11..12) closed above y 50 except up the shaft. Returns {reservoir surface, shaft surface, hidden water above
+	 * ceilings (blocks^3), volume at start, volume at end} after the given seconds.
+	 */
+	static double[] uTube(double seconds) {
+		HfTileGrid grid = new HfTileGrid(0, 0, 40, 96, C, L, 0.25F, 4, 16, 16);
+		long full = (1L << (C * C * C)) - 1L;
+		HfTopology.Voxels vox = (x, y, z) -> {
+			boolean pipeRow = z >= 7 && z <= 8;
+			boolean open;
+			if (y < 50) {
+				open = false;
+			} else if (x <= 4 || y >= 81) {
+				open = true;
+			} else if (x <= 10) {
+				open = y == 50 && pipeRow;
+			} else {
+				open = x <= 12 && pipeRow;
+			}
+			return open ? 0L : full;
+		};
+		HfTiledSim sim = new HfTiledSim(grid, vox);
+		sim.maxNewTiles = 0;
+		sim.addTile(0, 0, (l, c) -> l == 0 && (c % grid.tn) / C <= 4 ? 10.0 : 0.0);
+		double v0 = sim.volume();
+		for (int f = 0; f < (int) Math.round(seconds * 60.0); f++) {
+			sim.frame();
+		}
+		double hidden = 0.0;
+		for (int l = 0; l < grid.layersUsed[0]; l++) {
+			for (int c = 0; c < grid.pageSpans; c++) {
+				int sp = grid.spanPage[l] * grid.pageSpans + c;
+				if (HfTileGrid.validGeo(sim.geo[sp])) {
+					float room = grid.ceilOf(sim.geo[sp]) - grid.floorOf(sim.geo[sp]);
+					hidden += Math.max(sim.depth[sp] - room, 0.0F) * grid.cell * grid.cell;
+				}
+			}
+		}
+		return new double[]{columnSurface(sim, grid, 2, 7), columnSurface(sim, grid, 11, 7), hidden, v0, sim.volume()};
+	}
+
+	/** Highest water surface (capped at each span's ceiling) in block column (x, z) of tile 0. */
+	static float columnSurface(HfTiledSim sim, HfTileGrid g, int x, int z) {
+		int c = z * C * g.tn + x * C;
+		float m = -1.0e9F;
+		for (int l = 0; l < g.layersUsed[0]; l++) {
+			int sp = g.spanPage[l] * g.pageSpans + c;
+			if (HfTileGrid.validGeo(sim.geo[sp]) && sim.depth[sp] > 0.01F) {
+				m = Math.max(m, Math.min(g.floorOf(sim.geo[sp]) + sim.depth[sp], g.ceilOf(sim.geo[sp])));
+			}
+		}
+		return m;
+	}
+
 	static float maxSurface(HfTiledSim sim, HfTileGrid g) {
 		float m = -1.0e9F;
 		for (int t = 0; t < g.count; t++) {
@@ -908,7 +963,7 @@ public final class HfCpuTest {
 					}
 					continue;
 				}
-				float headA = t.floor[s] + hA;
+				float headA = HfTiledSim.head(t.floor[s], t.ceil[s], hA);
 				float filmCarry = Math.clamp(hA / MIN_FLOW, 0.0F, 1.0F);
 				float[] out = new float[8];
 				float total = 0.0F;
@@ -918,7 +973,7 @@ public final class HfCpuTest {
 						continue;
 					}
 					int b = l >>> 3;
-					float headB = t.floor[b] + h[b];
+					float headB = HfTiledSim.head(t.floor[b], t.ceil[b], h[b]);
 					float lo = Math.max(t.floor[s], t.floor[b]);
 					float hi = Math.min(t.ceil[s], t.ceil[b]);
 					float wetA = Math.clamp(headA, lo, hi) - lo;
@@ -931,7 +986,7 @@ public final class HfCpuTest {
 					float carry = 1.0F;
 					if (headB >= t.floor[s]) {
 						float fa = t.floor[s];
-						drive = fa + Math.max(hA - MIN_FLOW, 0.0F) - Math.max(t.floor[b] + Math.max(h[b] - MIN_FLOW, 0.0F), fa);
+						drive = fa + Math.max(headA - fa - MIN_FLOW, 0.0F) - Math.max(t.floor[b] + Math.max(headB - t.floor[b] - MIN_FLOW, 0.0F), fa);
 						carry = filmCarry;
 					}
 					float q = flux[base + k] * keep * carry + dt * 9.81F * area * drive / cell;
@@ -975,7 +1030,7 @@ public final class HfCpuTest {
 				next[s] = nh;
 				maxRate = Math.max(maxRate, Math.abs(nh - h[s]) / dt);
 				vol += (double) nh * cell * cell;
-				maxDepth = Math.max(maxDepth, nh);
+				maxDepth = Math.max(maxDepth, waveDepth(s, nh));
 				if (nh > 0.05F) {
 					maxSpeed = Math.max(maxSpeed, Math.min(peak / (cell * nh), 30.0F));
 				}
@@ -994,11 +1049,19 @@ public final class HfCpuTest {
 			return v;
 		}
 
+		/** Depth the CFL step sees (hf_depth.comp): under pressure, waves run as in water room / slot deep. */
+		float waveDepth(int s, float v) {
+			float room = t.ceil[s] - t.floor[s];
+			return v > room ? room / HfTiledSim.slot(room) : v;
+		}
+
 		/** Runs like WaterWorld would: CFL substeps per 1/60 s frame. Returns false on NaN or blow-up. */
 		boolean run(int frames) {
 			maxDepth = 0.0F;
-			for (float v : h) {
-				maxDepth = Math.max(maxDepth, v);
+			for (int s = 0; s < t.spans; s++) {
+				if (t.valid(s)) {
+					maxDepth = Math.max(maxDepth, waveDepth(s, h[s]));
+				}
 			}
 			for (int f = 0; f < frames; f++) {
 				float frameDt = 1.0F / 60.0F;
@@ -1178,6 +1241,16 @@ public final class HfCpuTest {
 			check(drift < 0.1, String.format("volume drift %.4f%%", drift));
 		}
 
+		System.out.println("Pressure: a U-tube fills its shaft to the reservoir's level through a flooded tunnel");
+		{
+			double[] r = uTube(30.0);
+			System.out.printf("  reservoir %.2f, shaft %.2f, hidden %.3f blocks^3, volume %.2f -> %.2f%n", r[0], r[1], r[2], r[3], r[4]);
+			check(Math.abs(r[0] - r[1]) < 0.3, "shaft level within 0.3 of the reservoir's");
+			check(r[1] > 55.0, "water rose up the shaft");
+			// 12 blocks of tunnel under about 8.3 blocks of head: 0.05 x 8.3 x 12 = 5.0 with the slot, 100 without it.
+			check(r[2] < 6.0, "under 6 blocks^3 held above ceilings (without the pressure slot about 100)");
+			check(Math.abs(r[4] - r[3]) < 1.0e-3 * r[3], "volume kept");
+		}
 		System.out.println("Solver: tunnel under a river stays dry");
 		{
 			// river channel at z 14..17 cut 2 blocks deep into ground (floor 62); tunnel at y 55..57 under it, no opening

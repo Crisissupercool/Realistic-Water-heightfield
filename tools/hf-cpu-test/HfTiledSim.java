@@ -85,6 +85,19 @@ final class HfTiledSim {
 	boolean oldGrowth;
 	int[] pages = new int[0];
 
+	/** Pressure slot (hf_common.glsl HF_SLOT, hfSlot, hfHead). */
+	static final float SLOT = 0.05F;
+	static final float SLOT_SPEED = 20.0F;
+
+	static float slot(float room) {
+		return Math.max(SLOT, 9.81F * room / (SLOT_SPEED * SLOT_SPEED));
+	}
+
+	static float head(float floor, float ceil, float h) {
+		float room = ceil - floor;
+		return h <= room ? floor + h : ceil + (h - room) / slot(room);
+	}
+
 	HfTiledSim(HfTileGrid g, HfTopology.Voxels vox) {
 		this.g = g;
 		this.vox = vox;
@@ -473,7 +486,8 @@ final class HfTiledSim {
 				}
 				float fa = this.g.floorOf(ga);
 				float ca = this.g.ceilOf(ga);
-				float headA = fa + hA;
+				float headA = head(fa, ca, hA);
+				float eA = headA - fa;
 				float filmCarry = Math.clamp(hA / HfCpuTest.MIN_FLOW, 0.0F, 1.0F);
 				float[] st = this.stirAt(tile, col, fa, Math.min(headA, ca));
 				float drag = 1.0F - (float) Math.exp(-this.stirRate * dt);
@@ -500,7 +514,7 @@ final class HfTiledSim {
 					int gb = this.geo[b];
 					float fb = this.g.floorOf(gb);
 					float hB = this.depth[b];
-					float headB = fb + hB;
+					float headB = head(fb, this.g.ceilOf(gb), hB);
 					float lo = Math.max(fa, fb);
 					float hi = Math.min(ca, this.g.ceilOf(gb));
 					float wetA = Math.clamp(headA, lo, hi) - lo;
@@ -514,7 +528,7 @@ final class HfTiledSim {
 					float carry = 1.0F;
 					if (headB >= fa) {
 						float m = HfCpuTest.MIN_FLOW;
-						drive = fa + Math.max(hA - m, 0.0F) - Math.max(fb + Math.max(hB - m, 0.0F), fa);
+						drive = fa + Math.max(eA - m, 0.0F) - Math.max(fb + Math.max(headB - fb - m, 0.0F), fa);
 						carry = filmCarry;
 					}
 					float q = this.flux[base + k] * keep * carry + dt * 9.81F * area * drive / cell;
@@ -793,7 +807,8 @@ final class HfTiledSim {
 				}
 				this.foam[write + base / 8] = nh > 0.0F ? f : 0.0F;
 				this.g.volume[tile] += (double) nh * cell * cell + airVol;
-				this.g.maxDepth[tile] = Math.max(this.g.maxDepth[tile], nh);
+				float roomA = this.g.ceilOf(this.geo[s]) - floorA;
+				this.g.maxDepth[tile] = Math.max(this.g.maxDepth[tile], nh > roomA ? roomA / slot(roomA) : nh);
 				if (nh > 0.05F) {
 					this.g.maxSpeed[tile] = Math.max(this.g.maxSpeed[tile], Math.min(peak / (cell * nh), 30.0F));
 				}

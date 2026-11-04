@@ -755,30 +755,10 @@ final class HfDomain implements AutoCloseable {
 				g.maxSpeed[tile] = Math.max(g.maxSpeed[tile], b.getFloat(o + 8));
 				g.maxRate[tile] = Math.max(g.maxRate[tile], b.getFloat(o + 12));
 				g.border[tile] |= b.getInt(o + 16);
-				// Water a sea took in this step (hf_depth.comp sinks), and the column that took the most.
-				int taken = b.getInt(o + 20);
-				int peak = b.getInt(o + 24);
-				if (taken > 0 && this.lastDt > 0.0F && taken / 65536.0F / this.lastDt > SEA_INFLOW) {
-					int col = peak & 0xFFFF;
-					int tn = g.tn;
-					this.seaInflows.add(new double[]{g.originX + g.tileX[tile] * HfTileGrid.TILE_BLOCKS + (col % tn + 0.5) * g.cell,
-						g.originZ + g.tileZ[tile] * HfTileGrid.TILE_BLOCKS + (col / tn + 0.5) * g.cell, taken / 65536.0 / this.lastDt});
-				}
 			}
 		}
 	}
 
-	/** A sea taking in more than this (blocks^3/s, per 256 spans) is where a flood runs into it (HfWorld.takeInSea). */
-	static final float SEA_INFLOW = 0.5F;
-	private final List<double[]> seaInflows = new ArrayList<>();
-
-	/** Where floods ran into seas since the last call: {world x, world z, blocks^3/s taken in}, strongest first. */
-	List<double[]> takeSeaInflows() {
-		List<double[]> out = new ArrayList<>(this.seaInflows);
-		this.seaInflows.clear();
-		out.sort((u, v) -> Double.compare(v[2], u[2]));
-		return out;
-	}
 
 	/**
 	 * Asks for the spans of the column at world (x, z) and its four neighbors; {@link #takeDebugText} returns them a few frames later.

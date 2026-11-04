@@ -411,7 +411,11 @@ void main() {
         // may sleep below 0.02 b/s), stopped waking the tile downstream and dammed the stream at the border; its films and
         // sheets vanished and popped back whenever a surge woke it.
         bool busy = airVol > 1.0e-5 || (outflow > RUNNING_FLOW && outflow > RUNNING_SPEED * HF_CELL * max(h, 0.008));
-        mine = vec4(h * HF_CELL * HF_CELL + airVol, h, speed, max(abs(h - old) / HF_DT, busy ? 1.0 : 0.0));
+        // The CFL step takes its wave speed from the max depth: under pressure, waves run at sqrt(g room / slot), as fast as in
+        // water room / slot deep.
+        float roomA = hfGeo(a.span).y - hfGeo(a.span).x;
+        float waveDepth = h > roomA ? roomA / hfSlot(roomA) : h;
+        mine = vec4(h * HF_CELL * HF_CELL + airVol, waveDepth, speed, max(abs(h - old) / HF_DT, busy ? 1.0 : 0.0));
         uint bits = growthBits(a, h);
         if (bits != 0u) {
             atomicOr(borderBits, bits);

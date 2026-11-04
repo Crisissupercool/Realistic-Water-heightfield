@@ -90,6 +90,7 @@ When a room is completely flooded, the water level is capped by the ceiling, but
 water higher up outside. This is handled with a **Preissmann slot**, the standard trick in sewer and pipe-network models:
 `h` may exceed `ceil - floor`, but the excess counts with a tiny storage width (for example 1% of the cell area). So the head rises fast
 and pushes water on, and almost no extra volume is stored. Rendering and block sync clamp the depth to `ceil - floor`.
+(Built in section 39; until then the excess was stored block for block.)
 
 ### Stability
 
@@ -994,7 +995,7 @@ and a step drop of up to HF_AIR_MIN_DROP only counted as falling (foam), never a
   SPRAY_CHURN_MIN 8 -> 0.5, SPRAY_CHURN_RATE 0.12 -> 1.5 droplets/s per unit (1-5 a second per span on a cascade, about
   what the old cascades threw), spray strength over (churn - min) / 4 instead of / 40, FOAM_CHURN 1.5-12 -> 0.3-2.5.
 
-## 29. Floods meeting vanilla water: seas take it in, ponds join (as built)
+## 29. Floods meeting vanilla water: seas take it in, ponds join (superseded by section 39)
 
 Vanilla water the heightfield does not hold counts as solid to it (section 14: captured lakes leaked into the sea
 otherwise). So a flood that reached the sea spread over the vanilla surface as a layer of its own, standing above it, and
@@ -1038,7 +1039,7 @@ now thrown at the full rate within 24 blocks of the camera, fading out to none a
 drops that carry water (splashes, rain through leaves) are thrown wherever the water is; their pool is 65,536 (was 16,384,
 +3 MB).
 
-## 32. Floods running into the sea take it in around them (as built)
+## 32. Floods running into the sea take it in around them (removed, section 39)
 
 With seas as sinks (section 29) a flood ended at the shoreline: the vanilla sea cannot show currents or foam. Now the sea
 around where a flood runs in becomes heightfield water:
@@ -1149,3 +1150,20 @@ Found along the way and kept (each a real fault, none of them the line):
   cubes (deep stone, deepslate, ores) are now filled solid at once. Chunk scans (each can build a tile from saved water) run
   up to 16 a frame within about 8 ms (was 4 a frame), and chunk scans or tile rebuilds over 50 ms in one frame are logged
   ("Realistic Water: ... took N ms"), so a stall on joining says where its time went.
+
+## 39. Pressure, and vanilla water left alone (as built)
+
+* **Pressure (Preissmann slot).** A span filled to its ceiling stores what flows in beyond that in a slot only hfSlot(room)
+  of the cell wide (hf_common.glsl hfHead): its head rises 1 / slot times faster than its water. A flooded tunnel or a sealed
+  tank under a tall column carries the column's head, pushes water out of every opening hard and up any shaft to the same
+  level. Before, the depth just went on past the ceiling block for block: the head did rise, but slowly, and a tunnel under
+  a 10 block lake held 9 blocks of water per cell that nobody saw (it was also lost on saving, block sync clamps to the
+  span). The slot is 0.05, widened in tall spans so pressure waves (sqrt(g room / slot)) stay at 20 blocks/s; hf_depth.comp
+  reports room / slot as the span's depth for the CFL step. hf_flux.comp, HfTiledSim and the dense mirror use the same head.
+  Test: a U-tube (reservoir to y 60, 1 block tunnel 6 blocks long, 2x2 shaft) fills the shaft to the reservoir's level
+  within 15 s (59.31 vs 59.37) and holds 5.0 blocks^3 above ceilings (8.3 blocks of head x 0.05 x 12 blocks of tunnel;
+  about 100 without the slot).
+* **Vanilla water is never taken in.** Floods converted ponds and rivers up to 1024 surface blocks (section 29) and the sea
+  around their inflow (section 32). Both are gone: every vanilla water surface is a sink (HfWorld.voxels), so a flood lying on
+  any vanilla water drains into it over HF_SINK_TIME as a plume (section 33), and vanilla water stays vanilla. The explicit
+  capture command still converts on request.

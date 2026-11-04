@@ -172,6 +172,26 @@ layout(std430, binding = 23) buffer Mom { uvec2 mom[]; };
 #define HF_MANNING G.simA.x
 #define HF_IMPACT_SPREAD G.simA.y
 
+// Pressure (a Preissmann slot, the standard trick of sewer and pipe models): a span filled to its ceiling stores what flows in
+// beyond that in a slot only HF_SLOT of the cell wide, so its head rises 1 / HF_SLOT times faster than its water: a flooded
+// tunnel or a sealed tank under a tall column carries the column's head, pushes water out of every opening hard and up any
+// shaft to the same level, and holds back almost no hidden water. Before, the depth just went on past the ceiling block for
+// block: the head did rise, but a tunnel under a 10 block lake held 9 blocks of water per cell that nobody saw.
+// Pressure waves run at sqrt(g room / slot); in a tall flooded cave that is fast enough to need tiny steps, so the slot widens
+// there to keep them at HF_SLOT_SPEED (blocks/s): a 1 block tunnel keeps HF_SLOT, a 10 block cave gets about 0.25.
+const float HF_SLOT = 0.05;
+const float HF_SLOT_SPEED = 20.0;
+
+float hfSlot(float room) {
+    return max(HF_SLOT, 9.81 * room / (HF_SLOT_SPEED * HF_SLOT_SPEED));
+}
+
+// Head (water level, world y) of a span with floor g.x, ceiling g.y and stored depth h.
+float hfHead(vec2 g, float h) {
+    float room = g.y - g.x;
+    return h <= room ? g.x + h : g.y + (h - room) / hfSlot(room);
+}
+
 // Foliage in span s as (bottom, top) world heights; bottom >= top when there is none.
 vec2 hfFoliage(uint s) {
     uint f = foliage[s] & 0x7FFFFFFFu;

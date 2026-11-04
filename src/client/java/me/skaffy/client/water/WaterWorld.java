@@ -967,13 +967,6 @@ public final class WaterWorld {
 		int steps = 0;
 		float dt = frameDt;
 		ClientLevel level = mc.level;
-		if (running && level != null) {
-			this.hfWorld.takeInQueuedPonds(level, hf);
-			String sea = this.hfWorld.takeInSea(level, hf);
-			if (sea != null && mc.player != null) {
-				mc.player.sendSystemMessage(Component.literal(sea));
-			}
-		}
 		long buildStart = System.nanoTime();
 		int[] dirty = grid.takeDirty();
 		int[][] grow = running && level != null
@@ -994,8 +987,7 @@ public final class WaterWorld {
 			}
 			for (int[] t : grow) {
 				// Built from the blocks: after a reload the neighbor chunk may hold water that was not imported yet.
-				// A flood grew into it: small vanilla ponds there join the flood next frame (big bodies became sinks when it was built).
-				this.hfWorld.queuePonds(this.hfWorld.addTileFromBlocks(level, hf, t[0], t[1], null));
+				this.hfWorld.addTileFromBlocks(level, hf, t[0], t[1], null);
 			}
 		}
 		slowFrame("tile rebuilds and growth", dirty.length + grow.length, buildStart);

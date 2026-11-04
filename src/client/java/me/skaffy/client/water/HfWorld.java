@@ -159,20 +159,16 @@ final class HfWorld {
 				return level.getBlockState(p.set(bx, by, bz)).is(BlockTags.LEAVES);
 			}
 
-			/** Vanilla water at its body's surface, for bodies over POND_MAX_AREA surface blocks (memoized per body). */
-			private final it.unimi.dsi.fastutil.longs.Long2BooleanOpenHashMap seas = new it.unimi.dsi.fastutil.longs.Long2BooleanOpenHashMap();
-
+			/**
+			 * Vanilla water at its surface: a flood never takes vanilla water in. Lying on it, the flood drains into it over
+			 * HF_SINK_TIME (a plume), whatever the body's size; before, ponds and rivers up to 1024 blocks and the sea around a
+			 * flood's inflow became heightfield water.
+			 */
 			@Override
 			public boolean sink(int bx, int by, int bz) {
 				long key = BlockPos.asLong(bx, by, bz);
-				if (open != null && open.containsKey(key) || !isVanillaWater(level.getBlockState(p.set(bx, by, bz)))
-					|| isVanillaWater(level.getBlockState(p.set(bx, by + 1, bz)))) {
-					return false;
-				}
-				if (this.seas.containsKey(key)) {
-					return this.seas.get(key);
-				}
-				return largeBody(level, bx, by, bz, open, this.seas);
+				return !(open != null && open.containsKey(key)) && isVanillaWater(level.getBlockState(p.set(bx, by, bz)))
+					&& !isVanillaWater(level.getBlockState(p.set(bx, by + 1, bz)));
 			}
 
 			/** Above the highest non-air block (the client's WORLD_SURFACE heightmap) a column is open sky; unloaded chunks stay solid. */
@@ -230,221 +226,8 @@ final class HfWorld {
 		return tile;
 	}
 
-	/** Vanilla water bodies with at most this many surface blocks are ponds a flood takes in; bigger ones are seas it drains into. */
-	static final int POND_MAX_AREA = 1024;
-
-	/**
-	 * Whether the vanilla water at (x, y, z) belongs to a body with more than {@link #POND_MAX_AREA} blocks at that level (or one
-	 * running into unloaded chunks): the sea, a lake, a river. The fill's blocks are all recorded in {@code memo} with the answer.
-	 */
-	static boolean largeBody(ClientLevel level, int x, int y, int z, @Nullable Long2IntOpenHashMap skip,
-		it.unimi.dsi.fastutil.longs.Long2BooleanOpenHashMap memo) {
-		LongArrayList body = new LongArrayList();
-		LongOpenHashSet seen = new LongOpenHashSet();
-		java.util.ArrayDeque<Long> open = new java.util.ArrayDeque<>();
-		BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
-		long start = BlockPos.asLong(x, y, z);
-		seen.add(start);
-		open.add(start);
-		boolean large = false;
-		while (!open.isEmpty() && !large) {
-			long k = open.poll();
-			body.add(k);
-			if (body.size() > POND_MAX_AREA || memo.containsKey(k) && memo.get(k)) {
-				large = true;
-				break;
-			}
-			for (int d = 0; d < 4; d++) {
-				int nx = BlockPos.getX(k) + HfTileGrid.DX[d];
-				int nz = BlockPos.getZ(k) + HfTileGrid.DZ[d];
-				if (!level.hasChunk(nx >> 4, nz >> 4)) {
-					large = true;
-					break;
-				}
-				long nk = BlockPos.asLong(nx, y, nz);
-				if (!seen.contains(nk) && (skip == null || !skip.containsKey(nk)) && isVanillaWater(level.getBlockState(p.set(nx, y, nz)))) {
-					seen.add(nk);
-					open.add(nk);
-				}
-			}
-		}
-		for (long k : body) {
-			memo.put(k, large);
-		}
-		if (large) {
-			for (long k : open) {
-				memo.put(k, true);
-			}
-		}
-		return large;
-	}
-
-	/**
-	 * Small bodies of vanilla water (ponds, {@link #POND_MAX_AREA} surface blocks at most) whose surface lies in tile, all their
-	 * blocks into {@code ponds} (position -> amount). Big ones are seas (HfWorld.voxels sink, HfTileGrid.SINK).
-	 */
-	private void pondsIn(ClientLevel level, HfDomain hf, int tile, Long2IntOpenHashMap ponds) {
-		HfTileGrid g = hf.grid;
-		int x0 = g.originX + g.tileX[tile] * HfTileGrid.TILE_BLOCKS;
-		int z0 = g.originZ + g.tileZ[tile] * HfTileGrid.TILE_BLOCKS;
-		it.unimi.dsi.fastutil.longs.Long2BooleanOpenHashMap memo = new it.unimi.dsi.fastutil.longs.Long2BooleanOpenHashMap();
-		BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
-		for (int bz = 0; bz < HfTileGrid.TILE_BLOCKS; bz++) {
-			for (int bx = 0; bx < HfTileGrid.TILE_BLOCKS; bx++) {
-				int x = x0 + bx;
-				int z = z0 + bz;
-				int y = surfaceWater(level, g, x, z, p);
-				if (y == Integer.MIN_VALUE || memo.containsKey(BlockPos.asLong(x, y, z)) || largeBody(level, x, y, z, null, memo)) {
-					continue;
-				}
-				for (var e : memo.long2BooleanEntrySet()) {
-					long k = e.getLongKey();
-					if (e.getBooleanValue() || BlockPos.getY(k) != y || ponds.containsKey(k)) {
-						continue;
-					}
-					for (int wy = y; wy >= g.yMin && isVanillaWater(level.getBlockState(p.set(BlockPos.getX(k), wy, BlockPos.getZ(k)))); wy--) {
-						ponds.put(BlockPos.asLong(BlockPos.getX(k), wy, BlockPos.getZ(k)),
-							Math.clamp(level.getBlockState(p).getFluidState().getAmount(), 1, 8));
-					}
-				}
-			}
-		}
-	}
-
 	private static boolean isVanillaWater(BlockState state) {
 		return state.getBlock() == Blocks.WATER;
-	}
-
-	/**
-	 * Y of the top vanilla water block of column (x, z) inside the height window, or Integer.MIN_VALUE: the top block, or the first
-	 * one under realistic water lying on it (heightfield water that spread over the sea before it was a sink, written back as
-	 * blocks and read in again on every load).
-	 */
-	private static int surfaceWater(ClientLevel level, HfTileGrid g, int x, int z, BlockPos.MutableBlockPos p) {
-		if (!level.hasChunk(x >> 4, z >> 4)) {
-			return Integer.MIN_VALUE;
-		}
-		int y = level.getHeight(Heightmap.Types.WORLD_SURFACE, x, z) - 1;
-		while (y >= g.yMin && level.getBlockState(p.set(x, y, z)).getBlock() == ModContent.REALISTIC_WATER_BLOCK) {
-			y--;
-		}
-		return y >= g.yMin && y < g.yMax - 1 && isVanillaWater(level.getBlockState(p.set(x, y, z))) ? y : Integer.MIN_VALUE;
-	}
-
-	/**
-	 * A tile a flood grew into: small vanilla ponds in it join the flood (captured, so it can fill a valley with a pond in it
-	 * instead of flowing over the pond as over a floor). Needs singleplayer (it changes blocks). Returns the blocks captured.
-	 */
-	/** Blocks of sea around a point where a flood runs in that become heightfield water ({@link #takeInSea}). */
-	static final int SEA_RADIUS = 24;
-	/** Centres of the sea taken in so far ({x, z}); a new inflow this close to one is left to it. */
-	private final List<int[]> seaTaken = new ArrayList<>();
-
-	/**
-	 * Where a flood runs into a sea (a sink takes in its water, HfDomain.takeSeaInflows), the sea within {@link #SEA_RADIUS} of
-	 * that point becomes heightfield water, its edge held at the sea's level ({@link #captureEdges}): the flood then flows on into it
-	 * with currents and foam instead of ending at the shore, and the vanilla sea further out stays. At most one per call; inflows
-	 * within 2 x SEA_RADIUS of an earlier one are skipped (the taken-in water drains into the sea at its edge too, which must not
-	 * take in the next ring, and so on across the sea). Needs singleplayer (it changes blocks). Returns a message or null.
-	 */
-	@Nullable String takeInSea(ClientLevel level, HfDomain hf) {
-		List<double[]> inflows = hf.takeSeaInflows();
-		if (inflows.isEmpty() || !canWrite()) {
-			return null;
-		}
-		for (double[] in : inflows) {
-			int x = Mth.floor(in[0]);
-			int z = Mth.floor(in[1]);
-			boolean near = false;
-			for (int[] c : this.seaTaken) {
-				long dx = x - c[0];
-				long dz = z - c[1];
-				near |= dx * dx + dz * dz < 4L * SEA_RADIUS * SEA_RADIUS;
-			}
-			if (near) {
-				continue;
-			}
-			this.seaTaken.add(new int[]{x, z});
-			return this.captureSea(level, hf, x, z, SEA_RADIUS);
-		}
-		return null;
-	}
-
-	/**
-	 * The vanilla water within {@code radius} of (cx, cz) from the surface down (under any realistic water lying on it), captured
-	 * like {@link #capture}, with its edge held at its level where the water goes on outside.
-	 */
-	private @Nullable String captureSea(ClientLevel level, HfDomain hf, int cx, int cz, int radius) {
-		HfTileGrid g = hf.grid;
-		double r2 = (radius + 0.5) * (radius + 0.5);
-		Long2IntOpenHashMap water = new Long2IntOpenHashMap();
-		Map<Long, int[]> tiles = new LinkedHashMap<>();
-		BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
-		for (int z = cz - radius; z <= cz + radius; z++) {
-			for (int x = cx - radius; x <= cx + radius; x++) {
-				if ((double) (x - cx) * (x - cx) + (double) (z - cz) * (z - cz) > r2) {
-					continue;
-				}
-				int y = surfaceWater(level, g, x, z, p);
-				for (; y != Integer.MIN_VALUE && y >= g.yMin && isVanillaWater(level.getBlockState(p.set(x, y, z))); y--) {
-					water.put(BlockPos.asLong(x, y, z), Math.clamp(level.getBlockState(p).getFluidState().getAmount(), 1, 8));
-					int tx = g.tileOfBlockX(x);
-					int tz = g.tileOfBlockZ(z);
-					tiles.putIfAbsent(((long) tx << 32) ^ (tz & 0xFFFFFFFFL), new int[]{tx, tz});
-				}
-			}
-		}
-		if (water.isEmpty()) {
-			return null;
-		}
-		int[] r = this.captureBlocks(level, hf, water, tiles.values());
-		int edges = this.captureEdges(level, hf, water, cx, cz, radius);
-		return String.format("A flood ran into the sea at %d %d: %,d blocks of sea around it are now heightfield water (%d edge cells held at its level)",
-			cx, cz, r[0], edges);
-	}
-
-	/** Tiles a flood grew into this frame; their ponds are taken in next frame ({@link #takeInQueuedPonds}). */
-	private final List<Integer> pondTiles = new ArrayList<>();
-
-	/**
-	 * Queues a tile a flood just grew into for {@link #takeInPonds}. Not this frame: capturing rebuilds the tile, and a rebuild is
-	 * remapped before new tiles are uploaded, so it would read the pages of a tile added this frame before they hold anything.
-	 */
-	void queuePonds(int tile) {
-		if (tile != HfTileGrid.NONE) {
-			this.pondTiles.add(tile);
-		}
-	}
-
-	/** Takes in the ponds of the tiles queued last frame. Returns the blocks captured. */
-	int takeInQueuedPonds(ClientLevel level, HfDomain hf) {
-		int n = 0;
-		for (int tile : this.pondTiles) {
-			if (tile < hf.grid.count) {
-				n += this.takeInPonds(level, hf, tile);
-			}
-		}
-		this.pondTiles.clear();
-		return n;
-	}
-
-	int takeInPonds(ClientLevel level, HfDomain hf, int tile) {
-		if (tile == HfTileGrid.NONE || !canWrite()) {
-			return 0;
-		}
-		Long2IntOpenHashMap ponds = new Long2IntOpenHashMap();
-		this.pondsIn(level, hf, tile, ponds);
-		if (ponds.isEmpty()) {
-			return 0;
-		}
-		HfTileGrid g = hf.grid;
-		Map<Long, int[]> tiles = new LinkedHashMap<>();
-		for (long key : ponds.keySet()) {
-			int tx = g.tileOfBlockX(BlockPos.getX(key));
-			int tz = g.tileOfBlockZ(BlockPos.getZ(key));
-			tiles.putIfAbsent(((long) tx << 32) ^ (tz & 0xFFFFFFFFL), new int[]{tx, tz});
-		}
-		return this.captureBlocks(level, hf, ponds, tiles.values())[0];
 	}
 
 	/**
@@ -922,8 +705,6 @@ final class HfWorld {
 	void close() {
 		this.warnedWindow = false;
 		this.pendingImports.clear();
-		this.seaTaken.clear();
-		this.pondTiles.clear();
 		if (this.world.heightfield != null) {
 			this.world.heightfield.close();
 			this.world.heightfield = null;
