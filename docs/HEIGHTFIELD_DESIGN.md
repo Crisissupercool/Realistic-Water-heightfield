@@ -1101,7 +1101,13 @@ plain floor: 39 blocks^3, 17 cm and rising).
   surface (level - drop * clamp(depth, 0, 1)) and reports that height in view state z; eyeY uses the same drop.
   Still a line after that (a sharp strip of bank texture at the horizon in a stream). Diagnostics: hfCompositeOff 16
   colours pixels by shading path (red from above, blue from below, green underwater with no surface, white trace hit), and
-  /water hf stats prints the eye relative to the drawn surface and the camera offset.
+  /water hf stats prints the eye relative to the drawn surface and the camera offset. They found it: in a stream with the
+  eye 1.4 blocks above the water the line was only in the reflection (hfCompositeOff 64), on smooth water seen from above,
+  over a riverbed step. The scene depth has no water in it, so a reflected ray skimming just over the surface passed in
+  front of pixels showing the ground under the water and "hit" it near the horizon: the step (or, with the eye at the
+  surface, the ground the water lies on; from below, the bank above the water) was mirrored as a sharp strip. Hits now must
+  lie on the reflecting side of the surface (more than 5 cm across its plane, by the unrippled normal, is skipped and the
+  march goes on), above water and below.
 * **Currents seen from below.** The surface's ripples drift with the current (flow-mapped) from above; from below they stood
   still. The composite now decodes the flow for both and passes it to the from-below shading too.
 

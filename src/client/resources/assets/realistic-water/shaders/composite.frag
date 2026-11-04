@@ -89,7 +89,12 @@ bool projectToScreen(vec3 pos, out vec2 suv) {
 // down: without it a ray that overshoots by up to a step "hits" whatever lies there, which drew jagged teeth of the cliff
 // into the water next to it and made reflections jump with every small camera move. A crossing far behind the surface
 // (the ray passed behind an object) is no hit; rays heading back toward the camera and long rays fade out.
-vec3 traceReflection(vec3 origin, vec3 R, out float hit, out float travelled) {
+// Only the scene on the reflecting side of the surface (plane through planeP, normal planeN, both view space) can be hit. The
+// scene depth has no water in it, so a ray skimming just over the surface passes in front of pixels showing the ground under
+// that surface, and near the horizon "hit" it: a riverbed step or the ground the water lies on was mirrored as a sharp strip
+// of grass and dirt (the line along the water with the eye near the surface or a step under thin water). Such crossings are
+// skipped and the march goes on.
+vec3 traceReflection(vec3 origin, vec3 R, vec3 planeP, vec3 planeN, out float hit, out float travelled) {
     hit = 0.0;
     travelled = 0.0;
     vec3 pos = origin;
@@ -103,6 +108,11 @@ vec3 traceReflection(vec3 origin, vec3 R, out float hit, out float travelled) {
             break;
         }
         float sceneDist = linearDepth(suv, texture(sceneDepth, suv).r);
+        if (-pos.z > sceneDist && dot(viewPosAt(suv, sceneDist) - planeP, planeN) < -0.05) {
+            // Behind ground on the other side of the surface (under water seen from above, above it from below): not a hit.
+            stepLen *= 1.1;
+            continue;
+        }
         if (-pos.z > sceneDist) {
             vec3 a = last;
             vec3 b = pos;
@@ -417,6 +427,7 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     vec3 P = viewPosAt(uv, fd);
     vec3 V = toEyeAt(uv);
     n = dot(n, V) < 0.0 ? -n : n;
+    vec3 nGeo = n;
     float footprint = pixelFootprint(fd);
     vec3 nWorld = normalize(mat3(G.invView) * n);
     vec3 world = G.misc.yzw + (G.invView * vec4(P, 0.0)).xyz;
@@ -517,7 +528,7 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
     float ssrWeight = smoothstep(SSR_MIN_F, 2.0 * SSR_MIN_F, F);
     if (ssrWeight > 0.0 && (pc.debugOff & 1) == 0) {
         float travelled;
-        ssr = traceReflection(P + n * 0.05, Rv, hit, travelled);
+        ssr = traceReflection(P + n * 0.05, Rv, P, nGeo, hit, travelled);
         hit *= ssrWeight;
     }
     vec3 reflection = mix(skyColor(Rw), ssr, hit);
@@ -567,6 +578,7 @@ vec3 shadeSurfaceFromBelow(vec2 uv, vec3 n, float fd, vec3 deep, vec2 flow) {
     vec3 P = viewPosAt(uv, fd);
     vec3 V = toEyeAt(uv);
     n = dot(n, V) < 0.0 ? -n : n;
+    vec3 nGeo = n;
     // Ripples drift with the current, as seen from above (the surface showed no current from below).
     vec3 wrinkled = rippleNormal(n, P, pixelFootprint(fd), flow);
     n = normalize(mix(n, wrinkled, smoothstep(0.0, 0.15, dot(wrinkled, V))));
@@ -588,7 +600,7 @@ vec3 shadeSurfaceFromBelow(vec2 uv, vec3 n, float fd, vec3 deep, vec2 flow) {
         vec3 Rv = reflect(-V, n);
         float hit;
         float travelled;
-        vec3 ssr = traceReflection(P + n * 0.05, Rv, hit, travelled);
+        vec3 ssr = traceReflection(P + n * 0.05, Rv, P, nGeo, hit, travelled);
         float fog = G.scatter.w * G.misc.x;
         ssr = ssr * exp(-G.absorb.rgb * travelled * G.misc.x) + deep * (1.0 - exp(-fog * travelled));
         reflected = mix(deep, ssr, hit);
@@ -714,7 +726,7 @@ void main() {
             n = fromBelow && dot(n, V) < 0.0 ? -n : n;
             float hit;
             float travelled;
-            traceReflection(P + n * 0.05, reflect(-V, n), hit, travelled);
+            traceReflection(P + n * 0.05, reflect(-V, n), P, n, hit, travelled);
             hitDbg = hit;
             dbg = fromBelow ? vec3(0.1, 0.2, 1.0) : vec3(1.0, 0.15, 0.1);
             dbg *= 0.5 + 0.5 * clamp(dot(normalize(n), V), 0.0, 1.0);
