@@ -27,12 +27,18 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Build
         run: bash ./gradlew build --no-configuration-cache
+      - name: Release notes
+        id: notes
+        # hf-prototype-2 -> docs/releases/prototype-2.md
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: echo "path=docs/releases/${TAG#hf-}.md" >> "$GITHUB_OUTPUT"
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
-          name: Heightfield prototype ${{ inputs.tag || github.ref_name }}
-          body_path: docs/releases/prototype-1.md
+          name: Heightfield ${{ inputs.tag || github.ref_name }}
+          body_path: ${{ steps.notes.outputs.path }}
           prerelease: true
           files: |
             build/libs/*.jar
