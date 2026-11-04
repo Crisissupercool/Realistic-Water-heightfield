@@ -77,7 +77,11 @@ final class SolidCache {
 		LevelChunk chunk = level.getChunk(sx, sz);
 		LevelChunkSection chunkSection = chunk.getSection(sectionIndex);
 		s = new Section();
-		if (!chunkSection.hasOnlyAir()) {
+		if (!chunkSection.hasOnlyAir() && !chunkSection.maybeHas(this::notFullCube)) {
+			// Only full cubes in the palette (deep stone, deepslate, ores): the whole section is solid, without voxelizing its 4096
+			// blocks one by one, which a tile build did for every section from the window's floor up (world load stalls).
+			java.util.Arrays.fill(s.kind, FULL);
+		} else if (!chunkSection.hasOnlyAir()) {
 			BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
 			for (int i = 0; i < 4096; i++) {
 				int x = i & 15;
@@ -93,6 +97,11 @@ final class SolidCache {
 		}
 		this.sections.put(key, s);
 		return s;
+	}
+
+	private boolean notFullCube(BlockState state) {
+		return state.isAir() || this.ignoreSand && state.getBlock() instanceof RealisticSandBlock
+			|| !state.isCollisionShapeFullBlock(net.minecraft.world.level.EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
 	}
 
 	private void voxelizeBlock(ClientLevel level, BlockPos pos, BlockState state, Section s, int i) {

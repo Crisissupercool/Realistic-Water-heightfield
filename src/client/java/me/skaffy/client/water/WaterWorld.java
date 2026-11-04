@@ -164,6 +164,14 @@ public final class WaterWorld {
 	private int lastSandSteps;
 	private float lastSandDt;
 
+	/** Logs heightfield CPU work that took over 50 ms in one frame (world-load stalls), so a report says where the time went. */
+	private static void slowFrame(String what, int count, long startNanos) {
+		long ms = (System.nanoTime() - startNanos) / 1_000_000L;
+		if (ms >= 50L) {
+			me.skaffy.RealisticWater.LOGGER.info("Realistic Water: {} took {} ms this frame ({} items)", what, ms, count);
+		}
+	}
+
 	public static WaterWorld get() {
 		return INSTANCE;
 	}
@@ -572,9 +580,15 @@ public final class WaterWorld {
 			this.builtLavaResolution = WaterSettings.lavaResolution;
 			this.reload(level);
 		}
-		for (int i = 0; i < 4 && !this.chunkScanQueue.isEmpty(); i++) {
+		// Chunk scans import saved water into the heightfield (a tile build each); spend at most ~8 ms a frame on them, so joining a
+		// world with a big saved flood spreads the builds over frames instead of stalling.
+		long scanStart = System.nanoTime();
+		int scanned = 0;
+		while (scanned < 16 && !this.chunkScanQueue.isEmpty() && (scanned == 0 || System.nanoTime() - scanStart < 8_000_000L)) {
 			this.scanChunk(level, this.chunkScanQueue.poll());
+			scanned++;
 		}
+		slowFrame("chunk scans", scanned, scanStart);
 		this.waterEchoes.expire(this.frameCounter);
 		this.hfEchoes.expire(this.millis());
 		this.hfWorld.pushPlayer(mc);
@@ -960,6 +974,7 @@ public final class WaterWorld {
 				mc.player.sendSystemMessage(Component.literal(sea));
 			}
 		}
+		long buildStart = System.nanoTime();
 		int[] dirty = grid.takeDirty();
 		int[][] grow = running && level != null
 			? grid.growthRequests(Math.max(0, WaterSettings.hfMaxNewTilesPerFrame), (tx, tz) -> HfWorld.neighborhoodLoaded(level, grid, tx, tz))
@@ -983,6 +998,7 @@ public final class WaterWorld {
 				this.hfWorld.queuePonds(this.hfWorld.addTileFromBlocks(level, hf, t[0], t[1], null));
 			}
 		}
+		slowFrame("tile rebuilds and growth", dirty.length + grow.length, buildStart);
 		// Before planning, so a player moving through sleeping water wakes it this frame.
 		float[] stir = running ? this.hfWorld.stir(mc, hf) : new float[0];
 		if (running) {

@@ -1146,3 +1146,8 @@ Found along the way and kept (each a real fault, none of them the line):
   (4) open spans still treat the lowest ones as solid (the links pack the target layer into 2 bits).
 * **Springs at vanilla height.** A spring holds its column at the block's top less hfSurfaceDrop (8/9, as vanilla draws a
   source), not at the top: in a box's top row it held the water exactly at the rim and any wave spilled over.
+* **World load.** A tile build voxelizes every chunk section it touches, block by block (SolidCache, a collision shape per
+  block), and with the window down to the world's floor that is 24 sections a column. Sections whose palette holds only full
+  cubes (deep stone, deepslate, ores) are now filled solid at once. Chunk scans (each can build a tile from saved water) run
+  up to 16 a frame within about 8 ms (was 4 a frame), and chunk scans or tile rebuilds over 50 ms in one frame are logged
+  ("Realistic Water: ... took N ms"), so a stall on joining says where its time went.
