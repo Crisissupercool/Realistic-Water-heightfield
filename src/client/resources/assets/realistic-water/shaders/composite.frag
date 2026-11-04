@@ -521,6 +521,13 @@ vec3 shadeAboveWater(vec2 uv, vec3 n, float fd, float sceneDist, float ambient, 
         hit *= ssrWeight;
     }
     vec3 reflection = mix(skyColor(Rw), ssr, hit);
+    // Diagnostics (hfCompositeOff 32 / 64): only the refracted water, only the reflection.
+    if ((pc.debugOff & 32) != 0) {
+        return water;
+    }
+    if ((pc.debugOff & 64) != 0) {
+        return reflection;
+    }
     vec3 color = mix(water, reflection, F) + sunSpecular(n, V, footprint);
     // Wave crests are thinner, so light scattered in the water shows through them a little brighter.
     color += G.scatter.rgb * ambient * clamp(wk.z * 2.5, 0.0, 0.2);
@@ -586,11 +593,14 @@ vec3 shadeSurfaceFromBelow(vec2 uv, vec3 n, float fd, vec3 deep, vec2 flow) {
         ssr = ssr * exp(-G.absorb.rgb * travelled * G.misc.x) + deep * (1.0 - exp(-fog * travelled));
         reflected = mix(deep, ssr, hit);
     }
-    if (sinT2 >= 1.0) {
-        return reflected;
+    if (sinT2 >= 1.0 || (pc.debugOff & 64) != 0) {
+        return (pc.debugOff & 32) != 0 ? vec3(0.0) : reflected;
     }
     vec2 ruv = clamp(uv - n.xy * G.waterA.z * 0.6, vec2(0.0), vec2(1.0));
     vec3 above = texture(sceneColor, ruv).rgb;
+    if ((pc.debugOff & 32) != 0) {
+        return above;
+    }
     return mix(above, reflected, F);
 }
 
